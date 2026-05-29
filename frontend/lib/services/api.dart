@@ -100,4 +100,50 @@ class ApiService {
       throw Exception('Failed to fetch movies: ${response.body}');
     }
   }
+
+  /**
+   * Authenticated: Fetch shows library
+   */
+  Future<List<dynamic>> fetchShows() async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/shows'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to fetch shows: ${response.body}');
+    }
+  }
+
+  /**
+   * Authenticated: Get library scanner status
+   */
+  Future<Map<String, dynamic>> getLibraryStatus() async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/library/status'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to get library status: ${response.body}');
+    }
+  }
 }

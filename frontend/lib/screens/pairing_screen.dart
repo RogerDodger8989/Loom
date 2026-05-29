@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/api.dart';
+import 'dashboard_screen.dart';
 
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
@@ -214,7 +215,7 @@ class _PairingScreenState extends State<PairingScreen> {
               )
             ],
           ),
-          child: Text(
+          child: SelectableText(
             _pairingCode ?? '----',
             style: const TextStyle(
               color: Color(0xFFB593FF),
@@ -321,8 +322,11 @@ class _PairingScreenState extends State<PairingScreen> {
               elevation: 4,
             ),
             onPressed: () {
-              // Standard action: Navigate to Main Library Screen
-              debugPrint('Entering LOOM dashboard...');
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(
+                  builder: (context) => DashboardScreen(apiService: _apiService),
+                ),
+              );
             },
             child: const Text(
               'Enter Library',
