@@ -1,316 +1,270 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import xml2js from 'xml2js';
+import { v4 as uuidv4 } from 'uuid';
 import db from '../config/database';
-import crypto from 'crypto';
+import { tmdbService } from './tmdb';
 
-interface ScanResult {
-  addedMovies: number;
-  addedEpisodes: number;
-  addedTracks: number;
-  errors: string[];
-}
+export class ScannerService {
+  /**
+   * Scan a specific library path for media files and their NFOs
+   */
+  public async scanLibrary(libraryPath: string, type: 'Movie' | 'Show' | 'Music', preferLocalNfo?: boolean): Promise<{ added: number, updated: number }> {
+    if (!fs.existsSync(libraryPath)) {
+      console.error(`[Scanner] Path does not exist: ${libraryPath}`);
+      return { added: 0, updated: 0 };
+    }
 
-class MediaScanner {
-  private parser = new xml2js.Parser({ explicitArray: false, ignoreAttrs: true });
+    let itemsAdded = 0;
+    let itemsUpdated = 0;
+    const files = this.getAllFiles(libraryPath);
 
-  // Supported extensions
-  private videoExtensions = new Set(['.mp4', '.mkv', '.avi', '.mov', '.m4v']);
-  private audioExtensions = new Set(['.mp3', '.flac', '.m4a', '.ogg']);
+    // Common video extensions
+    const videoExts = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'];
+
+    for (const file of files) {
+      const ext = path.extname(file).toLowerCase();
+      
+      if (videoExts.includes(ext)) {
+        if (type === 'Movie') {
+          const result = await this.processMovieFile(file, preferLocalNfo);
+          if (result === 'added') itemsAdded++;
+          else if (result === 'updated') itemsUpdated++;
+        } else if (type === 'Show') {
+          // TODO: Process TV Shows
+        }
+      }
+    }
+
+    return { added: itemsAdded, updated: itemsUpdated };
+  }
 
   /**
-   * Scans a directory recursively for files matching the given type
+   * Process a single movie video file
+   * Returns 'added', 'updated', or 'skipped'
    */
-  public async scanLibrary(
-    basePath: string,
-    type: 'Movie' | 'Show' | 'Music',
-    preferLocalNfo: boolean
-  ): Promise<ScanResult> {
-    console.log(`[Scanner] Starting scan on path "${basePath}" for type "${type}". Prefer NFO: ${preferLocalNfo}`);
-    
-    const result: ScanResult = {
-      addedMovies: 0,
-      addedEpisodes: 0,
-      addedTracks: 0,
-      errors: []
+  private async processMovieFile(filePath: string, preferLocalNfo: boolean = true): Promise<'added' | 'updated' | 'skipped'> {
+    const dir = path.dirname(filePath);
+    const fileNameWithoutExt = path.parse(filePath).name;
+    const nfoPath = path.join(dir, `${fileNameWithoutExt}.nfo`);
+    const fallbackNfoPath = path.join(dir, 'movie.nfo');
+
+    let metadata: any = {
+      title: this.parseTitleFromFilename(fileNameWithoutExt),
+      plot: null,
+      year: this.parseYearFromFilename(fileNameWithoutExt),
+      genre: null,
+      poster_path: null,
+      fanart_path: null,
     };
 
-    if (!fs.existsSync(basePath)) {
-      result.errors.push(`Base path "${basePath}" does not exist`);
-      return result;
-    }
+    let hasLocalNfo = false;
 
-    try {
-      const files = this.getAllFiles(basePath);
-      
-      for (const file of files) {
-        const ext = path.extname(file).toLowerCase();
-        
-        if (type === 'Movie' && this.videoExtensions.has(ext)) {
-          await this.processMovieFile(file, preferLocalNfo, result);
-        } else if (type === 'Show' && this.videoExtensions.has(ext)) {
-          await this.processShowEpisodeFile(file, preferLocalNfo, result);
-        } else if (type === 'Music' && this.audioExtensions.has(ext)) {
-          await this.processMusicFile(file, result);
+    // 1. Try Local Parsing (if preferred)
+    if (preferLocalNfo) {
+      if (fs.existsSync(nfoPath)) {
+        metadata = { ...metadata, ...this.parseNfo(nfoPath) };
+        hasLocalNfo = true;
+      } else if (fs.existsSync(fallbackNfoPath)) {
+        metadata = { ...metadata, ...this.parseNfo(fallbackNfoPath) };
+        hasLocalNfo = true;
+      }
+
+      // Look for artwork
+      const possiblePosters = ['poster.jpg', 'folder.jpg', `${fileNameWithoutExt}-poster.jpg`];
+      for (const p of possiblePosters) {
+        const pPath = path.join(dir, p);
+        if (fs.existsSync(pPath)) {
+          metadata.poster_path = pPath;
+          break;
         }
       }
-    } catch (err: any) {
-      console.error(`[Scanner] Fatal scan error:`, err);
-      result.errors.push(err.message || String(err));
+
+      const possibleFanart = ['fanart.jpg', 'background.jpg', `${fileNameWithoutExt}-fanart.jpg`];
+      for (const p of possibleFanart) {
+        const pPath = path.join(dir, p);
+        if (fs.existsSync(pPath)) {
+          metadata.fanart_path = pPath;
+          break;
+        }
+      }
+      }
     }
 
-    console.log(`[Scanner] Scan completed. Added movies: ${result.addedMovies}, episodes: ${result.addedEpisodes}, tracks: ${result.addedTracks}. Errors: ${result.errors.length}`);
-    return result;
-  }
+    let tmdbRatings: any = null;
+    let tmdbCast: any = null;
 
-  /**
-   * Walk the directory tree recursively
-   */
-  private getAllFiles(dirPath: string, fileList: string[] = []): string[] {
-    const files = fs.readdirSync(dirPath);
-    for (const file of files) {
-      const filepath = path.join(dirPath, file);
-      const stat = fs.statSync(filepath);
-      if (stat.isDirectory()) {
-        this.getAllFiles(filepath, fileList);
-      } else {
-        fileList.push(filepath);
+    // 2. TMDB API Fetch (if preferLocalNfo is false, OR if local NFO is missing/incomplete)
+    if (!preferLocalNfo || (!hasLocalNfo && !metadata.plot)) {
+      const tmdbData = await tmdbService.searchMovie(metadata.title, metadata.year);
+      if (tmdbData) {
+        // TMDB overrides/complements
+        if (!metadata.plot && tmdbData.overview) metadata.plot = tmdbData.overview;
+        if (!metadata.year && tmdbData.release_date) metadata.year = parseInt(tmdbData.release_date.substring(0, 4), 10);
+        // Only use TMDB images if we didn't find local ones
+        if (!metadata.poster_path && tmdbData.poster_path) {
+          metadata.poster_path = tmdbService.getImageUrl(tmdbData.poster_path, 'w500');
+        }
+        if (!metadata.fanart_path && tmdbData.backdrop_path) {
+          metadata.fanart_path = tmdbService.getImageUrl(tmdbData.backdrop_path, 'original');
+        }
+        if (tmdbData.vote_average) {
+          tmdbRatings = { tmdb: tmdbData.vote_average };
+        }
+        if (tmdbData.credits && tmdbData.credits.cast) {
+          tmdbCast = tmdbData.credits.cast.slice(0, 15).map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            character: c.character,
+            profile_path: tmdbService.getImageUrl(c.profile_path, 'w500')
+          }));
+        }
       }
     }
-    return fileList;
-  }
 
-  /**
-   * Process a physical Movie file
-   */
-  private async processMovieFile(filePath: string, preferLocalNfo: boolean, result: ScanResult) {
-    try {
-      const fileName = path.basename(filePath, path.extname(filePath));
-      const fileDir = path.dirname(filePath);
-      
-      // Look for a movie .nfo file (e.g. filename.nfo or movie.nfo)
-      let nfoPath = path.join(fileDir, `${fileName}.nfo`);
-      if (!fs.existsSync(nfoPath)) {
-        nfoPath = path.join(fileDir, 'movie.nfo');
-      }
+    // Helper to upsert metadata
+    const upsertMetadata = (itemId: string, key: string, value: string) => {
+      // Check if locked first
+      const lock = db.prepare('SELECT is_locked FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?').get(itemId, key) as { is_locked: number } | undefined;
+      if (lock && lock.is_locked === 1) return;
 
-      let title = fileName;
-      let plot = '';
-      let tmdbId = '';
-      let imdbId = '';
-      let year = '';
-
-      const resolution = this.detectResolution(fileName);
-
-      if (preferLocalNfo && fs.existsSync(nfoPath)) {
-        const nfoContent = fs.readFileSync(nfoPath, 'utf8');
-        try {
-          const parsed = await this.parser.parseStringPromise(nfoContent);
-          if (parsed && parsed.movie) {
-            const m = parsed.movie;
-            title = m.title || title;
-            plot = m.plot || '';
-            tmdbId = m.tmdbid || '';
-            imdbId = m.imdbid || '';
-            year = m.year || '';
-          }
-        } catch (nfoErr) {
-          console.warn(`[Scanner] Error parsing NFO for ${fileName}:`, nfoErr);
-        }
-      } else {
-        // Fallback: parse title & year from name
-        const match = fileName.match(/^(.+?)(?:\s*\(?(\d{4})\)?)?$/);
-        if (match) {
-          title = match[1].trim();
-          year = match[2] || '';
-        }
-        
-        // Mock DB TMDB queries for 100% offgrid matching
-        tmdbId = `tmdb_${crypto.createHash('md5').update(title + year).digest('hex').substring(0, 8)}`;
-        imdbId = `tt_${crypto.createHash('md5').update(title + year).digest('hex').substring(0, 7)}`;
-        plot = `This is a locally matched movie titled "${title}" (${year}).`;
-      }
-
-      // Generate a unique ID based on file path to support multiple versions cleanly
-      const mediaId = 'movie_' + crypto.createHash('sha1').update(filePath).digest('hex').substring(0, 16);
-
-      // 1. Insert movie basic details
       db.prepare(`
-        INSERT OR REPLACE INTO media_items (id, title, type, tmdb_id, imdb_id, file_path, added_at)
-        VALUES (?, ?, 'Movie', ?, ?, ?, CURRENT_TIMESTAMP)
-      `).run(mediaId, title, tmdbId || null, imdbId || null, filePath);
+        INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+      `).run(uuidv4(), itemId, key, value);
+    };
 
-      // 2. Save metadata and handle admin locking
-      const metadata = {
-        title,
-        plot,
-        year,
-        resolution
-      };
-
-      for (const [key, value] of Object.entries(metadata)) {
-        if (!value) continue;
+    // 3. Insert or Update DB
+    try {
+      const existing = db.prepare('SELECT id FROM media_items WHERE file_path = ?').all(filePath) as { id: string }[];
+      
+      if (existing && existing.length > 0) {
+        const mediaId = existing[0].id;
         
-        // Check if metadata key is locked for this specific mediaId
-        const existingLock = db.prepare(`
-          SELECT is_locked FROM media_metadata 
-          WHERE media_item_id = ? AND metadata_key = ?
-        `).all(mediaId, key)[0] as { is_locked: number } | undefined;
+        // Fetch locks from media_metadata table
+        const locks = db.prepare('SELECT metadata_key FROM media_metadata WHERE media_item_id = ? AND is_locked = 1').all(mediaId) as { metadata_key: string }[];
+        const lockedKeys = locks.map(l => l.metadata_key);
 
-        if (existingLock && existingLock.is_locked === 1) {
-          console.log(`[Scanner] Key "${key}" is LOCKED for movie "${title}". Skipping overwrite.`);
-          continue;
+        // Build UPDATE query dynamically to respect locks
+        let updateFields = [];
+        let params = [];
+        
+        if (!lockedKeys.includes('title')) { updateFields.push('title = ?'); params.push(metadata.title); }
+        if (!lockedKeys.includes('plot')) { updateFields.push('plot = ?'); params.push(metadata.plot); }
+        if (!lockedKeys.includes('year')) { updateFields.push('year = ?'); params.push(metadata.year); }
+        if (!lockedKeys.includes('genre')) { updateFields.push('genre = ?'); params.push(metadata.genre); }
+        if (!lockedKeys.includes('poster_path')) { updateFields.push('poster_path = ?'); params.push(metadata.poster_path); }
+        if (!lockedKeys.includes('fanart_path')) { updateFields.push('fanart_path = ?'); params.push(metadata.fanart_path); }
+
+        if (updateFields.length > 0) {
+          params.push(filePath);
+          db.prepare(`
+            UPDATE media_items 
+            SET ${updateFields.join(', ')}
+            WHERE file_path = ?
+          `).run(...params);
+          
+          if (tmdbRatings) upsertMetadata(mediaId, 'ratings', JSON.stringify(tmdbRatings));
+          if (tmdbCast) upsertMetadata(mediaId, 'cast', JSON.stringify(tmdbCast));
+          
+          return 'updated';
         }
-
-        // Insert metadata
+        
+        if (tmdbRatings) upsertMetadata(mediaId, 'ratings', JSON.stringify(tmdbRatings));
+        if (tmdbCast) upsertMetadata(mediaId, 'cast', JSON.stringify(tmdbCast));
+        
+        return 'skipped';
+      } else {
+        // Insert new
+        const id = uuidv4();
         db.prepare(`
-          INSERT OR REPLACE INTO media_metadata (id, media_item_id, metadata_key, metadata_value, is_locked)
-          VALUES (?, ?, ?, ?, COALESCE((SELECT is_locked FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?), 0))
-        `).run(`${mediaId}_${key}`, mediaId, key, value, mediaId, key);
+          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, file_path)
+          VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?)
+        `).run(id, metadata.title, metadata.plot, metadata.year, metadata.genre, metadata.poster_path, metadata.fanart_path, filePath);
+        
+        if (tmdbRatings) upsertMetadata(id, 'ratings', JSON.stringify(tmdbRatings));
+        if (tmdbCast) upsertMetadata(id, 'cast', JSON.stringify(tmdbCast));
+        
+        return 'added';
       }
-
-      result.addedMovies++;
-    } catch (err: any) {
-      console.error(`[Scanner] Error processing movie: ${filePath}`, err);
-      result.errors.push(`Movie file "${filePath}": ${err.message || String(err)}`);
+    } catch (e) {
+      console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
+      return 'skipped';
     }
   }
 
   /**
-   * Process a physical Show Episode file (e.g. S01E01)
+   * Helper to extract a clean title from a typical piracy filename like "The.Matrix.1999.1080p.mkv"
    */
-  private async processShowEpisodeFile(filePath: string, preferLocalNfo: boolean, result: ScanResult) {
+  private parseTitleFromFilename(filename: string): string {
+    // Remove year and anything after it
+    let title = filename.replace(/\.(19|20)\d{2}\..*/i, '');
+    // Remove common quality tags
+    title = title.replace(/\b(1080p|720p|2160p|4k|bluray|webrip|x264|x265)\b.*/i, '');
+    // Replace dots with spaces
+    title = title.replace(/\./g, ' ');
+    return title.trim();
+  }
+
+  /**
+   * Helper to extract year from filename
+   */
+  private parseYearFromFilename(filename: string): number | null {
+    const match = filename.match(/\b(19|20)\d{2}\b/);
+    if (match) {
+      return parseInt(match[0], 10);
+    }
+    return null;
+  }
+
+  /**
+   * Extremely simple XML parser to extract basic NFO tags
+   */
+  private parseNfo(nfoPath: string): Partial<any> {
     try {
-      const fileName = path.basename(filePath, path.extname(filePath));
-      const fileDir = path.dirname(filePath);
-      
-      // Basic naming parse, e.g. "Game of Thrones - S01E03 - Lord Snow" or "S01E03"
-      const epMatch = fileName.match(/S(\d+)E(\d+)/i);
-      if (!epMatch) {
-        // Skip files that don't look like episodes to keep DB clean
-        return;
-      }
-      
-      const seasonNum = parseInt(epMatch[1]);
-      const episodeNum = parseInt(epMatch[2]);
-      
-      // Parse show title from directory name or parent directory
-      const showDirName = path.basename(path.resolve(fileDir, '..'));
-      let showTitle = showDirName;
-      
-      // Clean up show title from naming noise
-      showTitle = showTitle.replace(/\(\d{4}\)/g, '').trim();
+      const content = fs.readFileSync(nfoPath, 'utf-8');
+      const result: any = {};
 
-      const showId = 'show_' + crypto.createHash('sha1').update(showTitle).digest('hex').substring(0, 16);
+      const titleMatch = content.match(/<title>(.*?)<\/title>/i);
+      if (titleMatch) result.title = titleMatch[1].trim();
 
-      // Ensure the Show exists in media_items
-      db.prepare(`
-        INSERT OR IGNORE INTO media_items (id, title, type, added_at)
-        VALUES (?, ?, 'Show', CURRENT_TIMESTAMP)
-      `).run(showId, showTitle);
+      const plotMatch = content.match(/<plot>(.*?)<\/plot>/is);
+      if (plotMatch) result.plot = plotMatch[1].trim();
 
-      // Generate a unique ID for episode based on path
-      const episodeId = 'episode_' + crypto.createHash('sha1').update(filePath).digest('hex').substring(0, 16);
-      
-      let epTitle = `Episode ${episodeNum}`;
+      const yearMatch = content.match(/<year>(\d{4})<\/year>/i);
+      if (yearMatch) result.year = parseInt(yearMatch[1], 10);
 
-      // If NFO parsing is preferred
-      const nfoPath = path.join(fileDir, `${fileName}.nfo`);
-      if (preferLocalNfo && fs.existsSync(nfoPath)) {
-        try {
-          const nfoContent = fs.readFileSync(nfoPath, 'utf8');
-          const parsed = await this.parser.parseStringPromise(nfoContent);
-          if (parsed && parsed.episodedetails) {
-            epTitle = parsed.episodedetails.title || epTitle;
-          }
-        } catch (err) {
-          console.warn(`[Scanner] Error parsing Episode NFO for ${fileName}:`, err);
+      const genreMatch = content.match(/<genre>(.*?)<\/genre>/i);
+      if (genreMatch) result.genre = genreMatch[1].trim();
+
+      return result;
+    } catch (e) {
+      console.error(`[Scanner] Failed to parse NFO ${nfoPath}:`, e);
+      return {};
+    }
+  }
+
+  /**
+   * Recursively get all files in a directory
+   */
+  private getAllFiles(dirPath: string, arrayOfFiles: string[] = []): string[] {
+    try {
+      const files = fs.readdirSync(dirPath);
+
+      files.forEach((file) => {
+        const fullPath = path.join(dirPath, file);
+        if (fs.statSync(fullPath).isDirectory()) {
+          arrayOfFiles = this.getAllFiles(fullPath, arrayOfFiles);
+        } else {
+          arrayOfFiles.push(fullPath);
         }
-      }
-
-      // Insert episode
-      db.prepare(`
-        INSERT OR REPLACE INTO episodes (id, show_id, season_number, episode_number, title, file_path)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(episodeId, showId, seasonNum, episodeNum, epTitle, filePath);
-
-      // Auto-extract and register standard chapter-based intro marker if it exists or mock one
-      // In real-world, chapter info or a visual tool would generate these
-      db.prepare(`
-        INSERT OR IGNORE INTO episode_markers (id, episode_id, marker_type, start_time_seconds, end_time_seconds)
-        VALUES (?, ?, 'INTRO', 0, 90)
-      `).run(`${episodeId}_intro`, episodeId);
-
-      result.addedEpisodes++;
-    } catch (err: any) {
-      console.error(`[Scanner] Error processing show episode: ${filePath}`, err);
-      result.errors.push(`Episode file "${filePath}": ${err.message || String(err)}`);
+      });
+    } catch (e) {
+      console.error(`[Scanner] Error reading directory ${dirPath}:`, e);
     }
-  }
 
-  /**
-   * Process a Music Track
-   */
-  private async processMusicFile(filePath: string, result: ScanResult) {
-    try {
-      const fileName = path.basename(filePath, path.extname(filePath));
-      
-      // Parse file naming for offgrid MP3 scanning: "01 - Title" or "Artist - Title"
-      let title = fileName;
-      let artist = 'Unknown Artist';
-      let album = 'Unknown Album';
-      let trackNumber = 1;
-
-      // Try matching standard "01 - Title" or "01. Title"
-      const trackMatch = fileName.match(/^(\d+)[\s.-]+(.+)$/);
-      if (trackMatch) {
-        trackNumber = parseInt(trackMatch[1]);
-        title = trackMatch[2].trim();
-      }
-
-      // Read parent directory for artist and album structure
-      // e.g. /Music/ArtistName/AlbumName/01 - Track.mp3
-      const parentDir = path.dirname(filePath);
-      const parentDirName = path.basename(parentDir);
-      const grandParentDirName = path.basename(path.dirname(parentDir));
-
-      if (grandParentDirName && grandParentDirName !== 'Music' && grandParentDirName !== '.') {
-        artist = grandParentDirName;
-        album = parentDirName;
-      } else {
-        album = parentDirName;
-      }
-
-      const trackId = 'track_' + crypto.createHash('sha1').update(filePath).digest('hex').substring(0, 16);
-
-      db.prepare(`
-        INSERT OR REPLACE INTO music_tracks (id, title, artist, album, file_path, track_number, duration_seconds)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(trackId, title, artist, album, filePath, trackNumber, 240); // default mock 4-minute duration
-
-      result.addedTracks++;
-    } catch (err: any) {
-      console.error(`[Scanner] Error processing music track: ${filePath}`, err);
-      result.errors.push(`Music file "${filePath}": ${err.message || String(err)}`);
-    }
-  }
-
-  /**
-   * Detects video resolution tags in filenames (e.g. 4K, 2160p, 1080p, 720p)
-   */
-  private detectResolution(fileName: string): string {
-    const lowerName = fileName.toLowerCase();
-    if (lowerName.includes('2160p') || lowerName.includes('4k') || lowerName.includes('uhd')) {
-      return '4K';
-    }
-    if (lowerName.includes('1080p') || lowerName.includes('fhd')) {
-      return '1080p';
-    }
-    if (lowerName.includes('720p') || lowerName.includes('hd')) {
-      return '720p';
-    }
-    return '1080p'; // Default fallback badge
+    return arrayOfFiles;
   }
 }
 
-export const mediaScanner = new MediaScanner();
+export const mediaScanner = new ScannerService();

@@ -140,16 +140,54 @@ class ApiService {
     }
   }
 
+  /// Authenticated: Fetch Global Settings
+  Future<Map<String, dynamic>> getSettings() async {
+    if (_token == null) {
+      throw Exception('Not authenticated');
+    }
+    
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/settings'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to get settings: ${response.body}');
+    }
+  }
+
+  Future<void> updateSettings(Map<String, String> newSettings) async {
+    if (_token == null) {
+      throw Exception('Not authenticated');
+    }
+    
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/settings'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(newSettings),
+    );
+    
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update settings: ${response.body}');
+    }
+  }
+
   /// Authenticated: Fetch movies library
   Future<List<dynamic>> fetchMovies({bool mergeVersions = true}) async {
     if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
+      throw Exception('Not authenticated');
     }
 
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/movies?mergeVersions=$mergeVersions'),
       headers: {
-        'Content-Type': 'application/json',
         'Authorization': 'Bearer $_token',
       },
     );
@@ -157,7 +195,26 @@ class ApiService {
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
     } else {
-      throw Exception('Failed to fetch movies: ${response.body}');
+      throw Exception('Failed to load movies: ${response.statusCode}');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchMediaDetails(String id) async {
+    if (_token == null) {
+      throw Exception('Not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/items/$id'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to load media details: ${response.statusCode}');
     }
   }
 

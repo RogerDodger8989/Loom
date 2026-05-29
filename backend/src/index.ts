@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv';
 import authRoutes from './routes/auth';
 import libraryRoutes from './routes/library';
 import mediaRoutes from './routes/media';
+import settingsRoutes from './routes/settings';
 import db from './config/database'; // Import ensures database gets initialized and seeded on boot
 
 // Load environment variables
@@ -51,6 +52,7 @@ app.get('/', async () => {
 app.register(authRoutes);
 app.register(libraryRoutes);
 app.register(mediaRoutes);
+app.register(settingsRoutes);
 
 // Global Error Handler
 app.setErrorHandler((error, request, reply) => {

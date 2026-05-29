@@ -57,9 +57,10 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
           lastScanResult = {
             success: true,
             timestamp: new Date().toISOString(),
-            ...result
+            itemsAdded: result.added,
+            itemsUpdated: result.updated
           };
-          console.log(`[Library] Background scan finished successfully.`);
+          console.log(`[Library] Background scan finished successfully. Added: ${result.added}, Updated: ${result.updated}`);
         })
         .catch((err) => {
           isScanning = false;

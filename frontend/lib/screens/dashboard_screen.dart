@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/api.dart';
 import 'pairing_screen.dart';
+import 'media_details_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
@@ -20,17 +21,24 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String? _mediaError;
 
   // Scanner form state
-  final TextEditingController _pathController = TextEditingController(text: 'C:\\Media\\Movies');
+  final TextEditingController _pathController = TextEditingController();
   final String _selectedScanType = 'Movie';
   bool _isScanning = false;
   bool _preferLocalNfo = true;
   bool _isBrowsingDirectory = false;
   String _scanStatusText = 'Idle';
   Map<String, dynamic>? _lastScanResult;
-  List<dynamic> _libraryPaths = [];
   
+  List<dynamic> _libraryPaths = [];
   List<dynamic> _trustedDevices = [];
   bool _isLoadingDevices = false;
+
+  // Settings
+  final TextEditingController _tmdbKeyController = TextEditingController();
+  final TextEditingController _omdbKeyController = TextEditingController();
+  final TextEditingController _simklKeyController = TextEditingController();
+  final TextEditingController _defaultSubLangController = TextEditingController(text: 'sv');
+  bool _isLoadingSettings = false;
 
   @override
   void initState() {

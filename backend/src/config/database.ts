@@ -53,11 +53,17 @@ db.exec(`
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       type TEXT CHECK(type IN ('Movie', 'Show')) NOT NULL,
+      year INTEGER,
+      plot TEXT,
+      genre TEXT,
+      poster_path TEXT,
+      fanart_path TEXT,
       tmdb_id TEXT,
       imdb_id TEXT,
       file_path TEXT,
       added_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+  
 
   CREATE TABLE IF NOT EXISTS episodes (
       id TEXT PRIMARY KEY,
@@ -115,6 +121,12 @@ db.exec(`
       track_id TEXT REFERENCES music_tracks(id) ON DELETE CASCADE,
       listened_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- Globala systeminställningar (TMDB API Key etc)
+  CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+  );
 `);
 
 console.log('[Database] Database tables initialized successfully.');
@@ -144,5 +156,22 @@ function seedAdmin() {
 }
 
 seedAdmin();
+
+// Handle ALTER TABLE errors safely by swallowing them if columns already exist
+const columnsToAdd = [
+  'year INTEGER',
+  'plot TEXT',
+  'genre TEXT',
+  'poster_path TEXT',
+  'fanart_path TEXT'
+];
+
+for (const col of columnsToAdd) {
+  try {
+    db.exec(`ALTER TABLE media_items ADD COLUMN ${col};`);
+  } catch (e) {
+    // Ignorera fel om kolumnen redan finns
+  }
+}
 
 export default db;
