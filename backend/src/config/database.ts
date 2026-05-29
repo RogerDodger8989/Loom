@@ -41,6 +41,13 @@ db.exec(`
       restriction_value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS library_paths (
+      id TEXT PRIMARY KEY,
+      path TEXT UNIQUE NOT NULL,
+      type TEXT CHECK(type IN ('Movie', 'Show', 'Music')) NOT NULL,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Mediekärna (Film & Serie)
   CREATE TABLE IF NOT EXISTS media_items (
       id TEXT PRIMARY KEY,

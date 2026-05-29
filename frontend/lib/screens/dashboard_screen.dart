@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api.dart';
+import 'pairing_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
@@ -20,17 +21,30 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   // Scanner form state
   final TextEditingController _pathController = TextEditingController(text: 'C:\\Media\\Movies');
-  String _selectedScanType = 'Movie';
+  final String _selectedScanType = 'Movie';
   bool _isScanning = false;
+  bool _preferLocalNfo = true;
+  bool _isBrowsingDirectory = false;
   String _scanStatusText = 'Idle';
   Map<String, dynamic>? _lastScanResult;
+  List<dynamic> _libraryPaths = [];
+  
+  List<dynamic> _trustedDevices = [];
+  bool _isLoadingDevices = false;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.index == 3 && !_isLoadingDevices) {
+        _loadDevices();
+      }
+    });
     _loadAllMedia();
     _checkScannerStatus();
+    _loadLibraryPaths();
+    _loadDevices();
   }
 
   @override
@@ -63,6 +77,202 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     }
   }
 
+  Future<void> _loadLibraryPaths() async {
+    try {
+      final paths = await widget.apiService.fetchLibraryPaths();
+      setState(() {
+        _libraryPaths = paths;
+      });
+    } catch (e) {
+      debugPrint('Error loading library paths: $e');
+    }
+  }
+
+  Future<void> _addNewPath(String folderPath, String type) async {
+    try {
+      await widget.apiService.addLibraryPath(folderPath, type);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Added path: "$folderPath" to ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}'),
+          backgroundColor: const Color(0xFF8A5BFF),
+        ),
+      );
+      _loadLibraryPaths();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to add path: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  Future<void> _deletePath(String id) async {
+    try {
+      await widget.apiService.deleteLibraryPath(id);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Removed path successfully'),
+          backgroundColor: Color(0xFF8A5BFF),
+        ),
+      );
+      _loadLibraryPaths();
+      _loadAllMedia(); // Reload movies/shows in UI!
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to remove path: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  Future<void> _updatePath(String id, String newPath) async {
+    try {
+      final res = await widget.apiService.updateLibraryPath(id, newPath);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Updated path! Bulk modified ${res['updatedCount'] ?? 0} file paths in DB.'),
+          backgroundColor: const Color(0xFF8A5BFF),
+        ),
+      );
+      _loadLibraryPaths();
+      _loadAllMedia(); // Reload movies/shows in UI!
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update path: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  Future<void> _showEditPathDialog(dynamic pathItem) async {
+    final id = pathItem['id'];
+    final oldPath = pathItem['path'];
+    final type = pathItem['type'];
+    
+    final editController = TextEditingController(text: oldPath);
+    bool isDialogBrowsing = false;
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF15102A),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              title: Text('Edit ${type == 'Show' ? 'TV Show' : type == 'Movie' ? 'Movie' : 'Music'} Folder'),
+              content: SizedBox(
+                width: 500,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Editing this path will update all matching files in your database to the new path prefix.',
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13.5, height: 1.4),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: editController,
+                            style: const TextStyle(color: Colors.white, fontSize: 15),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: Colors.black.withValues(alpha: 0.3),
+                              hintText: 'Enter new path or click Browse...',
+                              hintStyle: const TextStyle(color: Colors.white24),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: Color(0xFF8A5BFF), width: 1.5),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        SizedBox(
+                          height: 56,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white.withValues(alpha: 0.04),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+                              ),
+                            ),
+                            onPressed: isDialogBrowsing ? null : () async {
+                              setDialogState(() {
+                                isDialogBrowsing = true;
+                              });
+                              try {
+                                final result = await widget.apiService.browseNativeDirectory();
+                                if (result['path'] != null) {
+                                  editController.text = result['path'];
+                                }
+                              } catch (e) {
+                                debugPrint(e.toString());
+                              } finally {
+                                setDialogState(() {
+                                  isDialogBrowsing = false;
+                                });
+                              }
+                            },
+                            icon: isDialogBrowsing
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation(Colors.white),
+                                    ),
+                                  )
+                                : const Icon(Icons.folder_open_outlined, color: Color(0xFFB593FF)),
+                            label: const Text('Browse...'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF8A5BFF),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () async {
+                    final newPath = editController.text.trim();
+                    if (newPath.isNotEmpty) {
+                      Navigator.of(context).pop();
+                      await _updatePath(id, newPath);
+                    }
+                  },
+                  child: const Text('Save Changes'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _checkScannerStatus() async {
     try {
       final status = await widget.apiService.getLibraryStatus();
@@ -73,6 +283,41 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       });
     } catch (e) {
       debugPrint('Error checking scanner status: $e');
+    }
+  }
+
+  Future<void> _selectFolderNatively() async {
+    setState(() {
+      _isBrowsingDirectory = true;
+    });
+
+    try {
+      final result = await widget.apiService.browseNativeDirectory();
+      setState(() {
+        _isBrowsingDirectory = false;
+      });
+
+      if (result['path'] != null) {
+        setState(() {
+          _pathController.text = result['path'];
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Selected folder: ${result['path']}'),
+            backgroundColor: const Color(0xFF8A5BFF),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _isBrowsingDirectory = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to open native folder browser: $e'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
     }
   }
 
@@ -91,7 +336,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     });
 
     try {
-      final response = await widget.apiService.triggerLibraryScan(path, _selectedScanType);
+      final response = await widget.apiService.triggerLibraryScan(
+        path, 
+        _selectedScanType,
+        preferLocalNfo: _preferLocalNfo,
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(response['message'] ?? 'Scan started successfully!'),
@@ -166,6 +415,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             _buildMoviesView(),
                             _buildShowsView(),
                             _buildScannerView(),
+                            _buildSettingsView(),
                           ],
                         ),
                       ),
@@ -184,9 +434,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     return Container(
       width: 280,
       decoration: BoxDecoration(
-        color: const Color(0xFF0F0B21).withOpacity(0.6),
+        color: const Color(0xFF0F0B21).withValues(alpha: 0.6),
         border: Border(
-          right: BorderSide(color: Colors.white.withOpacity(0.06), width: 1.5),
+          right: BorderSide(color: Colors.white.withValues(alpha: 0.06), width: 1.5),
         ),
       ),
       child: Column(
@@ -202,7 +452,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF8A5BFF).withOpacity(0.15),
+                    color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: const Icon(
@@ -231,6 +481,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           _buildSidebarItem(0, Icons.movie_outlined, Icons.movie, 'Movies'),
           _buildSidebarItem(1, Icons.tv_outlined, Icons.tv, 'TV Shows'),
           _buildSidebarItem(2, Icons.scanner_outlined, Icons.scanner, 'Library Scanner'),
+          _buildSidebarItem(3, Icons.settings_outlined, Icons.settings, 'Settings'),
           
           const Spacer(),
           
@@ -257,10 +508,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           decoration: BoxDecoration(
-            color: isSelected ? const Color(0xFF8A5BFF).withOpacity(0.12) : Colors.transparent,
+            color: isSelected ? const Color(0xFF8A5BFF).withValues(alpha: 0.12) : Colors.transparent,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isSelected ? const Color(0xFF8A5BFF).withOpacity(0.2) : Colors.transparent,
+              color: isSelected ? const Color(0xFF8A5BFF).withValues(alpha: 0.2) : Colors.transparent,
               width: 1,
             ),
           ),
@@ -292,9 +543,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       margin: const EdgeInsets.symmetric(horizontal: 20),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
+        color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Row(
         children: [
@@ -303,7 +554,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             radius: 20,
             child: Text(
               'A',
-              style: TextStyle(color: Colors.white.withOpacity(0.9), fontWeight: FontWeight.bold),
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(width: 14),
@@ -318,7 +569,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 ),
                 Text(
                   'Server Owner',
-                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12),
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
                 ),
               ],
             ),
@@ -326,6 +577,22 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         ],
       ),
     );
+  }
+
+  Future<void> _handleLogout() async {
+    try {
+      final deviceId = widget.apiService.getOrCreateDeviceId();
+      await widget.apiService.unpairDevice(deviceId);
+    } catch (e) {
+      debugPrint('Error unpairing device on server during logout: $e');
+    }
+
+    widget.apiService.clearToken();
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const PairingScreen()),
+      );
+    }
   }
 
   Widget _buildHeader() {
@@ -340,7 +607,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   ? 'Movies' 
                   : _tabController.index == 1 
                       ? 'TV Shows' 
-                      : 'Server Control Panel',
+                      : _tabController.index == 2
+                          ? 'Library Scanner'
+                          : 'Settings',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 32,
@@ -352,8 +621,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             Text(
               _tabController.index == 2 
                   ? 'Manage media scan routes and server settings'
-                  : 'Manage and stream your media collection',
-              style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 15),
+                  : _tabController.index == 3
+                      ? 'Manage trusted devices and server preferences'
+                      : 'Manage and stream your media collection',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
             ),
           ],
         ),
@@ -366,9 +637,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 margin: const EdgeInsets.only(right: 15),
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF59E0B).withOpacity(0.12),
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.3)),
+                  border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.3)),
                 ),
                 child: const Row(
                   children: [
@@ -470,9 +741,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
+        color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -487,8 +758,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: [
-                    const Color(0xFF8A5BFF).withOpacity(0.1),
-                    const Color(0xFF8A5BFF).withOpacity(0.25),
+                    const Color(0xFF8A5BFF).withValues(alpha: 0.1),
+                    const Color(0xFF8A5BFF).withValues(alpha: 0.25),
                   ],
                 ),
               ),
@@ -514,7 +785,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           borderRadius: BorderRadius.circular(6),
                           boxShadow: [
                             BoxShadow(
-                              color: const Color(0xFF8A5BFF).withOpacity(0.3),
+                              color: const Color(0xFF8A5BFF).withValues(alpha: 0.3),
                               blurRadius: 6,
                             )
                           ],
@@ -557,7 +828,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     Text(
                       genre,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.35),
+                        color: Colors.white.withValues(alpha: 0.35),
                         fontSize: 12,
                       ),
                     ),
@@ -566,7 +837,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         ? (versionsCount > 1 ? '$versionsCount versions' : 'Movie')
                         : '$episodesCount eps',
                       style: TextStyle(
-                        color: const Color(0xFFB593FF).withOpacity(0.8),
+                        color: const Color(0xFFB593FF).withValues(alpha: 0.8),
                         fontSize: 12,
                         fontWeight: FontWeight.w500,
                       ),
@@ -589,9 +860,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           Container(
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.02),
+              color: Colors.white.withValues(alpha: 0.02),
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.white.withOpacity(0.04)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
             ),
             child: const Icon(
               Icons.inbox_outlined,
@@ -612,7 +883,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           Text(
             subtitle,
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               color: Colors.white30,
               fontSize: 14,
             ),
@@ -654,7 +925,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           const SizedBox(height: 8),
           Text(
             error,
-            style: TextStyle(color: Colors.white30, fontSize: 14),
+            style: const TextStyle(color: Colors.white30, fontSize: 14),
           ),
           const SizedBox(height: 24),
           ElevatedButton(
@@ -667,283 +938,534 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildScannerView() {
-    return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.only(top: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Instructions
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFF8A5BFF).withOpacity(0.08),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF8A5BFF).withOpacity(0.15)),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.info_outline, color: Color(0xFFB593FF)),
-                  SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      'Use this control to scanner folder routes on your server. Loom will scan the directories, match files with metadata providers, and update your libraries automatically.',
-                      style: TextStyle(color: Color(0xFFD4C4FF), height: 1.4, fontSize: 14.5),
-                    ),
-                  ),
-                ],
-              ),
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Sub-navigation TabBar
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.01),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
             ),
-            
-            const SizedBox(height: 35),
-            
-            // Scanner Configuration Form
-            Container(
-              padding: const EdgeInsets.all(30),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.02),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withOpacity(0.05)),
+            child: TabBar(
+              indicatorColor: const Color(0xFF8A5BFF),
+              labelColor: Colors.white,
+              unselectedLabelColor: Colors.white38,
+              indicatorSize: TabBarIndicatorSize.tab,
+              indicator: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                color: const Color(0xFF8A5BFF).withValues(alpha: 0.12),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Trigger Background Directory Scan',
-                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 25),
-                  
-                  // Media Type Dropdown
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
+              tabs: const [
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const SizedBox(
-                        width: 150,
-                        child: Text(
-                          'Library Type:',
-                          style: TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.4),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white.withOpacity(0.1)),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _selectedScanType,
-                              dropdownColor: const Color(0xFF0F0B21),
-                              icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
-                              items: ['Movie', 'Show', 'Music']
-                                  .map((type) => DropdownMenuItem(
-                                        value: type,
-                                        child: Text(
-                                          type == 'Show' ? 'TV Shows' : type,
-                                          style: const TextStyle(color: Colors.white, fontSize: 15),
-                                        ),
-                                      ))
-                                  .toList(),
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setState(() {
-                                    _selectedScanType = val;
-                                    if (val == 'Movie') {
-                                      _pathController.text = 'C:\\Media\\Movies';
-                                    } else if (val == 'Show') {
-                                      _pathController.text = 'C:\\Media\\TV Shows';
-                                    } else {
-                                      _pathController.text = 'C:\\Media\\Music';
-                                    }
-                                  });
-                                }
-                              },
-                            ),
-                          ),
-                        ),
-                      ),
+                      Icon(Icons.movie_outlined, size: 18),
+                      SizedBox(width: 8),
+                      Text('Movies', style: TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
-                  
-                  const SizedBox(height: 20),
-                  
-                  // Directory Path Input
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
+                ),
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const SizedBox(
-                        width: 150,
-                        child: Text(
-                          'Folder Path:',
-                          style: TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      Expanded(
-                        child: TextField(
-                          controller: _pathController,
-                          style: const TextStyle(color: Colors.white, fontSize: 15),
-                          decoration: InputDecoration(
-                            filled: true,
-                            fillColor: Colors.black.withOpacity(0.4),
-                            hintText: 'Enter absolute path (e.g. C:\\Movies)',
-                            hintStyle: const TextStyle(color: Colors.white24),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: const BorderSide(color: Color(0xFF8A5BFF), width: 1.5),
-                            ),
-                          ),
-                        ),
-                      ),
+                      Icon(Icons.tv_outlined, size: 18),
+                      SizedBox(width: 8),
+                      Text('TV Shows', style: TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
-                  
-                  const SizedBox(height: 35),
-                  
-                  // Action buttons
-                  SizedBox(
-                    width: double.infinity,
-                    height: 56,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF8A5BFF),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 0,
-                      ),
-                      onPressed: _isScanning ? null : _triggerScan,
-                      icon: _isScanning
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)),
-                            )
-                          : const Icon(Icons.play_arrow),
-                      label: Text(
-                        _isScanning ? 'Scan in Progress...' : 'Start Directory Scan',
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            
-            const SizedBox(height: 30),
-            
-            // Scanner Status / Log Card
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(25),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.01),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withOpacity(0.04)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                ),
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Text(
-                        'Scanner Status',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: _isScanning 
-                              ? const Color(0xFFF59E0B).withOpacity(0.12)
-                              : Colors.green.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          _scanStatusText.toUpperCase(),
-                          style: TextStyle(
-                            color: _isScanning ? const Color(0xFFF59E0B) : Colors.green,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
+                      Icon(Icons.music_note_outlined, size: 18),
+                      SizedBox(width: 8),
+                      Text('Music', style: TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
-                  const SizedBox(height: 20),
-                  const Divider(color: Colors.white10),
-                  const SizedBox(height: 15),
-                  
-                  if (_lastScanResult != null) ...[
-                    _buildStatusRow('Last Scan Completed:', _lastScanResult!['timestamp'] ?? 'Never'),
-                    _buildStatusRow('Scan Result:', _lastScanResult!['success'] == true ? 'Success' : 'Failed', isSuccess: _lastScanResult!['success'] == true),
-                    if (_lastScanResult!['scannedFiles'] != null)
-                      _buildStatusRow('Files Scanned:', _lastScanResult!['scannedFiles'].toString()),
-                    if (_lastScanResult!['newMovies'] != null)
-                      _buildStatusRow('New Movies Added:', _lastScanResult!['newMovies'].toString()),
-                    if (_lastScanResult!['newEpisodes'] != null)
-                      _buildStatusRow('New Episodes Added:', _lastScanResult!['newEpisodes'].toString()),
-                    if (_lastScanResult!['error'] != null)
-                      _buildStatusRow('Details/Errors:', _lastScanResult!['error'], isError: true),
-                  ] else ...[
-                    const Center(
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(vertical: 20),
-                        child: Text(
-                          'No prior scan results recorded in this server session',
-                          style: TextStyle(color: Colors.white24, fontSize: 14),
-                        ),
-                      ),
-                    ),
-                  ]
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+          
+          const SizedBox(height: 25),
+          
+          // Tab views
+          Expanded(
+            child: TabBarView(
+              children: [
+                _buildScannerSubTab('Movie'),
+                _buildScannerSubTab('Show'),
+                _buildScannerSubTab('Music'),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildStatusRow(String label, String value, {bool? isSuccess, bool isError = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 220,
-            child: Text(
-              label,
-              style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 14),
+  Widget _buildScannerSubTab(String type) {
+    final pathsOfType = _libraryPaths.where((p) => p['type'] == type).toList();
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Section: Configured Folders
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Configured ${type == 'Show' ? 'TV Show' : type == 'Movie' ? 'Movie' : 'Music'} Folders',
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            if (pathsOfType.isNotEmpty && _isScanning)
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))),
+              ),
+          ],
+        ),
+        const SizedBox(height: 15),
+        
+        if (pathsOfType.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.01),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+            ),
+            child: Center(
+              child: Text(
+                'No folders added yet for ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}.',
+                style: const TextStyle(color: Colors.white24, fontSize: 14),
+              ),
+            ),
+          )
+        else
+          Expanded(
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: pathsOfType.length,
+              itemBuilder: (context, index) {
+                final pathItem = pathsOfType[index];
+                return _buildFolderListItem(pathItem);
+              },
             ),
           ),
+          
+        const SizedBox(height: 25),
+        const Divider(color: Colors.white10),
+        const SizedBox(height: 20),
+        
+        // Section: Add Folder Form
+        Text(
+          'Add ${type == 'Show' ? 'TV Show' : type == 'Movie' ? 'Movie' : 'Music'} Folder',
+          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 15),
+        
+        _buildAddFolderForm(type),
+        
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  Widget _buildFolderListItem(dynamic pathItem) {
+    final id = pathItem['id'];
+    final folderPath = pathItem['path'];
+    final type = pathItem['type'];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.02),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.folder_outlined, color: const Color(0xFFB593FF).withValues(alpha: 0.8), size: 24),
+          const SizedBox(width: 16),
           Expanded(
             child: Text(
-              value,
-              style: TextStyle(
-                color: isSuccess != null 
-                    ? (isSuccess ? Colors.green : Colors.redAccent)
-                    : isError ? Colors.redAccent : Colors.white70,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
+              folderPath,
+              style: const TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.w500),
+            ),
+          ),
+          
+          // Action: Edit path
+          IconButton(
+            onPressed: () => _showEditPathDialog(pathItem),
+            icon: const Icon(Icons.edit_outlined, color: Colors.blueAccent),
+            tooltip: 'Edit Folder Path',
+          ),
+          
+          // Action: Scan folder
+          IconButton(
+            onPressed: _isScanning 
+              ? null 
+              : () => _triggerScanOfSpecificPath(folderPath, type),
+            icon: const Icon(Icons.sync_outlined, color: Colors.greenAccent),
+            tooltip: 'Scan Folder Now',
+          ),
+          
+          // Action: Remove path
+          IconButton(
+            onPressed: () => _deletePath(id),
+            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+            tooltip: 'Remove Folder',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _triggerScanOfSpecificPath(String folderPath, String type) async {
+    setState(() {
+      _isScanning = true;
+      _scanStatusText = 'Scanning $type...';
+    });
+
+    try {
+      final response = await widget.apiService.triggerLibraryScan(
+        folderPath, 
+        type,
+        preferLocalNfo: _preferLocalNfo,
+      );
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(response['message'] ?? 'Scan started successfully!'),
+          backgroundColor: const Color(0xFF8A5BFF),
+        ),
+      );
+      
+      _pollScannerUntilFinished();
+    } catch (e) {
+      setState(() {
+        _isScanning = false;
+        _scanStatusText = 'Error';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to trigger scan: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  Widget _buildAddFolderForm(String type) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.01),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _pathController,
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                  decoration: InputDecoration(
+                    filled: true,
+                    fillColor: Colors.black.withValues(alpha: 0.3),
+                    hintText: 'Enter path or click Browse...',
+                    hintStyle: const TextStyle(color: Colors.white24),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFF8A5BFF), width: 1.5),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 15),
+              SizedBox(
+                height: 56,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: 0.04),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+                    ),
+                  ),
+                  onPressed: _isBrowsingDirectory ? null : _selectFolderNatively,
+                  icon: _isBrowsingDirectory
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)),
+                        )
+                      : const Icon(Icons.folder_open_outlined, color: Color(0xFFB593FF)),
+                  label: const Text('Browse...'),
+                ),
+              ),
+            ],
+          ),
+          
+          const SizedBox(height: 15),
+          
+          // Switch Row for Local NFO
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.03)),
+            ),
+            child: SwitchListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              title: const Text(
+                'Prefer local NFO metadata',
+                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+              ),
+              subtitle: Text(
+                'Import titles and details from local .nfo files instead of fetching online.',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11.5),
+              ),
+              value: _preferLocalNfo,
+              activeThumbColor: const Color(0xFF8A5BFF),
+              activeTrackColor: const Color(0xFF8A5BFF).withValues(alpha: 0.25),
+              onChanged: (bool val) {
+                setState(() {
+                  _preferLocalNfo = val;
+                });
+              },
+            ),
+          ),
+          
+          const SizedBox(height: 20),
+          
+          // Add button
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF8A5BFF),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              onPressed: () {
+                final folder = _pathController.text.trim();
+                if (folder.isNotEmpty) {
+                  _addNewPath(folder, type);
+                  _pathController.clear();
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Please select or enter a folder path')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.add),
+              label: Text(
+                'Add Folder to ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _loadDevices() async {
+    setState(() => _isLoadingDevices = true);
+    try {
+      final devices = await widget.apiService.fetchDevices();
+      setState(() => _trustedDevices = devices);
+    } catch (e) {
+      debugPrint('Failed to load devices: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingDevices = false);
+    }
+  }
+
+  Future<void> _renameDevice(String deviceId, String currentName) async {
+    final TextEditingController controller = TextEditingController(text: currentName);
+    final String? newName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF15102A),
+        title: const Text('Rename Device', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Device name',
+            hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
+            enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+            focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF8A5BFF))),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Save', style: TextStyle(color: Color(0xFF8A5BFF))),
+          ),
+        ],
+      ),
+    );
+
+    if (newName != null && newName.isNotEmpty && newName != currentName) {
+      try {
+        await widget.apiService.renameDevice(deviceId, newName);
+        _loadDevices();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to rename: $e')));
+        }
+      }
+    }
+  }
+
+  Future<void> _removeDevice(String deviceId) async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF15102A),
+        title: const Text('Remove Device?', style: TextStyle(color: Colors.white)),
+        content: const Text('Are you sure you want to remove this device? It will need to be paired again to access the server.', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await widget.apiService.removeDevice(deviceId);
+        
+        final currentDeviceId = widget.apiService.getOrCreateDeviceId();
+        if (deviceId == currentDeviceId) {
+           _handleLogout();
+        } else {
+           _loadDevices();
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to remove: $e')));
+        }
+      }
+    }
+  }
+
+  Widget _buildSettingsView() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Trusted Devices', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        const Text('Manage devices that have access to this server. Devices are added when paired with a PIN.', style: TextStyle(color: Colors.white54)),
+        const SizedBox(height: 20),
+        Expanded(
+          child: _isLoadingDevices
+              ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))))
+              : _trustedDevices.isEmpty
+                  ? const Center(child: Text('No devices found', style: TextStyle(color: Colors.white54)))
+                  : ListView.builder(
+                      itemCount: _trustedDevices.length,
+                      itemBuilder: (context, index) {
+                        final device = _trustedDevices[index];
+                        final isCurrentDevice = device['device_id'] == widget.apiService.getOrCreateDeviceId();
+                        
+                        // Parse date to be a bit nicer if it exists
+                        String addedText = '';
+                        if (device['paired_at'] != null) {
+                          addedText = 'Added: ${device['paired_at']}';
+                        }
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(isCurrentDevice ? Icons.devices : Icons.device_unknown, color: const Color(0xFF8A5BFF), size: 28),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Text(device['device_name'] ?? 'Unknown Device', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                                        if (isCurrentDevice) ...[
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                            decoration: BoxDecoration(color: const Color(0xFF8A5BFF).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10)),
+                                            child: const Text('This Device', style: TextStyle(color: Color(0xFFB593FF), fontSize: 12, fontWeight: FontWeight.bold)),
+                                          )
+                                        ]
+                                      ],
+                                    ),
+                                    if (addedText.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(addedText, style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 13)),
+                                    ]
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: Colors.white60),
+                                onPressed: () => _renameDevice(device['device_id'], device['device_name'] ?? ''),
+                                tooltip: 'Rename',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                onPressed: () => _removeDevice(device['device_id']),
+                                tooltip: 'Remove device',
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ],
     );
   }
 }

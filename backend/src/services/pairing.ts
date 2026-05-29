@@ -137,6 +137,21 @@ class PairingService {
 
     return { paired: false };
   }
+
+  /**
+   * Unpairs/removes a device from the database
+   */
+  public unpairDevice(deviceId: string): boolean {
+    try {
+      const stmt = db.prepare('DELETE FROM paired_devices WHERE device_id = ?');
+      stmt.run(deviceId);
+      console.log(`[Pairing] Unpaired device ${deviceId}`);
+      return true;
+    } catch (err) {
+      console.error(`[Pairing] Database error during unpairing:`, err);
+      return false;
+    }
+  }
 }
 
 export const pairingService = new PairingService();

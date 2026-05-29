@@ -1,19 +1,63 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:html' as html;
 import 'package:http/http.dart' as http;
 
 class ApiService {
   // Configured to point to the Fastify local server.
-  // In a real application, this can be dynamically entered by the user or auto-discovered via mDNS.
   final String baseUrl = 'http://localhost:8080';
   
   String? _token;
 
   String? get token => _token;
 
-  /**
-   * Unauthenticated: Request a temporary pairing PIN and unique Device ID
-   */
+  // ---- Local Storage helpers (direct browser localStorage) ----
+
+  String? _readStorage(String key) {
+    return html.window.localStorage[key];
+  }
+
+  void _writeStorage(String key, String value) {
+    html.window.localStorage[key] = value;
+  }
+
+  void _removeStorage(String key) {
+    html.window.localStorage.remove(key);
+  }
+
+  // ---- Device ID management ----
+
+  String getOrCreateDeviceId() {
+    String? deviceId = _readStorage('loom_device_id');
+    if (deviceId == null || deviceId.isEmpty) {
+      deviceId = 'device_${DateTime.now().millisecondsSinceEpoch}_${1000 + (DateTime.now().microsecond % 9000)}';
+      _writeStorage('loom_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
+  void saveDeviceId(String deviceId) {
+    _writeStorage('loom_device_id', deviceId);
+  }
+
+  // ---- Token management ----
+
+  bool loadPersistedToken() {
+    _token = _readStorage('loom_token');
+    return _token != null;
+  }
+
+  void saveToken(String token) {
+    _token = token;
+    _writeStorage('loom_token', token);
+  }
+
+  void clearToken() {
+    _token = null;
+    _removeStorage('loom_token');
+  }
+
+  /// Unauthenticated: Request a temporary pairing PIN and unique Device ID
   Future<Map<String, dynamic>> requestPairingCode({String? deviceId}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/auth/pair/request'),
@@ -30,10 +74,8 @@ class ApiService {
     }
   }
 
-  /**
-   * Unauthenticated: Poll pairing status for a given Device ID.
-   * If pairing was approved by the admin, returns the user credentials and JWT.
-   */
+  /// Unauthenticated: Poll pairing status for a given Device ID.
+  /// If pairing was approved by the admin, returns the user credentials and JWT.
   Future<Map<String, dynamic>> checkPairingStatus(String deviceId) async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/auth/pair/status?deviceId=$deviceId'),
@@ -43,7 +85,7 @@ class ApiService {
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
       if (data['paired'] == true && data['token'] != null) {
-        _token = data['token'];
+        saveToken(data['token']);
       }
       return data;
     } else {
@@ -51,10 +93,8 @@ class ApiService {
     }
   }
 
-  /**
-   * Authenticated: Trigger a folder scan for movies, shows, or music tracks.
-   */
-  Future<Map<String, dynamic>> triggerLibraryScan(String folderPath, String type) async {
+  /// Authenticated: Trigger a folder scan for movies, shows, or music tracks.
+  Future<Map<String, dynamic>> triggerLibraryScan(String folderPath, String type, {bool preferLocalNfo = true}) async {
     if (_token == null) {
       throw Exception('Unauthorized: Log in or pair first.');
     }
@@ -68,6 +108,7 @@ class ApiService {
       body: jsonEncode({
         'path': folderPath,
         'type': type,
+        'preferLocalNfo': preferLocalNfo,
       }),
     );
 
@@ -78,9 +119,28 @@ class ApiService {
     }
   }
 
-  /**
-   * Authenticated: Fetch movies library (supports version merging / separated resolution badges)
-   */
+  /// Authenticated: Open server-side Windows Folder Browser Dialog to select a path
+  Future<Map<String, dynamic>> browseNativeDirectory() async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/library/browse-native'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to browse native directory: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Fetch movies library
   Future<List<dynamic>> fetchMovies({bool mergeVersions = true}) async {
     if (_token == null) {
       throw Exception('Unauthorized: Log in or pair first.');
@@ -101,9 +161,7 @@ class ApiService {
     }
   }
 
-  /**
-   * Authenticated: Fetch shows library
-   */
+  /// Authenticated: Fetch shows library
   Future<List<dynamic>> fetchShows() async {
     if (_token == null) {
       throw Exception('Unauthorized: Log in or pair first.');
@@ -124,9 +182,7 @@ class ApiService {
     }
   }
 
-  /**
-   * Authenticated: Get library scanner status
-   */
+  /// Authenticated: Get library scanner status
   Future<Map<String, dynamic>> getLibraryStatus() async {
     if (_token == null) {
       throw Exception('Unauthorized: Log in or pair first.');
@@ -144,6 +200,217 @@ class ApiService {
       return jsonDecode(response.body);
     } else {
       throw Exception('Failed to get library status: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Fetch all configured library paths
+  Future<List<dynamic>> fetchLibraryPaths() async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/library/paths'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to fetch library paths: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Add a new configured library directory path
+  Future<Map<String, dynamic>> addLibraryPath(String folderPath, String type) async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/library/paths'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({
+        'path': folderPath,
+        'type': type,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to add library path: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Delete a configured library directory path
+  Future<Map<String, dynamic>> deleteLibraryPath(String id) async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/library/paths'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({
+        'id': id,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to delete library path: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Update a configured library directory path and bulk replace items
+  Future<Map<String, dynamic>> updateLibraryPath(String id, String newPath) async {
+    if (_token == null) {
+      throw Exception('Unauthorized: Log in or pair first.');
+    }
+
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/library/paths'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({
+        'id': id,
+        'newPath': newPath,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to update library path: ${response.body}');
+    }
+  }
+
+  /// Unauthenticated: Request to unpair a device ID on the server
+  Future<Map<String, dynamic>> unpairDevice(String deviceId) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/pair/unpair'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'deviceId': deviceId,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to unpair device: ${response.body}');
+    }
+  }
+
+  /// Initialize user session:
+  /// 1. Try to load the local persisted token.
+  /// 2. If present, verify it by making a lightweight request (fetchLibraryPaths).
+  /// 3. If invalid or missing, check if the server already has this device ID paired.
+  Future<bool> initializeSession() async {
+    try {
+      _token = _readStorage('loom_token');
+      final savedDeviceId = _readStorage('loom_device_id');
+
+      print('[LOOM] initializeSession - token: ${_token != null ? "EXISTS" : "NULL"}, deviceId: $savedDeviceId');
+
+      if (_token != null) {
+        try {
+          await fetchLibraryPaths();
+          print('[LOOM] Token is VALID! Auto-logged in.');
+          return true;
+        } catch (e) {
+          print('[LOOM] Token invalid: $e. Clearing...');
+          clearToken();
+        }
+      }
+
+      // No valid local token - check if server remembers this device
+      final deviceId = getOrCreateDeviceId();
+      print('[LOOM] Checking server pairing for deviceId: $deviceId');
+      try {
+        final status = await checkPairingStatus(deviceId);
+        print('[LOOM] Server response: paired=${status['paired']}, hasToken=${status['token'] != null}');
+        if (status['paired'] == true && status['token'] != null) {
+          print('[LOOM] Device IS paired! Auto-logged in.');
+          return true;
+        }
+      } catch (e) {
+        print('[LOOM] Error querying pairing status: $e');
+      }
+
+      print('[LOOM] initializeSession -> FALSE (showing pairing screen)');
+      return false;
+    } catch (e) {
+      print('[LOOM] initializeSession EXCEPTION: $e');
+      return false;
+    }
+  }
+
+  /// Authenticated: Fetch all paired/trusted devices
+  Future<List<dynamic>> fetchDevices() async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/auth/devices'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to fetch devices: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Rename a paired device
+  Future<Map<String, dynamic>> renameDevice(String deviceId, String newName) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/auth/devices/rename'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({
+        'deviceId': deviceId,
+        'deviceName': newName,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to rename device: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Remove a paired device
+  Future<Map<String, dynamic>> removeDevice(String deviceId) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/auth/devices/$deviceId'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to remove device: ${response.body}');
     }
   }
 }

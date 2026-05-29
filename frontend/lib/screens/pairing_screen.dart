@@ -32,9 +32,6 @@ class _PairingScreenState extends State<PairingScreen> {
     super.dispose();
   }
 
-  /**
-   * Initializes the Plex-like PIN generation handshake and starts polling the server
-   */
   Future<void> _startPairingFlow() async {
     setState(() {
       _isLoading = true;
@@ -42,7 +39,13 @@ class _PairingScreenState extends State<PairingScreen> {
     });
 
     try {
-      final data = await _apiService.requestPairingCode();
+      final persistentDeviceId = _apiService.getOrCreateDeviceId();
+      final data = await _apiService.requestPairingCode(deviceId: persistentDeviceId);
+      
+      if (data['deviceId'] != null) {
+        _apiService.saveDeviceId(data['deviceId']);
+      }
+
       setState(() {
         _pairingCode = data['code'];
         _deviceId = data['deviceId'];
@@ -98,15 +101,15 @@ class _PairingScreenState extends State<PairingScreen> {
               width: 550,
               padding: const EdgeInsets.all(40),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
+                color: Colors.white.withValues(alpha: 0.04),
                 borderRadius: BorderRadius.circular(24),
                 border: Border.all(
-                  color: Colors.white.withOpacity(0.08),
+                  color: Colors.white.withValues(alpha: 0.08),
                   width: 1,
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.3),
+                    color: Colors.black.withValues(alpha: 0.3),
                     blurRadius: 30,
                     offset: const Offset(0, 15),
                   )
@@ -155,7 +158,7 @@ class _PairingScreenState extends State<PairingScreen> {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: const Color(0xFF8A5BFF).withOpacity(0.15),
+                color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Icon(
@@ -201,15 +204,15 @@ class _PairingScreenState extends State<PairingScreen> {
         Container(
           padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 45),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.4),
+            color: Colors.black.withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: const Color(0xFF8A5BFF).withOpacity(0.3),
+              color: const Color(0xFF8A5BFF).withValues(alpha: 0.3),
               width: 1.5,
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF8A5BFF).withOpacity(0.1),
+                color: const Color(0xFF8A5BFF).withValues(alpha: 0.1),
                 blurRadius: 20,
                 spreadRadius: 2,
               )
@@ -274,10 +277,10 @@ class _PairingScreenState extends State<PairingScreen> {
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: const Color(0xFF10B981).withOpacity(0.15),
+            color: const Color(0xFF10B981).withValues(alpha: 0.15),
             shape: BoxShape.circle,
             border: Border.all(
-              color: const Color(0xFF10B981).withOpacity(0.4),
+              color: const Color(0xFF10B981).withValues(alpha: 0.4),
               width: 2,
             ),
           ),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'screens/pairing_screen.dart';
+import 'screens/dashboard_screen.dart';
+import 'services/api.dart';
 
 void main() {
   runApp(const LoomApp());
@@ -10,6 +12,8 @@ class LoomApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ApiService apiService = ApiService();
+
     return MaterialApp(
       title: 'LOOM',
       debugShowCheckedModeBanner: false,
@@ -30,7 +34,28 @@ class LoomApp extends StatelessWidget {
           titleLarge: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.bold),
         ),
       ),
-      home: const PairingScreen(),
+      home: FutureBuilder<bool>(
+        future: apiService.initializeSession(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              body: Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF)),
+                ),
+              ),
+            );
+          }
+          
+          final bool isAlreadyPaired = snapshot.data ?? false;
+          
+          if (isAlreadyPaired) {
+            return DashboardScreen(apiService: apiService);
+          } else {
+            return const PairingScreen();
+          }
+        },
+      ),
     );
   }
 }

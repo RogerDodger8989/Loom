@@ -159,4 +159,106 @@ export default async function authRoutes(fastify: FastifyInstance) {
       return reply.send({ success: true, message: 'Device paired successfully!' });
     }
   );
+
+  // 5. POST /api/auth/pair/unpair
+  // Unpair/remove a device ID from the database
+  fastify.post('/api/auth/pair/unpair', async (request: FastifyRequest<{ Body: { deviceId?: string } }>, reply: FastifyReply) => {
+    const { deviceId } = request.body || {};
+
+    if (!deviceId) {
+      return reply.code(400).send({ error: 'Device ID is required' });
+    }
+
+    const success = pairingService.unpairDevice(deviceId);
+
+    if (!success) {
+      return reply.code(500).send({ error: 'Failed to unpair device' });
+    }
+
+    return reply.send({ success: true, message: 'Device unpaired successfully!' });
+  });
+
+  // 6. GET /api/auth/devices
+  // Authenticated: List all paired/trusted devices
+  fastify.get(
+    '/api/auth/devices',
+    {
+      preValidation: [async (request, reply) => {
+        try {
+          await request.jwtVerify();
+        } catch (err) {
+          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
+        }
+      }]
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const devices = db.prepare('SELECT device_id, user_id, device_name, paired_at FROM paired_devices ORDER BY paired_at DESC').all();
+        return reply.send(devices);
+      } catch (err) {
+        console.error('[Auth] Failed to retrieve devices:', err);
+        return reply.code(500).send({ error: 'Failed to retrieve devices' });
+      }
+    }
+  );
+
+  // 7. PUT /api/auth/devices/rename
+  // Authenticated: Rename a paired device
+  fastify.put(
+    '/api/auth/devices/rename',
+    {
+      preValidation: [async (request, reply) => {
+        try {
+          await request.jwtVerify();
+        } catch (err) {
+          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
+        }
+      }]
+    },
+    async (request: FastifyRequest<{ Body: { deviceId?: string; deviceName?: string } }>, reply: FastifyReply) => {
+      const { deviceId, deviceName } = request.body || {};
+      if (!deviceId || !deviceName) {
+        return reply.code(400).send({ error: 'deviceId and deviceName are required' });
+      }
+
+      try {
+        db.prepare('UPDATE paired_devices SET device_name = ? WHERE device_id = ?').run(deviceName, deviceId);
+        console.log(`[Auth] Renamed device ${deviceId} to "${deviceName}"`);
+        return reply.send({ success: true, message: `Device renamed to "${deviceName}"` });
+      } catch (err) {
+        console.error('[Auth] Failed to rename device:', err);
+        return reply.code(500).send({ error: 'Failed to rename device' });
+      }
+    }
+  );
+
+  // 8. DELETE /api/auth/devices/:deviceId
+  // Authenticated: Remove a specific paired device
+  fastify.delete(
+    '/api/auth/devices/:deviceId',
+    {
+      preValidation: [async (request, reply) => {
+        try {
+          await request.jwtVerify();
+        } catch (err) {
+          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
+        }
+      }]
+    },
+    async (request: FastifyRequest<{ Params: { deviceId: string } }>, reply: FastifyReply) => {
+      const { deviceId } = request.params;
+      if (!deviceId) {
+        return reply.code(400).send({ error: 'Device ID is required' });
+      }
+
+      try {
+        db.prepare('DELETE FROM paired_devices WHERE device_id = ?').run(deviceId);
+        console.log(`[Auth] Removed device ${deviceId}`);
+        return reply.send({ success: true, message: 'Device removed successfully' });
+      } catch (err) {
+        console.error('[Auth] Failed to remove device:', err);
+        return reply.code(500).send({ error: 'Failed to remove device' });
+      }
+    }
+  );
 }
