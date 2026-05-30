@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as childProcess from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/database';
 import { tmdbService } from './tmdb';
@@ -95,6 +96,17 @@ export class ScannerService {
     let tmdbProviders: any = null;
     let tmdbTrailer: string | null = null;
     let omdbAwards: string | null = null;
+    let tmdbAwards: string | null = null;
+    let omdbImdbRating: string | null = null;
+    let omdbMetascore: string | null = null;
+    let omdbRtRating: string | null = null;
+    let tmdbTagline: string | null = null;
+    let tmdbKeywords: any = null;
+    let tmdbProductionCompanies: any = null;
+    let tmdbProductionCountries: any = null;
+
+    // Run ffprobe to detect real audio/subtitle tracks
+    const probeResult = await this.probeMediaFile(filePath);
 
     // 2. TMDB API Fetch (Always query online source to enrich metadata with cast, watch providers, original title, awards, etc.)
     const needsOnlineData = true;
@@ -104,23 +116,58 @@ export class ScannerService {
         // TMDB overrides/complements
         if (!metadata.plot && tmdbData.overview) metadata.plot = tmdbData.overview;
         if (!metadata.year && tmdbData.release_date) metadata.year = parseInt(tmdbData.release_date.substring(0, 4), 10);
+        if (tmdbData.tagline) tmdbTagline = tmdbData.tagline;
         
         // Save genres as comma-separated values
         if (tmdbData.genres) {
           metadata.genre = tmdbData.genres.map((g: any) => g.name).join(', ');
         }
 
+        if (tmdbData.keywords?.keywords) {
+          tmdbKeywords = tmdbData.keywords.keywords.map((k: any) => k.name);
+        }
+
+        if (tmdbData.production_companies) {
+          const mainCompanies = tmdbData.production_companies
+            .filter((company: any) => company && company.name)
+            .slice(0, 2);
+
+          tmdbProductionCompanies = mainCompanies.map((company: any) => ({
+            id: company.id,
+            name: company.name,
+            logo_path: company.logo_path ? tmdbService.getImageUrl(company.logo_path, 'w500') : null,
+            origin_country: company.origin_country || null
+          }));
+        }
+
+        if (tmdbData.production_countries) {
+          tmdbProductionCountries = tmdbData.production_countries.map((country: any) => ({
+            iso_3166_1: country.iso_3166_1,
+            name: country.name
+          }));
+        }
+
         // Save TMDB / IMDb IDs
         if (tmdbData.id) metadata.tmdb_id = tmdbData.id.toString();
         if (tmdbData.imdb_id) metadata.imdb_id = tmdbData.imdb_id;
+        const imdbId = tmdbData.imdb_id || tmdbData.external_ids?.imdb_id || null;
 
         // Save original_title
         if (tmdbData.original_title) metadata.original_title = tmdbData.original_title;
 
-        // Save director
+        // Save director (with ID for clickability)
+        let tmdbDirector = null;
         if (tmdbData.credits && tmdbData.credits.crew) {
           const dirObj = tmdbData.credits.crew.find((c: any) => c.job === 'Director');
-          if (dirObj) metadata.director = dirObj.name;
+          if (dirObj) {
+            tmdbDirector = { id: dirObj.id, name: dirObj.name };
+            metadata.director = tmdbDirector;
+          }
+        }
+
+        // Save logo_path for ClearLOGO display
+        if (tmdbData.logo_path) {
+          metadata.logo_path = tmdbService.getImageUrl(tmdbData.logo_path, 'w500');
         }
 
         // Save collection details
@@ -161,22 +208,34 @@ export class ScannerService {
           }
         }
 
-        // Query OMDb API for awards
+        // Query OMDb API for awards AND ratings
         const omdbKey = tmdbService.getSetting('OMDB_API_KEY');
-        if (omdbKey && metadata.imdb_id) {
+        if (omdbKey && imdbId) {
           try {
             const omdbRes = await axios.get(`http://www.omdbapi.com/`, {
-              params: {
-                apikey: omdbKey,
-                i: metadata.imdb_id
-              }
+              params: { apikey: omdbKey, i: imdbId }
             });
-            if (omdbRes.data && omdbRes.data.Awards) {
-              omdbAwards = omdbRes.data.Awards;
+            if (omdbRes.data) {
+              if (omdbRes.data.Awards) omdbAwards = omdbRes.data.Awards;
+              if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
+                omdbImdbRating = omdbRes.data.imdbRating;
+              }
+              if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
+                omdbMetascore = omdbRes.data.Metascore;
+              }
+              // Rotten Tomatoes is in the Ratings array
+              if (Array.isArray(omdbRes.data.Ratings)) {
+                const rtEntry = omdbRes.data.Ratings.find((r: any) => r.Source === 'Rotten Tomatoes');
+                if (rtEntry) omdbRtRating = rtEntry.Value; // e.g. "87%"
+              }
             }
           } catch (omdbErr) {
-            console.error(`[Scanner] OMDb API request failed for ${metadata.imdb_id}:`, omdbErr);
+            console.error(`[Scanner] OMDb API request failed for ${imdbId}:`, omdbErr);
           }
+        }
+
+        if (!omdbAwards && tmdbData.id) {
+          tmdbAwards = await tmdbService.fetchAwardsSummary(tmdbData.id.toString());
         }
       }
     }
@@ -235,7 +294,16 @@ export class ScannerService {
           if (tmdbCast) upsertMetadata(mediaId, 'cast', JSON.stringify(tmdbCast));
           if (tmdbProviders) upsertMetadata(mediaId, 'watch_providers', JSON.stringify(tmdbProviders));
           if (tmdbTrailer) upsertMetadata(mediaId, 'trailer_url', tmdbTrailer);
-          if (omdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards);
+            if (omdbAwards || tmdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards || tmdbAwards as string);
+          if (omdbImdbRating) upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
+          if (omdbMetascore) upsertMetadata(mediaId, 'metascore', omdbMetascore);
+          if (omdbRtRating) upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
+          if (tmdbTagline) upsertMetadata(mediaId, 'tagline', tmdbTagline);
+          if (tmdbKeywords) upsertMetadata(mediaId, 'keywords', JSON.stringify(tmdbKeywords));
+          if (tmdbProductionCompanies) upsertMetadata(mediaId, 'production_companies', JSON.stringify(tmdbProductionCompanies));
+          if (tmdbProductionCountries) upsertMetadata(mediaId, 'production_countries', JSON.stringify(tmdbProductionCountries));
+          if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
+          if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
           
           return 'updated';
         }
@@ -245,6 +313,11 @@ export class ScannerService {
         if (tmdbProviders) upsertMetadata(mediaId, 'watch_providers', JSON.stringify(tmdbProviders));
         if (tmdbTrailer) upsertMetadata(mediaId, 'trailer_url', tmdbTrailer);
         if (omdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards);
+        if (omdbImdbRating) upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
+        if (omdbMetascore) upsertMetadata(mediaId, 'metascore', omdbMetascore);
+        if (omdbRtRating) upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
+        if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
+        if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         
         return 'skipped';
       } else {
@@ -274,7 +347,16 @@ export class ScannerService {
         if (tmdbCast) upsertMetadata(id, 'cast', JSON.stringify(tmdbCast));
         if (tmdbProviders) upsertMetadata(id, 'watch_providers', JSON.stringify(tmdbProviders));
         if (tmdbTrailer) upsertMetadata(id, 'trailer_url', tmdbTrailer);
-        if (omdbAwards) upsertMetadata(id, 'awards', omdbAwards);
+        if (omdbAwards || tmdbAwards) upsertMetadata(id, 'awards', omdbAwards || tmdbAwards as string);
+        if (omdbImdbRating) upsertMetadata(id, 'imdb_rating', omdbImdbRating);
+        if (omdbMetascore) upsertMetadata(id, 'metascore', omdbMetascore);
+        if (omdbRtRating) upsertMetadata(id, 'rt_rating', omdbRtRating);
+        if (tmdbTagline) upsertMetadata(id, 'tagline', tmdbTagline);
+        if (tmdbKeywords) upsertMetadata(id, 'keywords', JSON.stringify(tmdbKeywords));
+        if (tmdbProductionCompanies) upsertMetadata(id, 'production_companies', JSON.stringify(tmdbProductionCompanies));
+        if (tmdbProductionCountries) upsertMetadata(id, 'production_countries', JSON.stringify(tmdbProductionCountries));
+        if (probeResult.audioTracks.length > 0) upsertMetadata(id, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
+        if (probeResult.subtitleTracks.length > 0) upsertMetadata(id, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         
         return 'added';
       }
@@ -306,6 +388,63 @@ export class ScannerService {
       return parseInt(match[0], 10);
     }
     return null;
+  }
+
+  /**
+   * Run ffprobe on a video file to detect audio and subtitle tracks.
+   * Returns empty arrays if ffprobe is not installed or fails.
+   */
+  private probeMediaFile(filePath: string): Promise<{
+    audioTracks: Array<{ index: number; language: string; codec: string; channels: number; label: string }>;
+    subtitleTracks: Array<{ index: number; language: string; codec: string; label: string }>;
+  }> {
+    return new Promise((resolve) => {
+      const cmd = `ffprobe -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
+      childProcess.exec(cmd, { timeout: 15000 }, (err, stdout) => {
+        if (err) {
+          // ffprobe not found or failed — return empty gracefully
+          resolve({ audioTracks: [], subtitleTracks: [] });
+          return;
+        }
+        try {
+          const probe = JSON.parse(stdout);
+          const streams: any[] = probe.streams || [];
+
+          const audioTracks = streams
+            .filter((s) => s.codec_type === 'audio')
+            .map((s, i) => {
+              const lang = (s.tags?.language || 'und').toUpperCase();
+              const codec = (s.codec_name || 'unknown').toUpperCase();
+              const channels = s.channels || 2;
+              const chLabel = channels >= 6 ? '5.1' : channels >= 8 ? '7.1' : 'Stereo';
+              return {
+                index: s.index ?? i,
+                language: lang,
+                codec,
+                channels,
+                label: `${lang === 'SWE' ? 'Svenska' : lang === 'ENG' ? 'English' : lang} (${codec} ${chLabel})`,
+              };
+            });
+
+          const subtitleTracks = streams
+            .filter((s) => s.codec_type === 'subtitle')
+            .map((s, i) => {
+              const lang = (s.tags?.language || 'und').toUpperCase();
+              const codec = (s.codec_name || 'subrip').toUpperCase();
+              return {
+                index: s.index ?? i,
+                language: lang,
+                codec,
+                label: `${lang === 'SWE' ? 'Svenska' : lang === 'ENG' ? 'English' : lang} (${codec})`,
+              };
+            });
+
+          resolve({ audioTracks, subtitleTracks });
+        } catch {
+          resolve({ audioTracks: [], subtitleTracks: [] });
+        }
+      });
+    });
   }
 
   /**

@@ -24,6 +24,20 @@ Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren h
 
 > ⚠️ Frontend kör i `flutter run` (dev-läge med hot reload). Det finns INGEN separat build-steg som krävs för utveckling.
 
+## Viktigaste läget just nu
+
+- Awards visas fortfarande inte i UI, trots att backend nu försöker fylla metadata både via OMDb och TMDB:s publika awards-sida.
+- Verifierad datarad: filmen `A Prophet` har `tmdb_id=21575` och `imdb_id=tt1235166`, men `media_metadata` saknade `awards` innan fallbacken lades till.
+- Enda säkra settingsnyckeln som faktiskt fanns i databasen var `TMDB_API_KEY`; `OMDB_API_KEY` saknades.
+- Backend bygger rent efter senaste ändringarna.
+
+### Rekommenderat nästa steg för nästa IDE
+
+1. Öppna en riktig media-detalj i appen och kontrollera API-responsen från `GET /api/media/items/:id`.
+2. Verifiera om `metadata.awards` nu sparas i SQLite efter att detaljsidan har öppnats eller efter en ny scan.
+3. Om metadata finns men UI ändå är tomt, felsök `frontend/lib/screens/media_details_screen.dart` och hur awards parse:as/renderas.
+4. Om metadata fortfarande saknas, kontrollera att TMDB awards-sidan verkligen hämtas i runtime från backend-processen och att ingen request blockeras.
+
 ---
 
 ## Vad som är implementerat ✅
@@ -53,6 +67,7 @@ Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren h
 - [x] NFO-filparsning (local metadata)
 - [x] TMDB-metadatahämtning (poster, backdrop, cast, genres, collection)
 - [x] OMDb-integration för priser (Oscars, Globes, BAFTA)
+- [x] TMDB awards fallback via publika `/movie/:id/awards`-sidan när OMDb saknas
 - [x] Trailer-URL sparas från TMDB (`watch/providers`, `videos`)
 - [x] Skanningsprogress via WebSocket/SSE
 
@@ -90,6 +105,7 @@ Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren h
 - [x] **Genres** som klickbara chips (filtrerar filmgrid)
 - [x] **Kvalitetsbadges** (4K, 1080p, 5.1, DTS, HDR, Atmos) parsat från filnamn
 - [x] **Prisbadges** (Oscars, Golden Globes, BAFTA) parsade från OMDb-data
+- [ ] **Awards-priser/nomineringar i UI** är fortfarande under felsökning; backend-fallback finns men de visas inte än
 - [x] **Watch Providers** (streaming-tjänster) som loggor
 - [x] **Trailer-knapp** (öppnar YouTube)
 - [x] **Mitt Betyg-slider** (0–10) synkar med backend
@@ -206,6 +222,8 @@ CREATE TABLE settings (
   value TEXT
 );
 -- Vanliga nycklar: TMDB_API_KEY, OMDB_API_KEY, JWT_SECRET, library_paths
+
+> OBS: Den faktiska databasen som används i workspace ligger i `config/loom.db` i rotmappen, inte under `backend/config`.
 
 -- Enheter (parkopplade)
 CREATE TABLE devices (

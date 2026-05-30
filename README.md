@@ -26,6 +26,12 @@ flutter run -d web-server --web-port=50645
 # Öppna http://localhost:50645
 ```
 
+## Senaste status
+
+Media-detaljsidan har redan stöd för tagline, cast, keywords, production companies, trailer, Similar och betyg. Awards/nomineringar är fortfarande under felsökning: backend har nu både OMDb- och TMDB-baserad fallback, men vissa titlar visar fortfarande inget i UI.
+
+Om du tar över arbetet, börja i [HANDOFF.md](HANDOFF.md) och kontrollera först om `metadata.awards` faktiskt finns i `config/loom.db` efter att en film öppnats eller skannats om.
+
 ### Starta frontend (Android TV)
 ```bash
 cd frontend
@@ -40,8 +46,9 @@ flutter run -d <android-device-id>
 |---|---|
 | **Backend** | Node.js + TypeScript + Fastify |
 | **Databas** | SQLite (WAL-mode), fil: `backend/config/loom.db` |
+| **Databas** | SQLite (WAL-mode), fil: `config/loom.db` i workspace-roten |
 | **Frontend** | Flutter (Web + Android TV, gemensam kodbas) |
-| **Metadata** | TMDB API + OMDb API (awards) |
+| **Metadata** | TMDB API + OMDb API + TMDB awards-sidan som fallback |
 | **Streaming** | FFmpeg (direct play + HLS transkodning) |
 | **Autentisering** | JWT + PIN-parningssystem |
 
@@ -162,6 +169,12 @@ OMDB_API_KEY=din_nyckel_här   # För priser (Oscars etc.)
 PORT=8080
 JWT_SECRET=din_hemliga_nyckel
 ```
+
+## För nästa IDE
+
+1. Verifiera awards genom att läsa `GET /api/media/items/:id` för en titel som `A Prophet`.
+2. Om `metadata.awards` finns men UI är tomt, felsök `frontend/lib/screens/media_details_screen.dart`.
+3. Om metadata saknas, kontrollera runtime-hämtningen i `backend/src/routes/media.ts` och `backend/src/services/scanner.ts`.
 
 ---
 

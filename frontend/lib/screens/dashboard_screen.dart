@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:convert';
 import '../services/api.dart';
 import 'pairing_screen.dart';
 import 'media_details_screen.dart';
@@ -51,6 +52,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String _titleDisplayStyle = 'Translated';
 
   String? _genreFilter;
+  String? _keywordFilter;
 
   @override
   void initState() {
@@ -436,6 +438,27 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           setState(() {
                             _selectedMediaId = null;
                             _genreFilter = g;
+                            _keywordFilter = null; // clear keyword when picking genre
+                          });
+                          // Switch to Movies tab so the filtered list is visible
+                          try {
+                            _tabController.animateTo(1);
+                          } catch (_) {}
+                        },
+                        onKeywordSelected: (k) {
+                          setState(() {
+                            _selectedMediaId = null;
+                            _keywordFilter = k;
+                            _genreFilter = null; // clear genre when picking keyword
+                          });
+                          // Ensure Movies tab is selected when filtering by keyword
+                          try {
+                            _tabController.animateTo(1);
+                          } catch (_) {}
+                        },
+                        onMediaSelected: (mediaId) {
+                          setState(() {
+                            _selectedMediaId = mediaId;
                           });
                         },
                       )
@@ -488,85 +511,108 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         children: [
           const SizedBox(height: 35),
           
-          // Brand Logo & Toggle Row
+          // Sidebar Header: back button above collapse/expand control
           Padding(
             padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 24 : 16, vertical: 10),
-            child: Row(
-              mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
+            child: Column(
               children: [
-                if (_isSidebarExpanded) ...[
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: InkWell(
-                      onTap: () {
-                        setState(() {
-                          _tabController.animateTo(0);
-                          _selectedMediaId = null;
-                        });
-                      },
-                      child: Row(
-                        children: [
-                          Container(
+                if (_selectedMediaId != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Align(
+                      alignment: _isSidebarExpanded ? Alignment.centerLeft : Alignment.center,
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: IconButton(
+                          tooltip: 'Tillbaka',
+                          icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                          onPressed: () {
+                            setState(() {
+                              _selectedMediaId = null;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                Row(
+                  mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
+                  children: [
+                    if (_isSidebarExpanded) ...[
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _tabController.animateTo(0);
+                              _selectedMediaId = null;
+                            });
+                          },
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(
+                                  Icons.play_circle_fill,
+                                  color: Color(0xFF8A5BFF),
+                                  size: 26,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              const Text(
+                                'LOOM',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: IconButton(
+                          icon: const Icon(Icons.chevron_left, color: Colors.white54),
+                          onPressed: () {
+                            setState(() {
+                              _isSidebarExpanded = false;
+                            });
+                          },
+                        ),
+                      ),
+                    ] else ...[
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _isSidebarExpanded = true;
+                            });
+                          },
+                          child: Container(
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
                               color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: const Icon(
-                              Icons.play_circle_fill,
+                              Icons.menu,
                               color: Color(0xFF8A5BFF),
                               size: 26,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          const Text(
-                            'LOOM',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 2,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: IconButton(
-                      icon: const Icon(Icons.chevron_left, color: Colors.white54),
-                      onPressed: () {
-                        setState(() {
-                          _isSidebarExpanded = false;
-                        });
-                      },
-                    ),
-                  ),
-                ] else ...[
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: InkWell(
-                      onTap: () {
-                        setState(() {
-                          _isSidebarExpanded = true;
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(
-                          Icons.menu,
-                          color: Color(0xFF8A5BFF),
-                          size: 26,
                         ),
                       ),
-                    ),
-                  ),
-                ],
+                    ],
+                  ],
+                ),
               ],
             ),
           ),
@@ -826,11 +872,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       child: Chip(
         backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.1),
         side: const BorderSide(color: Color(0xFF8A5BFF)),
-        label: Text('Genre: $_genreFilter', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        label: Text(_keywordFilter != null ? 'Keyword: $_keywordFilter' : 'Genre: $_genreFilter', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         deleteIcon: const Icon(Icons.close, color: Colors.white, size: 18),
         onDeleted: () {
           setState(() {
             _genreFilter = null;
+            _keywordFilter = null;
           });
         },
       ),
@@ -993,16 +1040,36 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       return _buildEmptyState('No movies found', 'Go to the Library Scanner tab to import your media files.');
     }
 
-    final filteredMovies = _genreFilter == null 
-        ? _movies 
-        : _movies.where((m) => (m['genre'] as String? ?? '').contains(_genreFilter!)).toList();
+    List<dynamic> filteredMovies = _movies;
+    if (_genreFilter != null) {
+      filteredMovies = _movies.where((m) => (m['genre'] as String? ?? '').toString().toLowerCase().contains(_genreFilter!.toLowerCase())).toList();
+    } else if (_keywordFilter != null) {
+      filteredMovies = _movies.where((m) {
+        final meta = m['metadata'] ?? {};
+        dynamic kwData = meta['keywords'];
+        List<dynamic> klist = [];
+        if (kwData is List) {
+          klist = kwData;
+        } else if (kwData is String && kwData.isNotEmpty) {
+          try {
+            klist = (kwData.startsWith('[') || kwData.startsWith('{')) ? (jsonDecode(kwData) as List<dynamic>) : [kwData];
+          } catch (e) {
+            klist = [kwData];
+          }
+        }
+        return klist.any((kw) => kw.toString().toLowerCase() == _keywordFilter!.toLowerCase());
+      }).toList();
+    }
 
     if (filteredMovies.isEmpty) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildGenreFilterBadge(),
-          Expanded(child: _buildEmptyState('Inga filmer matchar genren "$_genreFilter"', 'Ta bort filtret för att se alla filmer.')),
+          Expanded(child: _buildEmptyState(
+            _keywordFilter != null ? 'Inga filmer matchar keyword "$_keywordFilter"' : 'Inga filmer matchar genren "$_genreFilter"',
+            'Ta bort filtret för att se alla filmer.'
+          )),
         ],
       );
     }
@@ -1011,6 +1078,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (_genreFilter != null) _buildGenreFilterBadge(),
+        if (_keywordFilter != null) _buildGenreFilterBadge(),
         Expanded(
           child: GridView.builder(
             padding: const EdgeInsets.only(top: 10, bottom: 30),
@@ -1044,16 +1112,36 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       return _buildEmptyState('No TV shows found', 'Go to the Library Scanner tab to import your media files.');
     }
 
-    final filteredShows = _genreFilter == null 
-        ? _shows 
-        : _shows.where((s) => (s['genre'] as String? ?? '').contains(_genreFilter!)).toList();
+    List<dynamic> filteredShows = _shows;
+    if (_genreFilter != null) {
+      filteredShows = _shows.where((s) => (s['genre'] as String? ?? '').toString().toLowerCase().contains(_genreFilter!.toLowerCase())).toList();
+    } else if (_keywordFilter != null) {
+      filteredShows = _shows.where((s) {
+        final meta = s['metadata'] ?? {};
+        dynamic kwData = meta['keywords'];
+        List<dynamic> klist = [];
+        if (kwData is List) {
+          klist = kwData;
+        } else if (kwData is String && kwData.isNotEmpty) {
+          try {
+            klist = (kwData.startsWith('[') || kwData.startsWith('{')) ? (jsonDecode(kwData) as List<dynamic>) : [kwData];
+          } catch (e) {
+            klist = [kwData];
+          }
+        }
+        return klist.any((kw) => kw.toString().toLowerCase() == _keywordFilter!.toLowerCase());
+      }).toList();
+    }
 
     if (filteredShows.isEmpty) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildGenreFilterBadge(),
-          Expanded(child: _buildEmptyState('Inga serier matchar genren "$_genreFilter"', 'Ta bort filtret för att se alla serier.')),
+          Expanded(child: _buildEmptyState(
+            _keywordFilter != null ? 'Inga serier matchar keyword "$_keywordFilter"' : 'Inga serier matchar genren "$_genreFilter"',
+            'Ta bort filtret för att se alla serier.'
+          )),
         ],
       );
     }
@@ -1170,6 +1258,25 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
+                          ),
+                        ),
+                      // Thumbnail progress bar for in-progress items (only a small bar)
+                      if (metadata is Map && int.tryParse((metadata['playback_progress']?.toString() ?? '0')) != null && int.tryParse((metadata['playback_progress']?.toString() ?? '0'))! > 0)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: Colors.white12,
+                            ),
+                            child: Builder(builder: (context) {
+                              final progress = int.tryParse((metadata['playback_progress']?.toString() ?? '0')) ?? 0;
+                              final duration = int.tryParse((metadata['duration']?.toString() ?? '0')) ?? 0;
+                              final ratio = (duration > 0) ? (progress / duration).clamp(0.0, 1.0) : 0.0;
+                              return LinearProgressIndicator(value: ratio, color: const Color(0xFF8A5BFF), backgroundColor: Colors.transparent);
+                            }),
                           ),
                         ),
                     ],

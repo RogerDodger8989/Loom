@@ -68,6 +68,12 @@ Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fu
 - **Musikmodul:** Skannern använder en inbäddad ID3-parser för metadata. Saknad info hämtas via MusicBrainz/Last.fm. All musikscrobbling sparas lokalt med stöd för export. Ljud spelas i bakgrunden vid navigering i klienten.
 - **Bildmodul (Fotoalbum):** Mappbaserad struktur lagrad i databasen. Backend genererar automatiskt on-the-fly nerskalade miniatyrer (via Sharp) i cache för snabb laddning. Originalen förblir orörda.
 
+## 10. Aktuell verklighet i kodbasen
+- Media-detaljvyn visar redan tagline, director, cast, keywords, production companies, watch providers, trailer och liknande media.
+- Awards är fortfarande ett aktivt felsökningsområde. Backend försöker nu fylla `awards` via OMDb först och sedan via TMDB:s publika awards-sida, men UI visar fortfarande inget för vissa titlar.
+- Den praktiska databasen i workspace ligger i `config/loom.db` i rotmappen.
+- Nästa IDE ska prioritera att bekräfta om `metadata.awards` faktiskt sparas i SQLite eller om felet sitter i frontend-renderingen/parsen.
+
 
 ---
 
@@ -80,3 +86,5 @@ Kärnan i systemet är nu byggd och fungerande. Se **HANDOFF.md** for detaljerad
 - Frontend: `http://localhost:50645`
 
 **Naasta steg:** Riktiga IMDb/Simkl-betyg, ffprobe for ljud/undertext, och TV-seriestruktur.
+
+**Nuvarande fokus:** Awards-nomineringar syns fortfarande inte i UI trots backend-fallback. Felsök datavägen från `GET /api/media/items/:id` till `media_details_screen.dart`.

@@ -218,6 +218,65 @@ class ApiService {
     }
   }
 
+  /// Authenticated: Upsert media metadata (general-purpose)
+  Future<void> saveMediaMetadata(String id, String key, dynamic value) async {
+    if (_token == null) throw Exception('Not authenticated');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/metadata'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'key': key, 'value': value}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to save media metadata: ${response.body}');
+    }
+  }
+
+  /// Convenience: Save user's personal rating for a media item
+  Future<void> saveRating(String id, double rating) async {
+    await saveMediaMetadata(id, 'my_rating', rating.toStringAsFixed(1));
+  }
+
+  Future<Map<String, dynamic>> fetchCollectionItems(String collectionId) async {
+    if (_token == null) {
+      throw Exception('Not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/collections/$collectionId'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to load collection items: ${response.statusCode}');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchSimilarItems(String mediaId) async {
+    if (_token == null) {
+      throw Exception('Not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/$mediaId/similar'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to load similar items: ${response.statusCode}');
+    }
+  }
+
   Future<Map<String, dynamic>> fetchPersonDetails(String id) async {
     if (_token == null) {
       throw Exception('Not authenticated');

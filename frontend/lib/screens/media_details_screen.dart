@@ -10,6 +10,8 @@ class MediaDetailsScreen extends StatefulWidget {
   final ApiService apiService;
   final VoidCallback? onBack;
   final ValueChanged<String>? onGenreSelected;
+  final ValueChanged<String>? onKeywordSelected;
+  final ValueChanged<String>? onMediaSelected;
 
   const MediaDetailsScreen({
     super.key,
@@ -17,6 +19,8 @@ class MediaDetailsScreen extends StatefulWidget {
     required this.apiService,
     this.onBack,
     this.onGenreSelected,
+    this.onKeywordSelected,
+    this.onMediaSelected,
   });
 
   @override
@@ -116,6 +120,17 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
             duration: const Duration(seconds: 2),
           ),
         );
+      }
+      // Persist rating to server
+      try {
+        await widget.apiService.saveRating(widget.mediaId, val);
+      } catch (e) {
+        debugPrint('Failed to save rating: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Misslyckades spara betyg: $e'), backgroundColor: Colors.redAccent),
+          );
+        }
       }
     } catch (e) {
       debugPrint(e.toString());
@@ -223,17 +238,28 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final plot = media['plot'] ?? 'Ingen beskrivning tillgänglig.';
     final posterPath = media['poster_path'];
     final fanartPath = media['fanart_path'];
-    final directorName = media['director'];
     final collectionName = media['collection_name'];
+    final collectionId = media['collection_id'];
     final trailerUrl = media['metadata']?['trailer_url'];
-    
-    final genresList = (media['genre'] as String? ?? '').split(', ').where((g) => g.isNotEmpty).toList();
     final metadata = (media['metadata'] is Map) ? media['metadata'] as Map<String, dynamic> : {};
+    final tagline = metadata['tagline'] as String?;
+    final genresList = (media['genre'] as String? ?? '').split(', ').where((g) => g.isNotEmpty).toList();
     final ratings = (metadata['ratings'] is Map) ? metadata['ratings'] as Map<String, dynamic> : {};
     final cast = (metadata['cast'] is List) ? metadata['cast'] as List<dynamic> : [];
+    final keywords = (metadata['keywords'] is List) ? metadata['keywords'] as List<dynamic> : [];
+    final productionCompanies = (metadata['production_companies'] is List) ? metadata['production_companies'] as List<dynamic> : [];
+    final productionCountries = (metadata['production_countries'] is List) ? metadata['production_countries'] as List<dynamic> : [];
+    // Director is now stored as an object with id and name
+    final directorData = metadata['director'] is Map ? metadata['director'] as Map<String, dynamic> : 
+                        metadata['director'] is String ? {'name': metadata['director']} : null;
+    final directorName = directorData?['name'] as String?;
+    final directorId = directorData?['id']?.toString();
+    final logoPath = metadata['logo_path'] as String?;
     final providers = (metadata['watch_providers'] is Map && metadata['watch_providers']['SE'] is Map)
         ? (metadata['watch_providers']['SE']['flatrate'] as List<dynamic>? ?? [])
         : [];
+    final awardsValue = metadata['awards'] ?? metadata['awards_text'] ?? metadata['award'] ?? metadata['prizes'] ?? metadata['omdb_awards'] ?? metadata['imdb_awards'];
+    final awardsString = awardsValue is String ? awardsValue : awardsValue?.toString();
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0714),
@@ -291,47 +317,100 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      // Interactive Cover on the Left (with hover action)
+                      // Poster column with logo above
                       if (posterPath != null)
-                        MouseRegion(
-                          cursor: SystemMouseCursors.click,
-                          onEnter: (_) => setState(() => _isCoverHovered = true),
-                          onExit: (_) => setState(() => _isCoverHovered = false),
-                          child: GestureDetector(
-                            onTap: _playMedia,
-                            child: Container(
-                              width: 220,
-                              height: 330,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(16),
-                                boxShadow: [
-                                  BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 24, offset: const Offset(0, 12)),
-                                ],
-                                image: DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            // ClearLOGO above poster
+                            if (logoPath != null) ...[
+                              Image.network(
+                                logoPath,
+                                height: 80,
+                                fit: BoxFit.contain,
                               ),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(16),
-                                child: Stack(
-                                  children: [
-                                    AnimatedOpacity(
-                                      duration: const Duration(milliseconds: 200),
-                                      opacity: _isCoverHovered ? 1.0 : 0.0,
-                                      child: Container(
-                                        color: Colors.black.withOpacity(0.55),
-                                        child: const Center(
-                                          child: CircleAvatar(
-                                            radius: 36,
-                                            backgroundColor: Color(0xFF8A5BFF),
-                                            child: Icon(Icons.play_arrow, size: 40, color: Colors.white),
+                              const SizedBox(height: 16),
+                            ],
+                            // Poster with hover effect
+                            MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              onEnter: (_) => setState(() => _isCoverHovered = true),
+                              onExit: (_) => setState(() => _isCoverHovered = false),
+                              child: GestureDetector(
+                                onTap: _playMedia,
+                                child: Container(
+                                  width: 220,
+                                  height: 330,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(16),
+                                    boxShadow: [
+                                      BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 24, offset: const Offset(0, 12)),
+                                    ],
+                                    image: DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover),
+                                  ),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(16),
+                                    child: Stack(
+                                      children: [
+                                        AnimatedOpacity(
+                                          duration: const Duration(milliseconds: 200),
+                                          opacity: _isCoverHovered ? 1.0 : 0.0,
+                                          child: Container(
+                                            color: Colors.black.withOpacity(0.55),
+                                            child: const Center(
+                                              child: CircleAvatar(
+                                                radius: 36,
+                                                backgroundColor: Color(0xFF8A5BFF),
+                                                child: Icon(Icons.play_arrow, size: 40, color: Colors.white),
+                                              ),
+                                            ),
                                           ),
                                         ),
-                                      ),
+                                      ],
                                     ),
-                                  ],
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
+                            // Progress bar and minutes-left when in-progress
+                            if (_savedProgressSeconds > 0) ...[
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: 220,
+                                child: Builder(builder: (context) {
+                                  final meta = _mediaData?['metadata'] ?? {};
+                                  final durationSec = int.tryParse((meta['duration'] ?? meta['runtime'] ?? '').toString()) ?? 0;
+                                  final progress = _savedProgressSeconds;
+                                  final ratio = (durationSec > 0) ? (progress / durationSec).clamp(0.0, 1.0) : null;
+                                  return Column(
+                                    children: [
+                                      if (ratio != null)
+                                        LinearProgressIndicator(value: ratio, color: const Color(0xFF8A5BFF), backgroundColor: Colors.white12)
+                                      else
+                                        const LinearProgressIndicator(value: null, color: Color(0xFF8A5BFF), backgroundColor: Colors.white12),
+                                      const SizedBox(height: 8),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.symmetric(vertical: 8),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withOpacity(0.55),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Center(
+                                          child: Text(
+                                            (durationSec > 0)
+                                                ? '${((durationSec - progress) / 60).ceil()} min kvar'
+                                                : '${(progress / 60).ceil()} min spelat',
+                                            style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                }),
+                              ),
+                            ],
+                          ],
                         ),
                       const SizedBox(width: 40),
 
@@ -362,18 +441,37 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   }
                                 }
 
+                                final displayTitle = year.isNotEmpty ? '$mainDisplayTitle ($year)' : mainDisplayTitle;
+
                                 return Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      year.isNotEmpty ? '$mainDisplayTitle ($year)' : mainDisplayTitle,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 44,
-                                        fontWeight: FontWeight.bold,
-                                        height: 1.1,
-                                        letterSpacing: -0.5,
-                                      ),
+                                    Stack(
+                                      children: [
+                                        Text(
+                                          displayTitle,
+                                          style: TextStyle(
+                                            fontSize: 44,
+                                            fontWeight: FontWeight.bold,
+                                            height: 1.1,
+                                            letterSpacing: -0.5,
+                                            foreground: Paint()
+                                              ..style = PaintingStyle.stroke
+                                              ..strokeWidth = 2.2
+                                              ..color = Colors.black,
+                                          ),
+                                        ),
+                                        Text(
+                                          displayTitle,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 44,
+                                            fontWeight: FontWeight.bold,
+                                            height: 1.1,
+                                            letterSpacing: -0.5,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                     if (subtitleDisplayTitle != null) ...[
                                       const SizedBox(height: 6),
@@ -396,6 +494,59 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                             _buildQualityBadgesRow(media['file_path'] as String?, media['versions']?[0]?['resolution'] as String? ?? media['resolution'] as String?),
                             const SizedBox(height: 12),
 
+                            if (tagline != null && tagline.trim().isNotEmpty) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.04),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      margin: const EdgeInsets.only(top: 4),
+                                      width: 4,
+                                      height: 20,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFB593FF),
+                                        borderRadius: BorderRadius.circular(99),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'TAGLINE',
+                                            style: TextStyle(
+                                              color: Color(0xFFB593FF),
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w800,
+                                              letterSpacing: 1.4,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            tagline,
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(0.8),
+                                              fontSize: 16,
+                                              fontStyle: FontStyle.italic,
+                                              height: 1.35,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+
                             // Subtitle Metadata details
                             Row(
                               children: [
@@ -411,44 +562,69 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 
                                 // Collection Banner
                                 if (collectionName != null && collectionName.toString().isNotEmpty) ...[
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFB593FF).withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: const Color(0xFFB593FF).withOpacity(0.3)),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.layers, color: Color(0xFFB593FF), size: 14),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          collectionName,
-                                          style: const TextStyle(
-                                            color: Color(0xFFB593FF),
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                  MouseRegion(
+                                    cursor: SystemMouseCursors.click,
+                                    child: GestureDetector(
+                                      onTap: () {
+                                        _showCollectionDialog(collectionName.toString(), collectionId?.toString());
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFB593FF).withOpacity(0.1),
+                                          borderRadius: BorderRadius.circular(6),
+                                          border: Border.all(color: const Color(0xFFB593FF).withOpacity(0.3)),
                                         ),
-                                      ],
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.layers, color: Color(0xFFB593FF), size: 14),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              collectionName.toString(),
+                                              style: const TextStyle(
+                                                color: Color(0xFFB593FF),
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 16),
                                 ],
 
-                                // Director
+                                // Director as keyword-style chip
                                 if (directorName != null) ...[
-                                  const Text('Regi: ', style: TextStyle(color: Colors.white38, fontSize: 16)),
                                   MouseRegion(
                                     cursor: SystemMouseCursors.click,
                                     child: GestureDetector(
                                       onTap: () {
-                                        // Search Director or Open bio if ID exists
+                                        if (directorId != null) {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (context) => PersonDetailsScreen(
+                                                personId: directorId,
+                                                apiService: widget.apiService,
+                                              ),
+                                            ),
+                                          );
+                                        }
                                       },
-                                      child: Text(
-                                        directorName,
-                                        style: const TextStyle(color: Colors.white70, fontSize: 16, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.06),
+                                          borderRadius: BorderRadius.circular(20),
+                                          border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                        ),
+                                        child: Text(
+                                          'Regi: $directorName',
+                                          style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -456,6 +632,36 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               ],
                             ),
                             const SizedBox(height: 12),
+
+                            if (productionCompanies.isNotEmpty || productionCountries.isNotEmpty) ...[
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  ...productionCompanies.map((company) {
+                                    final companyName = company is Map ? (company['name']?.toString() ?? '') : company.toString();
+                                    if (companyName.isEmpty) return const SizedBox.shrink();
+                                    return Chip(
+                                      avatar: const Icon(Icons.business, size: 16, color: Color(0xFF8A5BFF)),
+                                      label: Text(companyName, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                                      backgroundColor: Colors.white.withOpacity(0.05),
+                                      side: BorderSide(color: Colors.white.withOpacity(0.08)),
+                                    );
+                                  }),
+                                  ...productionCountries.map((country) {
+                                    final countryName = country is Map ? (country['name']?.toString() ?? '') : country.toString();
+                                    if (countryName.isEmpty) return const SizedBox.shrink();
+                                    return Chip(
+                                      avatar: const Icon(Icons.public, size: 16, color: Color(0xFF8A5BFF)),
+                                      label: Text(countryName, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                                      backgroundColor: Colors.white.withOpacity(0.05),
+                                      side: BorderSide(color: Colors.white.withOpacity(0.08)),
+                                    );
+                                  }),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                            ],
 
                             // Clickable Genre Badges
                             Wrap(
@@ -476,9 +682,37 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 );
                               }).toList(),
                             ),
+
+                            if (keywords.isNotEmpty) ...[
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: keywords.map((keyword) {
+                                  final keywordLabel = keyword is Map ? (keyword['name']?.toString() ?? '') : keyword.toString();
+                                  if (keywordLabel.isEmpty) return const SizedBox.shrink();
+                                  return ActionChip(
+                                    backgroundColor: Colors.white.withOpacity(0.06),
+                                    side: BorderSide(color: Colors.white.withOpacity(0.08)),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                    label: Text(keywordLabel, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                                    onPressed: () {
+                                      if (widget.onKeywordSelected != null) {
+                                        widget.onKeywordSelected!(keywordLabel);
+                                      } else if (widget.onGenreSelected != null) {
+                                        widget.onGenreSelected!(keywordLabel);
+                                      } else {
+                                        Navigator.pop(context, keywordLabel);
+                                      }
+                                    },
+                                  );
+                                }).toList(),
+                              ),
+                            ],
+
                             
                             // Awards / Priser placed directly under Genre
-                            _buildAwardsRow(metadata['awards'] as String?),
+                            _buildAwardsRow(awardsString),
                             const SizedBox(height: 24),
 
                             // Control Actions Row
@@ -604,19 +838,20 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         
                         // Streaming Watch Providers
                         if (providers.isNotEmpty) ...[
-                          const Text('Finns att strömma på', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 16),
-                          Row(
+                          const Text('Finns att strömma på', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
                             children: providers.map((prov) {
                               final logoPath = prov['logo_path'];
                               final name = prov['provider_name'];
                               if (logoPath == null) return const SizedBox();
                               return Container(
-                                margin: const EdgeInsets.only(right: 16),
-                                width: 50,
-                                height: 50,
+                                width: 34,
+                                height: 34,
                                 decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
+                                  borderRadius: BorderRadius.circular(8),
                                   border: Border.all(color: Colors.white12),
                                   image: DecorationImage(
                                     image: NetworkImage('https://image.tmdb.org/t/p/w500$logoPath'),
@@ -627,7 +862,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               );
                             }).toList(),
                           ),
-                          const SizedBox(height: 40),
+                          const SizedBox(height: 28),
                         ],
 
                         // Compact Audio & Subtitles Row
@@ -820,6 +1055,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               ),
               const SizedBox(height: 60),
             ],
+
+            // Similar media should appear below cast and remain library-only via backend filter
+            _buildSimilarCarousel(),
           ],
         ),
       ),
@@ -922,6 +1160,121 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     );
   }
 
+  Widget _buildSimilarCarousel() {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: widget.apiService.fetchSimilarItems(widget.mediaId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Liknande media laddas...', style: TextStyle(color: Colors.white54, fontSize: 14)),
+            ),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Liknande media kunde inte laddas.', style: TextStyle(color: Colors.white54, fontSize: 14)),
+            ),
+          );
+        }
+
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Liknande media saknas.', style: TextStyle(color: Colors.white54, fontSize: 14)),
+            ),
+          );
+        }
+
+        final similarItems = (snapshot.data!['items'] as List<dynamic>?) ?? [];
+        if (similarItems.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Inga liknande titlar finns i biblioteket.', style: TextStyle(color: Colors.white54, fontSize: 14)),
+            ),
+          );
+        }
+
+        return Column(
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 40),
+              child: Text('Liknande Media', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              height: 240,
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 30),
+                scrollDirection: Axis.horizontal,
+                itemCount: similarItems.length,
+                itemBuilder: (context, index) {
+                  final item = similarItems[index];
+                  final itemId = item['id']?.toString();
+                  final title = item['title'] ?? 'Unknown';
+                  final year = item['year'] != null ? ' (${item['year']})' : '';
+                  final poster = item['poster_path'] as String?;
+
+                  return MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTap: () {
+                        if (itemId != null && widget.onMediaSelected != null) {
+                          widget.onMediaSelected!(itemId);
+                          setState(() {
+                            _mediaData = null;
+                            _isLoading = true;
+                          });
+                          _fetchDetails();
+                        }
+                      },
+                      child: Container(
+                        width: 140,
+                        margin: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              height: 180,
+                              decoration: BoxDecoration(
+                                color: Colors.white10,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.white.withOpacity(0.04)),
+                                image: poster != null
+                                    ? DecorationImage(image: NetworkImage(poster), fit: BoxFit.cover)
+                                    : null,
+                              ),
+                              child: poster == null
+                                  ? const Center(child: Icon(Icons.movie, size: 50, color: Colors.white24))
+                                  : null,
+                            ),
+                            const SizedBox(height: 8),
+                            Text('$title$year', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12), maxLines: 2, overflow: TextOverflow.ellipsis),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 60),
+          ],
+        );
+      },
+    );
+  }
+
   void _showPlaylistDialog() {
     showDialog(
       context: context,
@@ -930,6 +1283,61 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         mediaTitle: _mediaData?['title'] ?? '',
         apiService: widget.apiService,
       ),
+    );
+  }
+
+  Future<void> _showCollectionDialog(String collectionName, String? collectionId) async {
+    if (collectionId == null || collectionId.isEmpty) return;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return FutureBuilder<Map<String, dynamic>>(
+          future: widget.apiService.fetchCollectionItems(collectionId),
+          builder: (context, snapshot) {
+            final items = (snapshot.data?['items'] as List<dynamic>?) ?? [];
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF15102A),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Text(collectionName, style: const TextStyle(color: Colors.white)),
+              content: SizedBox(
+                width: 560,
+                child: snapshot.connectionState == ConnectionState.waiting
+                    ? const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator(color: Color(0xFF8A5BFF))))
+                    : items.isEmpty
+                        ? const Text('Inga titlar hittades i den här samlingen.', style: TextStyle(color: Colors.white70))
+                        : ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: items.length,
+                            separatorBuilder: (_, __) => const SizedBox(height: 8),
+                            itemBuilder: (context, index) {
+                              final item = items[index] as Map<String, dynamic>;
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: item['poster_path'] != null
+                                      ? Image.network(item['poster_path'], width: 44, height: 66, fit: BoxFit.cover)
+                                      : Container(width: 44, height: 66, color: Colors.white10, child: const Icon(Icons.movie, color: Colors.white24)),
+                                ),
+                                title: Text(item['title']?.toString() ?? 'Okänd titel', style: const TextStyle(color: Colors.white)),
+                                subtitle: Text(item['year']?.toString() ?? '', style: const TextStyle(color: Colors.white54)),
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  final selectedId = item['id']?.toString();
+                                  if (selectedId != null && selectedId.isNotEmpty) {
+                                    widget.onMediaSelected?.call(selectedId);
+                                  }
+                                },
+                              );
+                            },
+                          ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -985,6 +1393,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     }
 
     final List<Widget> badges = [];
+
+    final rawAwardsText = awardsString.trim();
 
     Widget buildBadge({
       required IconData icon,
@@ -1091,14 +1501,23 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       badges.add(buildBadge(
         icon: Icons.emoji_events,
         color: const Color(0xFFB593FF),
-        label: awardsString,
-        tooltip: awardsString,
+        label: rawAwardsText,
+        tooltip: rawAwardsText,
       ));
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const SizedBox(height: 8),
+        Text(
+          rawAwardsText,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.55),
+            fontSize: 12,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
         const SizedBox(height: 8),
         Wrap(
           children: badges,

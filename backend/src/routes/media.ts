@@ -128,6 +128,35 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // POST /api/media/items/:id/metadata
+  // Upsert a metadata key/value for a given media item (used to save user-specific state like ratings)
+  fastify.post(
+    '/api/media/items/:id/metadata',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: { key: string; value: any } }>, reply: FastifyReply) => {
+      const user = request.user as { id: string; username: string; role: string };
+      const { id } = request.params;
+      const { key, value } = request.body;
+
+      try {
+        const movie = db.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id) as any;
+        if (!movie) return reply.code(404).send({ error: 'Media item not found' });
+
+        // Upsert into media_metadata (use JSON-stringified value for complex objects)
+        const stringVal = typeof value === 'string' ? value : JSON.stringify(value);
+        db.prepare(`
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+        `).run(uuidv4(), movie.id, key, stringVal);
+
+        return reply.code(200).send({ ok: true });
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to save metadata', details: err.message });
+      }
+    }
+  );
+
   // GET /api/media/items/:id
   // Retrieves full details for a specific media item (Plex-like Media Details page)
   fastify.get(
@@ -166,6 +195,105 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             metadata[row.metadata_key] = row.metadata_value;
           }
         });
+
+        const upsertMeta = (key: string, value: string) => {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id, key, value);
+        };
+
+        const awardsPlaceholder = 'Inga prisuppgifter hittades.';
+        const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path;
+        if (needsEnrichment) {
+          const tmdbData = movie.tmdb_id
+            ? await tmdbService.fetchMovieById(movie.tmdb_id.toString())
+            : await tmdbService.searchMovie(movie.title, movie.year ?? undefined);
+          if (tmdbData) {
+            if (!movie.original_title && tmdbData.original_title) {
+              db.prepare(`UPDATE media_items SET original_title = ? WHERE id = ?`).run(tmdbData.original_title, movie.id);
+              movie.original_title = tmdbData.original_title;
+            }
+
+            if (!metadata.tagline && tmdbData.tagline) {
+              metadata.tagline = tmdbData.tagline;
+              upsertMeta('tagline', tmdbData.tagline);
+            }
+
+            if (!metadata.keywords && tmdbData.keywords?.keywords) {
+              const keywords = tmdbData.keywords.keywords.map((keyword: any) => keyword.name);
+              metadata.keywords = keywords;
+              upsertMeta('keywords', JSON.stringify(keywords));
+            }
+
+            if (!metadata.production_companies && tmdbData.production_companies) {
+              const companies = tmdbData.production_companies
+                .filter((company: any) => company && company.name)
+                .slice(0, 2)
+                .map((company: any) => ({
+                id: company.id,
+                name: company.name,
+                logo_path: company.logo_path ? tmdbService.getImageUrl(company.logo_path, 'w500') : null,
+                origin_country: company.origin_country || null
+              }));
+              metadata.production_companies = companies;
+              upsertMeta('production_companies', JSON.stringify(companies));
+            }
+
+            if (!metadata.production_countries && tmdbData.production_countries) {
+              const countries = tmdbData.production_countries.map((country: any) => ({
+                iso_3166_1: country.iso_3166_1,
+                name: country.name
+              }));
+              metadata.production_countries = countries;
+              upsertMeta('production_countries', JSON.stringify(countries));
+            }
+
+            if (!metadata.director && tmdbData.credits && tmdbData.credits.crew) {
+              const dirObj = tmdbData.credits.crew.find((c: any) => c.job === 'Director');
+              if (dirObj) {
+                const directorData = { id: dirObj.id, name: dirObj.name };
+                metadata.director = directorData;
+                upsertMeta('director', JSON.stringify(directorData));
+              }
+            }
+
+            if (!metadata.logo_path && tmdbData.logo_path) {
+              const logoUrl = tmdbService.getImageUrl(tmdbData.logo_path, 'w500');
+              if (logoUrl) {
+                metadata.logo_path = logoUrl;
+                upsertMeta('logo_path', logoUrl);
+              }
+            }
+
+            const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
+            if ((!metadata.awards || metadata.awards === awardsPlaceholder) && imdbId) {
+              const omdbKey = tmdbService.getSetting('OMDB_API_KEY');
+              if (omdbKey) {
+                try {
+                  const omdbRes = await axios.get(`http://www.omdbapi.com/`, {
+                    params: { apikey: omdbKey, i: imdbId }
+                  });
+                  if (omdbRes.data && omdbRes.data.Awards) {
+                    metadata.awards = omdbRes.data.Awards;
+                    upsertMeta('awards', omdbRes.data.Awards);
+                  }
+                } catch (omdbErr) {
+                  console.error('[Media Details] OMDb awards enrichment failed:', omdbErr);
+                }
+              }
+            }
+
+            if (!metadata.awards || metadata.awards === awardsPlaceholder) {
+              const tmdbAwards = await tmdbService.fetchAwardsSummary(tmdbData.id?.toString?.() || movie.tmdb_id?.toString?.() || '');
+              if (tmdbAwards) {
+                metadata.awards = tmdbAwards;
+                upsertMeta('awards', tmdbAwards);
+              }
+            }
+          }
+        }
 
         // Simple restriction check
         if (restrictions.length > 0) {
@@ -400,11 +528,25 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         // Get genres
         const genre = tmdbData.genres ? tmdbData.genres.map((g: any) => g.name).join(', ') : 'Movie';
         
-        // Director
-        let director = null;
+        // Director (store in metadata with ID)
         if (tmdbData.credits && tmdbData.credits.crew) {
           const dirObj = tmdbData.credits.crew.find((c: any) => c.job === 'Director');
-          if (dirObj) director = dirObj.name;
+          if (dirObj) {
+            db.prepare(`INSERT OR REPLACE INTO media_metadata (media_id, key, value) VALUES (?, ?, ?)`).run(
+              id,
+              'director',
+              JSON.stringify({ id: dirObj.id, name: dirObj.name })
+            );
+          }
+        }
+
+        // Logo (store in metadata for ClearLOGO display)
+        if (tmdbData.logo_path) {
+          db.prepare(`INSERT OR REPLACE INTO media_metadata (media_id, key, value) VALUES (?, ?, ?)`).run(
+            id,
+            'logo_path',
+            tmdbService.getImageUrl(tmdbData.logo_path, 'w500')
+          );
         }
 
         // Collection
@@ -419,7 +561,13 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         const fanart_path = tmdbService.getImageUrl(tmdbData.backdrop_path, 'original');
         const year = tmdbData.release_date ? parseInt(tmdbData.release_date.substring(0, 4), 10) : null;
 
-        // Update database media_item entry
+        // Update database media_item entry (director still stored as string for backward compatibility)
+        let directorName = null;
+        if (tmdbData.credits && tmdbData.credits.crew) {
+          const dirObj = tmdbData.credits.crew.find((c: any) => c.job === 'Director');
+          if (dirObj) directorName = dirObj.name;
+        }
+
         db.prepare(`
           UPDATE media_items 
           SET title = ?, plot = ?, year = ?, genre = ?, poster_path = ?, fanart_path = ?, tmdb_id = ?, imdb_id = ?, collection_name = ?, collection_id = ?, director = ?, original_title = ?
@@ -435,7 +583,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           tmdbData.imdb_id || null,
           collectionName,
           collectionId,
-          director,
+          directorName,
           tmdbData.original_title || null,
           id
         );
@@ -475,18 +623,28 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           }
         }
 
-        // Fetch OMDb Awards
+        // Fetch OMDb Awards AND Ratings
         const omdbKey = tmdbService.getSetting('OMDB_API_KEY');
         if (omdbKey && tmdbData.imdb_id) {
           try {
             const omdbRes = await axios.get(`http://www.omdbapi.com/`, {
               params: { apikey: omdbKey, i: tmdbData.imdb_id }
             });
-            if (omdbRes.data && omdbRes.data.Awards) {
-              upsertMeta('awards', omdbRes.data.Awards);
+            if (omdbRes.data) {
+              if (omdbRes.data.Awards) upsertMeta('awards', omdbRes.data.Awards);
+              if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
+                upsertMeta('imdb_rating', omdbRes.data.imdbRating);
+              }
+              if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
+                upsertMeta('metascore', omdbRes.data.Metascore);
+              }
+              if (Array.isArray(omdbRes.data.Ratings)) {
+                const rtEntry = omdbRes.data.Ratings.find((r: any) => r.Source === 'Rotten Tomatoes');
+                if (rtEntry) upsertMeta('rt_rating', rtEntry.Value);
+              }
             }
           } catch (omdbErr) {
-            console.error('[ManualMatch] OMDb API awards fetch failed:', omdbErr);
+            console.error('[ManualMatch] OMDb API fetch failed:', omdbErr);
           }
         }
 
@@ -494,6 +652,109 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       } catch (err: any) {
         console.error(err);
         return reply.code(500).send({ error: 'Failed to manual-match media item', details: err.message });
+      }
+    }
+  );
+
+  // GET /api/media/collections/:collectionId
+  fastify.get(
+    '/api/media/collections/:collectionId',
+    async (request: FastifyRequest<{ Params: { collectionId: string } }>, reply: FastifyReply) => {
+      const { collectionId } = request.params;
+
+      try {
+        const items = db.prepare(`
+          SELECT id, title, year, poster_path, collection_name, collection_id
+          FROM media_items
+          WHERE collection_id = ?
+          ORDER BY COALESCE(year, 9999) ASC, title ASC
+        `).all(collectionId) as Array<{
+          id: string;
+          title: string;
+          year: number | null;
+          poster_path: string | null;
+          collection_name: string | null;
+          collection_id: string | null;
+        }>;
+
+        return reply.send({
+          collectionId,
+          items,
+        });
+      } catch (error: any) {
+        request.log.error(error);
+        return reply.code(500).send({ error: 'Failed to fetch collection items', details: error.message });
+      }
+    }
+  );
+
+  // GET /api/media/:id/similar — Get similar/recommended movies from library
+  fastify.get(
+    '/api/media/:id/similar',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+
+      try {
+        const movie = db.prepare(`SELECT tmdb_id, title FROM media_items WHERE id = ?`).get(id) as any;
+        if (!movie || !movie.tmdb_id) {
+          return reply.code(404).send({ error: 'Movie not found or no TMDB ID' });
+        }
+
+        // Fetch similar movies from TMDB
+        const apiKey = db.prepare(`SELECT value FROM system_settings WHERE key = 'TMDB_API_KEY'`).get() as any;
+        if (!apiKey || !apiKey.value) {
+          return reply.code(400).send({ error: 'TMDB API key not configured' });
+        }
+
+        let similarMovies = [];
+        try {
+          const response = await axios.get(`https://api.themoviedb.org/3/movie/${movie.tmdb_id}/similar`, {
+            params: {
+              api_key: apiKey.value,
+              language: 'sv-SE'
+            }
+          });
+          similarMovies = response.data.results || [];
+        } catch (tmdbErr: any) {
+          request.log.warn('Failed to fetch similar movies from TMDB:', tmdbErr.message);
+          return reply.send({ id, items: [] });
+        }
+
+        // Filter to only items in library. Prefer TMDB ID, fall back to title match.
+        const normalizedSimilar = similarMovies.map((m: any) => ({
+          id: m.id,
+          title: (m.title || '').toString().trim().toLowerCase(),
+        }));
+        if (normalizedSimilar.length === 0) {
+          return reply.send({ id, items: [] });
+        }
+
+        const tmdbIds = normalizedSimilar.map((m: any) => m.id).filter(Boolean);
+        const libraryRows = db.prepare(`
+          SELECT id, title, year, poster_path, tmdb_id
+          FROM media_items
+          ORDER BY year DESC
+        `).all() as Array<{
+          id: string;
+          title: string;
+          year: number | null;
+          poster_path: string | null;
+          tmdb_id: string | null;
+        }>;
+
+        const libraryItems = libraryRows.filter((row) => {
+          const tmdbIdMatch = row.tmdb_id && tmdbIds.includes(Number(row.tmdb_id));
+          const titleMatch = normalizedSimilar.some((item: { title: string }) => item.title && item.title === (row.title || '').toString().trim().toLowerCase());
+          return tmdbIdMatch || titleMatch;
+        });
+
+        return reply.send({
+          id,
+          items: libraryItems,
+        });
+      } catch (error: any) {
+        request.log.error(error);
+        return reply.code(500).send({ error: 'Failed to fetch similar items', details: error.message });
       }
     }
   );

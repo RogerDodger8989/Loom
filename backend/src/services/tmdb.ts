@@ -7,13 +7,31 @@ export interface TMDBMovie {
   id: number;
   title: string;
   original_title?: string;
+  tagline?: string;
   overview: string;
   release_date: string;
   poster_path: string | null;
   backdrop_path: string | null;
   vote_average?: number;
   imdb_id?: string | null;
+  external_ids?: {
+    imdb_id?: string | null;
+  };
+  logo_path?: string | null;
   genres?: Array<{ id: number; name: string }>;
+  keywords?: {
+    keywords?: Array<{ id: number; name: string }>;
+  };
+  production_companies?: Array<{
+    id: number;
+    name: string;
+    logo_path: string | null;
+    origin_country?: string;
+  }>;
+  production_countries?: Array<{
+    iso_3166_1: string;
+    name: string;
+  }>;
   belongs_to_collection?: {
     id: number;
     name: string;
@@ -120,7 +138,7 @@ export class TMDBService {
             params: {
               api_key: apiKey,
               language: prefLang,
-              append_to_response: 'credits,watch/providers,videos'
+              append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
             }
           });
           
@@ -133,16 +151,22 @@ export class TMDBService {
                 params: {
                   api_key: apiKey,
                   language: fallbackLang,
-                  append_to_response: 'credits,watch/providers,videos'
+                  append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
                 }
               });
               if (fallbackResponse.data && fallbackResponse.data.overview) {
                 movieData.overview = fallbackResponse.data.overview;
+                if ((!movieData.tagline || movieData.tagline.trim() === '') && fallbackResponse.data.tagline) {
+                  movieData.tagline = fallbackResponse.data.tagline;
+                }
                 if ((!movieData.credits || !movieData.credits.cast || movieData.credits.cast.length === 0) && fallbackResponse.data.credits) {
                   movieData.credits = fallbackResponse.data.credits;
                 }
                 if ((!movieData.videos || !movieData.videos.results || fallbackResponse.data.videos.results.length > 0) && fallbackResponse.data.videos) {
                   movieData.videos = fallbackResponse.data.videos;
+                }
+                if ((!movieData.keywords || !movieData.keywords.keywords || movieData.keywords.keywords.length === 0) && fallbackResponse.data.keywords) {
+                  movieData.keywords = fallbackResponse.data.keywords;
                 }
               }
             } catch (fallbackErr) {
@@ -217,7 +241,7 @@ export class TMDBService {
         params: {
           api_key: apiKey,
           language: prefLang,
-          append_to_response: 'credits,watch/providers,videos'
+          append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
         }
       });
       
@@ -229,16 +253,22 @@ export class TMDBService {
             params: {
               api_key: apiKey,
               language: fallbackLang,
-              append_to_response: 'credits,watch/providers,videos'
+              append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
             }
           });
           if (fallbackResponse.data && fallbackResponse.data.overview) {
             movieData.overview = fallbackResponse.data.overview;
+            if ((!movieData.tagline || movieData.tagline.trim() === '') && fallbackResponse.data.tagline) {
+              movieData.tagline = fallbackResponse.data.tagline;
+            }
             if ((!movieData.credits || !movieData.credits.cast || movieData.credits.cast.length === 0) && fallbackResponse.data.credits) {
               movieData.credits = fallbackResponse.data.credits;
             }
             if ((!movieData.videos || !movieData.videos.results || fallbackResponse.data.videos.results.length > 0) && fallbackResponse.data.videos) {
               movieData.videos = fallbackResponse.data.videos;
+            }
+            if ((!movieData.keywords || !movieData.keywords.keywords || movieData.keywords.keywords.length === 0) && fallbackResponse.data.keywords) {
+              movieData.keywords = fallbackResponse.data.keywords;
             }
           }
         } catch (fallbackErr) {
@@ -249,6 +279,38 @@ export class TMDBService {
       return movieData;
     } catch (e) {
       console.error(`[TMDB] Failed to fetch movie by ID ${id}:`, e);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch a compact awards summary from the public TMDB movie awards page.
+   * The TMDB API does not return awards, but the movie page exposes a summary.
+   */
+  public async fetchAwardsSummary(id: string): Promise<string | null> {
+    try {
+      const response = await axios.get(`${TMDB_BASE_URL}/movie/${id}/awards`, {
+        params: {
+          language: this.getSetting('METADATA_FALLBACK_LANGUAGE') || 'en-US'
+        }
+      });
+
+      const html = typeof response.data === 'string' ? response.data : '';
+      if (!html) return null;
+
+      const nominationMatch = html.match(/\b(\d+)\s+Nominations?\b/i);
+      const winsMatch = html.match(/\b(\d+)\s+Wins?\b/i);
+
+      const nominations = nominationMatch ? Number(nominationMatch[1]) : 0;
+      const wins = winsMatch ? Number(winsMatch[1]) : 0;
+
+      if (!wins && !nominations) return null;
+      if (wins && nominations) {
+        return `${wins} Win${wins === 1 ? '' : 's'} & ${nominations} Nomination${nominations === 1 ? '' : 's'}`;
+      }
+      if (wins) return `${wins} Win${wins === 1 ? '' : 's'}`;
+      return `${nominations} Nomination${nominations === 1 ? '' : 's'}`;
+    } catch {
       return null;
     }
   }
