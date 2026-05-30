@@ -408,12 +408,20 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         const progressPercent = posSec / durSec;
         const autoWatch = progressPercent >= 0.90;
 
-        // 1. Update playback_progress in media_metadata
+        // 1. Update playback_progress and duration in media_metadata
         db.prepare(`
           INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
           VALUES (?, ?, 'playback_progress', ?)
           ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
         `).run(uuidv4(), movie.id, posSec.toString());
+
+        if (durSec > 0) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, 'duration', ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id, durSec.toString());
+        }
 
         // 2. If >= 90%, update watch_status in media_metadata to 'watched'
         let currentStatus = 'unwatched';
@@ -921,7 +929,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         db.prepare(`
           DELETE FROM media_metadata 
           WHERE media_item_id = ? 
-          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress', 'duration')
         `).run(id);
 
         const movieItem = db.prepare(`SELECT file_path FROM media_items WHERE id = ?`).get(id) as any;
@@ -1220,7 +1228,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         db.prepare(`
           DELETE FROM media_metadata 
           WHERE media_item_id = ? 
-          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress', 'duration')
         `).run(id);
 
         return reply.send({ success: true });

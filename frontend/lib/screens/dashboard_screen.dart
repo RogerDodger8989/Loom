@@ -23,6 +23,176 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String? _selectedPersonId;
   bool _isSidebarExpanded = true;
 
+  final List<Map<String, String>> _navHistory = [];
+  final List<Map<String, String>> _forwardHistory = [];
+
+  void _navigateTo(String type, String id) {
+    setState(() {
+      String? currentType;
+      String? currentId;
+      if (_selectedPersonId != null) {
+        currentType = 'person';
+        currentId = _selectedPersonId;
+      } else if (_selectedMediaId != null) {
+        currentType = 'media';
+        currentId = _selectedMediaId;
+      }
+
+      if (currentType != null && currentId != null) {
+        _navHistory.add({'type': currentType, 'id': currentId});
+      }
+
+      if (type == 'media') {
+        _selectedMediaId = id;
+        _selectedPersonId = null;
+      } else if (type == 'person') {
+        _selectedPersonId = id;
+        _selectedMediaId = null;
+      }
+      
+      _forwardHistory.clear();
+    });
+  }
+
+  void _goBack() {
+    if (_navHistory.isEmpty) {
+      setState(() {
+        if (_selectedPersonId != null) {
+          _forwardHistory.add({'type': 'person', 'id': _selectedPersonId!});
+          _selectedPersonId = null;
+        } else if (_selectedMediaId != null) {
+          _forwardHistory.add({'type': 'media', 'id': _selectedMediaId!});
+          _selectedMediaId = null;
+        }
+      });
+      return;
+    }
+
+    setState(() {
+      String? currentType;
+      String? currentId;
+      if (_selectedPersonId != null) {
+        currentType = 'person';
+        currentId = _selectedPersonId;
+      } else if (_selectedMediaId != null) {
+        currentType = 'media';
+        currentId = _selectedMediaId;
+      }
+
+      if (currentType != null && currentId != null) {
+        _forwardHistory.add({'type': currentType, 'id': currentId});
+      }
+
+      final prev = _navHistory.removeLast();
+      if (prev['type'] == 'media') {
+        _selectedMediaId = prev['id'];
+        _selectedPersonId = null;
+      } else if (prev['type'] == 'person') {
+        _selectedPersonId = prev['id'];
+        _selectedMediaId = null;
+      }
+    });
+  }
+
+  void _goForward() {
+    if (_forwardHistory.isEmpty) return;
+
+    setState(() {
+      String? currentType;
+      String? currentId;
+      if (_selectedPersonId != null) {
+        currentType = 'person';
+        currentId = _selectedPersonId;
+      } else if (_selectedMediaId != null) {
+        currentType = 'media';
+        currentId = _selectedMediaId;
+      }
+
+      if (currentType != null && currentId != null) {
+        _navHistory.add({'type': currentType, 'id': currentId});
+      }
+
+      final next = _forwardHistory.removeLast();
+      if (next['type'] == 'media') {
+        _selectedMediaId = next['id'];
+        _selectedPersonId = null;
+      } else if (next['type'] == 'person') {
+        _selectedPersonId = next['id'];
+        _selectedMediaId = null;
+      }
+    });
+  }
+
+  Widget _buildNavIcon({
+    required IconData icon,
+    required String tooltip,
+    required bool enabled,
+    required VoidCallback onPressed,
+  }) {
+    final activeColor = const Color(0xFFB593FF);
+    final inactiveColor = Colors.white24;
+    return Tooltip(
+      message: tooltip,
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        child: GestureDetector(
+          onTap: enabled ? onPressed : null,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: enabled ? Colors.white.withValues(alpha: 0.04) : Colors.transparent,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: enabled ? activeColor.withValues(alpha: 0.25) : Colors.white.withValues(alpha: 0.05),
+                width: 1.5,
+              ),
+              boxShadow: enabled ? [
+                BoxShadow(
+                  color: activeColor.withValues(alpha: 0.12),
+                  blurRadius: 8,
+                ),
+              ] : [],
+            ),
+            child: Icon(
+              icon,
+              color: enabled ? Colors.white : inactiveColor,
+              size: 20,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavigationButtons() {
+    final hasBack = _navHistory.isNotEmpty || _selectedMediaId != null || _selectedPersonId != null;
+    final hasForward = _forwardHistory.isNotEmpty;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
+        children: [
+          _buildNavIcon(
+            icon: Icons.arrow_back_ios_new_rounded,
+            tooltip: 'Gå bakåt',
+            enabled: hasBack,
+            onPressed: _goBack,
+          ),
+          const SizedBox(width: 12),
+          _buildNavIcon(
+            icon: Icons.arrow_forward_ios_rounded,
+            tooltip: 'Gå framåt',
+            enabled: hasForward,
+            onPressed: _goForward,
+          ),
+        ],
+      ),
+    );
+  }
+
+
   List<dynamic> _movies = [];
   List<dynamic> _shows = [];
   bool _loadingMedia = false;
@@ -454,27 +624,16 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     ? PersonDetailsScreen(
                         personId: _selectedPersonId!,
                         apiService: widget.apiService,
-                        onBack: () {
-                          setState(() {
-                            _selectedPersonId = null;
-                          });
-                        },
+                        onBack: _goBack,
                         onMediaSelected: (mediaId) {
-                          setState(() {
-                            _selectedPersonId = null;
-                            _selectedMediaId = mediaId;
-                          });
+                          _navigateTo('media', mediaId);
                         },
                       )
                     : _selectedMediaId != null
                         ? MediaDetailsScreen(
                             mediaId: _selectedMediaId!,
                             apiService: widget.apiService,
-                            onBack: () {
-                              setState(() {
-                                _selectedMediaId = null;
-                              });
-                            },
+                            onBack: _goBack,
                             onGenreSelected: (g) {
                               setState(() {
                                 _selectedMediaId = null;
@@ -498,14 +657,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                               } catch (_) {}
                             },
                             onMediaSelected: (mediaId) {
-                              setState(() {
-                                _selectedMediaId = mediaId;
-                              });
+                              _navigateTo('media', mediaId);
                             },
                             onPersonSelected: (personId) {
-                              setState(() {
-                                _selectedPersonId = personId;
-                              });
+                              _navigateTo('person', personId);
                             },
                           )
                     : Padding(
@@ -561,32 +716,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           Padding(
             padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 24 : 16, vertical: 10),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (_selectedMediaId != null || _selectedPersonId != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Align(
-                      alignment: _isSidebarExpanded ? Alignment.centerLeft : Alignment.center,
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: IconButton(
-                          tooltip: 'Tillbaka',
-                          icon: const Icon(Icons.arrow_back, color: Colors.white70),
-                          padding: _isSidebarExpanded ? const EdgeInsets.all(8) : EdgeInsets.zero,
-                          constraints: _isSidebarExpanded ? const BoxConstraints() : const BoxConstraints(maxWidth: 36, maxHeight: 36),
-                          onPressed: () {
-                            setState(() {
-                              if (_selectedPersonId != null) {
-                                _selectedPersonId = null;
-                              } else if (_selectedMediaId != null) {
-                                _selectedMediaId = null;
-                              }
-                            });
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
+                _buildNavigationButtons(),
+                const SizedBox(height: 8),
                 Row(
                   mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
                   children: [
@@ -598,6 +731,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             setState(() {
                               _tabController.animateTo(0);
                               _selectedMediaId = null;
+                              _selectedPersonId = null;
                             });
                           },
                           child: Row(
@@ -1010,9 +1144,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: () {
-          setState(() {
-            _selectedMediaId = movie['id']?.toString();
-          });
+          final mId = movie['id']?.toString();
+          if (mId != null) {
+            _navigateTo('media', mId);
+          }
         },
         child: Container(
           width: 130,
@@ -1030,9 +1165,45 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         ? DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover)
                         : null,
                   ),
-                  child: posterPath == null
-                      ? const Center(child: Icon(Icons.movie, color: Colors.white24, size: 32))
-                      : null,
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    children: [
+                      if (posterPath == null)
+                        const Center(child: Icon(Icons.movie, color: Colors.white24, size: 32)),
+                      
+                      // Bottom progress bar if playback_progress > 0
+                      Builder(builder: (context) {
+                        final metadata = movie['metadata'] ?? {};
+                        final progress = int.tryParse((metadata['playback_progress']?.toString() ?? '0')) ?? 0;
+                        if (progress <= 0) return const SizedBox.shrink();
+
+                        int duration = int.tryParse((metadata['duration']?.toString() ?? '0')) ?? 0;
+                        if (duration == 0) {
+                          final runtimeMinutes = int.tryParse((metadata['runtime']?.toString() ?? '0')) ?? 0;
+                          duration = runtimeMinutes * 60;
+                        }
+                        if (duration == 0) {
+                          duration = 7200; // 120 min default fallback
+                        }
+                        final ratio = (progress / duration).clamp(0.0, 1.0);
+
+                        return Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            height: 6,
+                            color: Colors.white12,
+                            child: LinearProgressIndicator(
+                              value: ratio,
+                              color: const Color(0xFF8A5BFF),
+                              backgroundColor: Colors.transparent,
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -1208,9 +1379,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: () {
-          setState(() {
-            _selectedMediaId = item['id'].toString();
-          });
+          final mId = item['id']?.toString();
+          if (mId != null) {
+            _navigateTo('media', mId);
+          }
         },
         child: Container(
           decoration: BoxDecoration(
@@ -1288,13 +1460,20 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           bottom: 0,
                           child: Container(
                             height: 6,
-                            decoration: BoxDecoration(
+                            decoration: const BoxDecoration(
                               color: Colors.white12,
                             ),
                             child: Builder(builder: (context) {
                               final progress = int.tryParse((metadata['playback_progress']?.toString() ?? '0')) ?? 0;
-                              final duration = int.tryParse((metadata['duration']?.toString() ?? '0')) ?? 0;
-                              final ratio = (duration > 0) ? (progress / duration).clamp(0.0, 1.0) : 0.0;
+                              int duration = int.tryParse((metadata['duration']?.toString() ?? '0')) ?? 0;
+                              if (duration == 0) {
+                                final runtimeMinutes = int.tryParse((metadata['runtime']?.toString() ?? '0')) ?? 0;
+                                duration = runtimeMinutes * 60;
+                              }
+                              if (duration == 0) {
+                                duration = 7200; // 120 min default fallback
+                              }
+                              final ratio = (progress / duration).clamp(0.0, 1.0);
                               return LinearProgressIndicator(value: ratio, color: const Color(0xFF8A5BFF), backgroundColor: Colors.transparent);
                             }),
                           ),

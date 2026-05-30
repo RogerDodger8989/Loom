@@ -707,28 +707,41 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                     final runtimeMinutes = int.tryParse(meta['runtime']?.toString() ?? '') ?? 0;
                                     durationSec = runtimeMinutes * 60;
                                   }
+                                  if (durationSec == 0) {
+                                    durationSec = 7200; // 120 min fallback to prevent indeterminate/rolling line
+                                  }
                                   final progress = _savedProgressSeconds;
-                                  final ratio = (durationSec > 0) ? (progress / durationSec).clamp(0.0, 1.0) : null;
+                                  final ratio = (progress / durationSec).clamp(0.0, 1.0);
+                                  final playedMin = (progress / 60).ceil();
+                                  final leftMin = ((durationSec - progress) / 60).ceil();
+                                  
                                   return Column(
                                     children: [
-                                      if (ratio != null)
-                                        LinearProgressIndicator(value: ratio, color: const Color(0xFF8A5BFF), backgroundColor: Colors.white12)
-                                      else
-                                        const LinearProgressIndicator(value: null, color: Color(0xFF8A5BFF), backgroundColor: Colors.white12),
+                                      LinearProgressIndicator(
+                                        value: ratio,
+                                        color: const Color(0xFF8A5BFF),
+                                        backgroundColor: Colors.white12,
+                                        minHeight: 4,
+                                      ),
                                       const SizedBox(height: 8),
                                       Container(
                                         width: double.infinity,
-                                        padding: const EdgeInsets.symmetric(vertical: 8),
+                                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                                         decoration: BoxDecoration(
                                           color: Colors.black.withValues(alpha: 0.55),
                                           borderRadius: BorderRadius.circular(6),
+                                          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
                                         ),
                                         child: Center(
                                           child: Text(
-                                            (durationSec > 0)
-                                                ? '${((durationSec - progress) / 60).ceil()} min kvar'
-                                                : '${(progress / 60).ceil()} min spelat',
-                                            style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                                            '$playedMin min spelat, ${leftMin > 0 ? leftMin : 0} min kvar',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 12,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
                                           ),
                                         ),
                                       ),
@@ -3180,6 +3193,19 @@ class _PlaybackSimulatorDialogState extends State<_PlaybackSimulatorDialog> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  _buildControlButton(
+                    icon: Icons.replay_10_rounded,
+                    tooltip: 'Spola bakåt 10s',
+                    color: const Color(0xFFB593FF),
+                    onPressed: () {
+                      setState(() {
+                        _currentPosition = (_currentPosition - 10).clamp(0, widget.durationSeconds);
+                      });
+                      _reportProgress();
+                    },
+                  ),
+                  const SizedBox(width: 24),
+                  
                   // Save & Stop Button
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
@@ -3199,6 +3225,19 @@ class _PlaybackSimulatorDialogState extends State<_PlaybackSimulatorDialog> {
                       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, letterSpacing: 0.5),
                     ),
                   ),
+                  const SizedBox(width: 24),
+
+                  _buildControlButton(
+                    icon: Icons.forward_30_rounded,
+                    tooltip: 'Spola framåt 30s',
+                    color: const Color(0xFF00E5FF),
+                    onPressed: () {
+                      setState(() {
+                        _currentPosition = (_currentPosition + 30).clamp(0, widget.durationSeconds);
+                      });
+                      _reportProgress();
+                    },
+                  ),
                 ],
               ),
             ],
@@ -3207,5 +3246,44 @@ class _PlaybackSimulatorDialogState extends State<_PlaybackSimulatorDialog> {
       ),
     );
   }
+
+  Widget _buildControlButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+    required Color color,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onPressed,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.03),
+              shape: BoxShape.circle,
+              border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.15),
+                  blurRadius: 10,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Icon(
+              icon,
+              color: color,
+              size: 24,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
+
 
