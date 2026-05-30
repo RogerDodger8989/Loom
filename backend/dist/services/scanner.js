@@ -44,6 +44,7 @@ const uuid_1 = require("uuid");
 const database_1 = __importDefault(require("../config/database"));
 const tmdb_1 = require("./tmdb");
 const axios_1 = __importDefault(require("axios"));
+const ffprobe = require('@ffprobe-installer/ffprobe');
 class ScannerService {
     /**
      * Scan a specific library path for media files and their NFOs
@@ -732,7 +733,8 @@ class ScannerService {
      */
     probeMediaFile(filePath) {
         return new Promise((resolve) => {
-            const cmd = `ffprobe -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
+            const ffprobePath = ffprobe.path;
+            const cmd = `"${ffprobePath}" -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
             childProcess.exec(cmd, { timeout: 15000 }, (err, stdout) => {
                 if (err) {
                     // ffprobe not found or failed — return empty gracefully

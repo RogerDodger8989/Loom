@@ -119,6 +119,65 @@ async function syncTmdb(media: MediaLike, rating: number) {
 
   await axios.post(path, { value: rating }, config);
 }
+async function syncTraktWatchStatus(media: MediaLike, isWatched: boolean) {
+  const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
+  const traktAccessToken = tmdbService.getSetting('TRAKT_ACCESS_TOKEN');
+
+  if (!traktApiKey || !traktAccessToken || !hasExternalId(media)) return;
+
+  const headers = {
+    'trakt-api-key': traktApiKey,
+    'trakt-api-version': '2',
+    'Content-Type': 'application/json',
+    'User-Agent': 'Loom/1.0',
+    Authorization: `Bearer ${traktAccessToken}`,
+  };
+
+  const item = buildItem(media);
+  const body = isShow(media) ? { shows: [item] } : { movies: [item] };
+
+  const path = isWatched 
+    ? 'https://api.trakt.tv/sync/history' 
+    : 'https://api.trakt.tv/sync/history/remove';
+
+  await axios.post(path, body, { headers });
+}
+
+async function syncSimklWatchStatus(media: MediaLike, isWatched: boolean) {
+  const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
+  const simklAccessToken = tmdbService.getSetting('SIMKL_ACCESS_TOKEN');
+
+  if (!simklClientId || !simklAccessToken || !hasExternalId(media)) return;
+
+  const headers = {
+    'simkl-api-key': simklClientId,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${simklAccessToken}`,
+  };
+
+  const item = buildItem(media);
+  const body = isShow(media) ? { shows: [item] } : { movies: [item] };
+
+  const path = isWatched 
+    ? 'https://api.simkl.com/sync/history' 
+    : 'https://api.simkl.com/sync/history/remove';
+
+  await axios.post(path, body, { headers });
+}
+
+export async function syncExternalWatchStatus(media: MediaLike, isWatched: boolean) {
+  try {
+    await syncTraktWatchStatus(media, isWatched);
+  } catch (error) {
+    console.error('[Playback Sync] Trakt watch status sync failed:', error);
+  }
+
+  try {
+    await syncSimklWatchStatus(media, isWatched);
+  } catch (error) {
+    console.error('[Playback Sync] Simkl watch status sync failed:', error);
+  }
+}
 
 import db from '../config/database';
 import { v4 as uuidv4 } from 'uuid';

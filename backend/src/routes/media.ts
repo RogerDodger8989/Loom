@@ -4,7 +4,8 @@ import axios from 'axios';
 import { tmdbService } from '../services/tmdb';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import { syncExternalRatings } from '../services/rating_sync';
+import { syncExternalRatings, syncExternalWatchStatus } from '../services/rating_sync';
+
 
 interface MediaQueryParams {
   mergeVersions?: string; // 'true' or 'false'
@@ -328,6 +329,137 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       }
     }
   );
+
+  // POST /api/media/items/:id/seen
+  // Toggle seen status for a given media item, update DB (media_metadata & watch_history) and sync to Trakt/Simkl
+  fastify.post(
+    '/api/media/items/:id/seen',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: { watched?: boolean; isWatched?: boolean } }>, reply: FastifyReply) => {
+      const user = request.user as { id: string; username: string; role: string };
+      const { id } = request.params;
+      const { watched, isWatched } = request.body || {};
+      const isWatchedBool = watched !== undefined ? watched : (isWatched ?? true);
+
+      try {
+        const movie = db.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id) as any;
+        if (!movie) return reply.code(404).send({ error: 'Media item not found' });
+
+        const statusStr = isWatchedBool ? 'watched' : 'unwatched';
+
+        // 1. Update media_metadata for watch_status
+        db.prepare(`
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          VALUES (?, ?, 'watch_status', ?)
+          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+        `).run(uuidv4(), movie.id, statusStr);
+
+        // 2. Update watch_history to prevent duplicate rows for the same user & media item
+        const existingHistory = db.prepare(`
+          SELECT id FROM watch_history 
+          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+        `).get(user.id, movie.id) as { id: string } | undefined;
+
+        if (existingHistory) {
+          db.prepare(`
+            UPDATE watch_history 
+            SET is_watched = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(isWatchedBool ? 1 : 0, existingHistory.id);
+        } else {
+          db.prepare(`
+            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
+            VALUES (?, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP)
+          `).run(uuidv4(), user.id, movie.id, isWatchedBool ? 1 : 0);
+        }
+
+        // 3. Sync to external APIs in background
+        syncExternalWatchStatus(movie, isWatchedBool).catch(err => {
+          console.error('[Seen Route] syncExternalWatchStatus failed:', err);
+        });
+
+        return reply.code(200).send({ ok: true, watch_status: statusStr });
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to update seen status', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/media/items/:id/progress
+  // Save play progress (heartbeat/scrobbling) and toggle watched state if progress is >= 90%
+  fastify.post(
+    '/api/media/items/:id/progress',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: { position?: number; duration?: number; positionSeconds?: number; durationSeconds?: number } }>, reply: FastifyReply) => {
+      const user = request.user as { id: string; username: string; role: string };
+      const { id } = request.params;
+      const { position, duration, positionSeconds, durationSeconds } = request.body || {};
+
+      const posSec = positionSeconds !== undefined ? positionSeconds : (position ?? 0);
+      const durSec = durationSeconds !== undefined ? durationSeconds : (duration ?? 0);
+
+      if (durSec <= 0) {
+        return reply.code(400).send({ error: 'Duration must be greater than 0' });
+      }
+
+      try {
+        const movie = db.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id) as any;
+        if (!movie) return reply.code(404).send({ error: 'Media item not found' });
+
+        const progressPercent = posSec / durSec;
+        const autoWatch = progressPercent >= 0.90;
+
+        // 1. Update playback_progress in media_metadata
+        db.prepare(`
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          VALUES (?, ?, 'playback_progress', ?)
+          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+        `).run(uuidv4(), movie.id, posSec.toString());
+
+        // 2. If >= 90%, update watch_status in media_metadata to 'watched'
+        let currentStatus = 'unwatched';
+        if (autoWatch) {
+          currentStatus = 'watched';
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, 'watch_status', 'watched')
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id);
+        }
+
+        // 3. Update watch_history
+        const existingHistory = db.prepare(`
+          SELECT id FROM watch_history 
+          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+        `).get(user.id, movie.id) as { id: string } | undefined;
+
+        if (existingHistory) {
+          db.prepare(`
+            UPDATE watch_history 
+            SET last_position_seconds = ?, total_duration_seconds = ?, is_watched = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(posSec, durSec, autoWatch ? 1 : 0, existingHistory.id);
+        } else {
+          db.prepare(`
+            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(uuidv4(), user.id, movie.id, posSec, durSec, autoWatch ? 1 : 0);
+        }
+
+        // 4. Sync to Trakt/Simkl if threshold met
+        if (autoWatch) {
+          syncExternalWatchStatus(movie, true).catch(err => {
+            console.error('[Progress Route] syncExternalWatchStatus failed:', err);
+          });
+        }
+
+        return reply.code(200).send({ ok: true, position: posSec, duration: durSec, watch_status: currentStatus });
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to update progress', details: err.message });
+      }
+    }
+  );
+
 
   // GET /api/media/items/:id
   // Retrieves full details for a specific media item (Plex-like Media Details page)

@@ -6,6 +6,8 @@ import db from '../config/database';
 import { tmdbService } from './tmdb';
 import axios from 'axios';
 
+const ffprobe = require('@ffprobe-installer/ffprobe');
+
 export class ScannerService {
   /**
    * Scan a specific library path for media files and their NFOs
@@ -678,7 +680,8 @@ export class ScannerService {
     subtitleTracks: Array<{ index: number; language: string; codec: string; label: string }>;
   }> {
     return new Promise((resolve) => {
-      const cmd = `ffprobe -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
+      const ffprobePath = ffprobe.path;
+      const cmd = `"${ffprobePath}" -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
       childProcess.exec(cmd, { timeout: 15000 }, (err, stdout) => {
         if (err) {
           // ffprobe not found or failed — return empty gracefully

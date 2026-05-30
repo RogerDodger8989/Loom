@@ -83,4 +83,4 @@ Kärnan i systemet är nu byggd och fullt fungerande inklusive premium design, e
 - Backend: `http://localhost:8080` (Fastify API)
 - Frontend: `http://localhost:50645` (Flutter Web)
 
-**Nästa steg:** Riktiga IMDb-betyg cachade från OMDb i scanner-steget, ffprobe integration för faktiska ljud/undertextspår, samt TV-seriestruktur.
+**Nästa steg:** Riktiga IMDb-betyg cachade från OMDb i scanner-steget samt TV-seriestruktur. (Faktiska ljud- och undertextspår via ffprobe är nu helt klart!).

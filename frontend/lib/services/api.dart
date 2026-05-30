@@ -240,6 +240,46 @@ class ApiService {
     await saveMediaMetadata(id, 'my_rating', rating.round().toString());
   }
 
+  /// Authenticated: Toggle seen/watched status for a media item
+  Future<Map<String, dynamic>> toggleSeenStatus(String id, bool isWatched) async {
+    if (_token == null) throw Exception('Not authenticated');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/seen'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'watched': isWatched}),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to toggle seen status: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Report playback progress (heartbeat/scrobble)
+  Future<Map<String, dynamic>> reportPlaybackProgress(String id, int positionSeconds, int durationSeconds) async {
+    if (_token == null) throw Exception('Not authenticated');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/progress'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'position': positionSeconds,
+        'duration': durationSeconds,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to report playback progress: ${response.body}');
+    }
+  }
+
+
   Future<Map<String, dynamic>> fetchCollectionItems(String collectionId) async {
     if (_token == null) {
       throw Exception('Not authenticated');

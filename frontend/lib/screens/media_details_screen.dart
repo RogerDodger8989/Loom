@@ -210,21 +210,38 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   Future<void> _toggleWatchStatus() async {
+    final targetState = !_isWatched;
     setState(() {
-      _isWatched = !_isWatched;
+      _isWatched = targetState;
     });
     try {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_isWatched ? 'Markerad som sedd! Synkar...' : 'Markerad som osedd! Synkar...'),
-          backgroundColor: const Color(0xFF8A5BFF),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(targetState ? 'Markerad som sedd! Synkar...' : 'Markerad som osedd! Synkar...'),
+            backgroundColor: const Color(0xFF8A5BFF),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      await widget.apiService.toggleSeenStatus(widget.mediaId, targetState);
     } catch (e) {
-      debugPrint(e.toString());
+      debugPrint('Failed to toggle seen status: $e');
+      if (mounted) {
+        setState(() {
+          _isWatched = !targetState; // Revert
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Misslyckades att synka visningsstatus: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
     }
   }
+
 
   void _showFixMatchDialog() {
     showDialog(
@@ -264,15 +281,44 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   void _startPlayback(int startFromSeconds) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(startFromSeconds > 0 
-          ? 'Startar uppspelning från ${startFromSeconds}s...' 
-          : 'Startar uppspelning...'),
-        backgroundColor: const Color(0xFF8A5BFF),
-      ),
+    final meta = _mediaData?['metadata'] ?? {};
+    int durationSec = int.tryParse(meta['duration']?.toString() ?? '') ?? 0;
+    if (durationSec == 0) {
+      final runtimeMinutes = int.tryParse(meta['runtime']?.toString() ?? '') ?? 0;
+      durationSec = runtimeMinutes * 60;
+    }
+    if (durationSec <= 0) {
+      durationSec = 7200; // default 120 minutes
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, // Must click Stop to save progress
+      builder: (context) {
+        return _PlaybackSimulatorDialog(
+          mediaId: widget.mediaId,
+          apiService: widget.apiService,
+          title: _mediaData?['title'] ?? 'Unknown Title',
+          durationSeconds: durationSec,
+          startFromSeconds: startFromSeconds,
+          onPlaybackFinished: (finalPosition, wasCompleted) {
+            if (wasCompleted) {
+              setState(() {
+                _isWatched = true;
+                _savedProgressSeconds = 0;
+              });
+            } else {
+              setState(() {
+                _savedProgressSeconds = finalPosition;
+              });
+            }
+            _fetchDetails(); // Reload media info to sync with UI
+          },
+        );
+      },
     );
   }
+
 
   double _normalizeRating(double value) {
     return value.clamp(0.0, 10.0).roundToDouble();
@@ -2892,3 +2938,274 @@ class _KeywordsExpandableContainerState extends State<_KeywordsExpandableContain
     );
   }
 }
+
+class _PlaybackSimulatorDialog extends StatefulWidget {
+  final String mediaId;
+  final ApiService apiService;
+  final String title;
+  final int durationSeconds;
+  final int startFromSeconds;
+  final Function(int finalPosition, bool wasCompleted) onPlaybackFinished;
+
+  const _PlaybackSimulatorDialog({
+    required this.mediaId,
+    required this.apiService,
+    required this.title,
+    required this.durationSeconds,
+    required this.startFromSeconds,
+    required this.onPlaybackFinished,
+  });
+
+  @override
+  State<_PlaybackSimulatorDialog> createState() => _PlaybackSimulatorDialogState();
+}
+
+class _PlaybackSimulatorDialogState extends State<_PlaybackSimulatorDialog> {
+  late int _currentPosition;
+  Timer? _timer;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentPosition = widget.startFromSeconds;
+    
+    // Increment position every second
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+
+      setState(() {
+        _currentPosition++;
+      });
+
+      final ratio = _currentPosition / widget.durationSeconds;
+
+      // Heartbeat / Report progress to API every 5 seconds (or if completed)
+      if (_currentPosition % 5 == 0 || ratio >= 0.90) {
+        _reportProgress();
+      }
+
+      // Check auto-watch status threshold (90%)
+      if (ratio >= 0.90) {
+        _timer?.cancel();
+        _timer = null;
+        _finishPlayback(true);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _reportProgress() async {
+    try {
+      await widget.apiService.reportPlaybackProgress(
+        widget.mediaId,
+        _currentPosition,
+        widget.durationSeconds,
+      );
+    } catch (e) {
+      debugPrint('Playback simulator scrobble failed: $e');
+    }
+  }
+
+  Future<void> _finishPlayback(bool wasCompleted) async {
+    if (_isSaving) return;
+    setState(() {
+      _isSaving = true;
+    });
+
+    _timer?.cancel();
+    _timer = null;
+
+    // Send final progress update
+    await _reportProgress();
+
+    if (mounted) {
+      Navigator.pop(context);
+      widget.onPlaybackFinished(_currentPosition, wasCompleted);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(wasCompleted 
+            ? 'Filmen klar! Automatisk scrobbling till Trakt & Simkl lyckades!' 
+            : 'Uppspelning pausad. Position sparad!'),
+          backgroundColor: const Color(0xFF8A5BFF),
+        ),
+      );
+    }
+  }
+
+  String _formatDuration(int totalSeconds) {
+    final int hours = totalSeconds ~/ 3600;
+    final int minutes = (totalSeconds % 3600) ~/ 60;
+    final int seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+      return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    } else {
+      return '$minutes:${seconds.toString().padLeft(2, '0')}';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = (_currentPosition / widget.durationSeconds).clamp(0.0, 1.0);
+    final remainingSec = widget.durationSeconds - _currentPosition;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+      child: Center(
+        child: Container(
+          width: 500,
+          padding: const EdgeInsets.all(30),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F0B1E),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.2), width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                blurRadius: 40,
+                spreadRadius: 5,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Custom top bar with pulsing neon dot
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFFE2537A),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(color: Color(0xFFE2537A), blurRadius: 8),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'LOOM SPELARE (SIMULERING)',
+                        style: TextStyle(
+                          color: Colors.white60,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Icon(Icons.movie, color: Color(0xFF8A5BFF), size: 18),
+                ],
+              ),
+              const SizedBox(height: 30),
+
+              // Title
+              Text(
+                widget.title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 8),
+              
+              // Pulsing soundwaves / status
+              const SizedBox(
+                height: 60,
+                child: Center(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.graphic_eq, color: Color(0xFF8A5BFF), size: 36),
+                      SizedBox(width: 8),
+                      Text(
+                        'Spelar upp media...',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontStyle: FontStyle.italic,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Progress Bar
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: LinearProgressIndicator(
+                  value: ratio,
+                  minHeight: 12,
+                  color: const Color(0xFF8A5BFF),
+                  backgroundColor: Colors.white12,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Time labels
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    _formatDuration(_currentPosition),
+                    style: const TextStyle(color: Colors.white70, fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                  Text(
+                    '-${_formatDuration(remainingSec)}',
+                    style: const TextStyle(color: Colors.white54, fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 35),
+
+              // Control buttons
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Save & Stop Button
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE2537A),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      elevation: 8,
+                      shadowColor: const Color(0xFFE2537A).withValues(alpha: 0.4),
+                    ),
+                    onPressed: _isSaving ? null : () => _finishPlayback(false),
+                    icon: _isSaving 
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Icon(Icons.stop, size: 20),
+                    label: Text(
+                      _isSaving ? 'Sparar...' : 'Spara & Avsluta',
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, letterSpacing: 0.5),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+

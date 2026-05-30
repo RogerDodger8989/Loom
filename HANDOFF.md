@@ -86,7 +86,7 @@ Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren h
 
 ### Hög prioritet
 - [ ] **Riktiga IMDb-betyg**: Idag visas hårdkodade ratings. Måste hämtas via OMDb API (`i=tt1234567`) och cachas i `media_metadata` under skanningen eller öppnandet av en film.
-- [ ] **Faktiska ljud- och undertextspår**: Idag är svensk/engelsk SRT/5.1 hårdkodade. Behöver integrera `ffprobe` i backend för att läsa av den verkliga informationen från videofilen.
+- [x] **Faktiska ljud- och undertextspår (ffprobe-integration)**: Integrerat `@ffprobe-installer/ffprobe` i backend (`scanner.ts`) som automatiskt installerar och använder den statiska Windows-binären för att läsa av alla tillgängliga ljud- och undertextspår från videofilen, lagra dem strukturerat i SQLite, samt rendera dem i dropdownsen.
 - [ ] **TV-serier-vy**: `_buildShowsView` existerar men saknar seasons/episodes-struktur.
 
 ### Medium prioritet
