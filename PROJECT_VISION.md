@@ -67,3 +67,16 @@ Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fu
 ## 9. Musik- & Bildmoduler (Fotoalbum)
 - **Musikmodul:** Skannern använder en inbäddad ID3-parser för metadata. Saknad info hämtas via MusicBrainz/Last.fm. All musikscrobbling sparas lokalt med stöd för export. Ljud spelas i bakgrunden vid navigering i klienten.
 - **Bildmodul (Fotoalbum):** Mappbaserad struktur lagrad i databasen. Backend genererar automatiskt on-the-fly nerskalade miniatyrer (via Sharp) i cache för snabb laddning. Originalen förblir orörda.
+
+
+---
+
+## Implementeringsstatus (Uppdaterad 2026-05-30)
+
+Kärnan i systemet är nu byggd och fungerande. Se **HANDOFF.md** for detaljerad status om vad som ar implementerat och vad som aterstar.
+
+**Aktiva tjanster:**
+- Backend: `http://localhost:8080`
+- Frontend: `http://localhost:50645`
+
+**Naasta steg:** Riktiga IMDb/Simkl-betyg, ffprobe for ljud/undertext, och TV-seriestruktur.
