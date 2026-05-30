@@ -15,6 +15,9 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   
+  String? _selectedMediaId;
+  bool _isSidebarExpanded = true;
+
   List<dynamic> _movies = [];
   List<dynamic> _shows = [];
   bool _loadingMedia = false;
@@ -24,6 +27,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   final TextEditingController _pathController = TextEditingController();
   final String _selectedScanType = 'Movie';
   bool _isScanning = false;
+  String? _currentlyScanningPath;
   bool _preferLocalNfo = true;
   bool _isBrowsingDirectory = false;
   String _scanStatusText = 'Idle';
@@ -39,20 +43,30 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   final TextEditingController _simklKeyController = TextEditingController();
   final TextEditingController _defaultSubLangController = TextEditingController(text: 'sv');
   bool _isLoadingSettings = false;
+  
+  String _metadataLanguage = 'sv-SE';
+  String _fallbackLanguage = 'en-US';
+  String _defaultAudioLanguage = 'sv';
+  String _watchProviderRegion = 'SE';
+  String _titleDisplayStyle = 'Translated';
+
+  String? _genreFilter;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
-      if (_tabController.index == 3 && !_isLoadingDevices) {
+      if (_tabController.index == 3) {
         _loadDevices();
+        _loadSettings();
       }
     });
     _loadAllMedia();
     _checkScannerStatus();
     _loadLibraryPaths();
     _loadDevices();
+    _loadSettings();
   }
 
   @override
@@ -288,6 +302,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _isScanning = status['isScanning'] ?? false;
         _lastScanResult = status['lastScanResult'];
         _scanStatusText = _isScanning ? 'Scanning...' : 'Idle';
+        if (!_isScanning) {
+          _currentlyScanningPath = null;
+        }
       });
     } catch (e) {
       debugPrint('Error checking scanner status: $e');
@@ -406,30 +423,46 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             // Main Content Area
             Expanded(
               child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 30),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildHeader(),
-                      const SizedBox(height: 30),
-                      
-                      // Tab views
-                      Expanded(
-                        child: TabBarView(
-                          controller: _tabController,
-                          physics: const NeverScrollableScrollPhysics(),
+                child: _selectedMediaId != null
+                    ? MediaDetailsScreen(
+                        mediaId: _selectedMediaId!,
+                        apiService: widget.apiService,
+                        onBack: () {
+                          setState(() {
+                            _selectedMediaId = null;
+                          });
+                        },
+                        onGenreSelected: (g) {
+                          setState(() {
+                            _selectedMediaId = null;
+                            _genreFilter = g;
+                          });
+                        },
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 30),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _buildMoviesView(),
-                            _buildShowsView(),
-                            _buildScannerView(),
-                            _buildSettingsView(),
+                            _buildHeader(),
+                            const SizedBox(height: 30),
+                            
+                            // Tab views
+                            Expanded(
+                              child: TabBarView(
+                                controller: _tabController,
+                                physics: const NeverScrollableScrollPhysics(),
+                                children: [
+                                  _buildMoviesView(),
+                                  _buildShowsView(),
+                                  _buildScannerView(),
+                                  _buildSettingsView(),
+                                ],
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                    ],
-                  ),
-                ),
               ),
             ),
           ],
@@ -439,8 +472,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildSidebar() {
-    return Container(
-      width: 280,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeInOutCubic,
+      width: _isSidebarExpanded ? 280 : 80,
       decoration: BoxDecoration(
         color: const Color(0xFF0F0B21).withValues(alpha: 0.6),
         border: Border(
@@ -450,40 +485,81 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 45),
+          const SizedBox(height: 35),
           
-          // Brand Logo
+          // Brand Logo & Toggle Row
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 30),
+            padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 24 : 16, vertical: 10),
             child: Row(
+              mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
               children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(10),
+                if (_isSidebarExpanded) ...[
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.play_circle_fill,
+                          color: Color(0xFF8A5BFF),
+                          size: 26,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Text(
+                        'LOOM',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 2,
+                        ),
+                      ),
+                    ],
                   ),
-                  child: const Icon(
-                    Icons.play_circle_fill,
-                    color: Color(0xFF8A5BFF),
-                    size: 26,
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
+                      icon: const Icon(Icons.chevron_left, color: Colors.white54),
+                      onPressed: () {
+                        setState(() {
+                          _isSidebarExpanded = false;
+                        });
+                      },
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                const Text(
-                  'LOOM',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 2,
+                ] else ...[
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: InkWell(
+                      onTap: () {
+                        setState(() {
+                          _isSidebarExpanded = true;
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.menu,
+                          color: Color(0xFF8A5BFF),
+                          size: 26,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
           
-          const SizedBox(height: 50),
+          const SizedBox(height: 40),
           
           // Navigation Items (Tab-based)
           _buildSidebarItem(0, Icons.movie_outlined, Icons.movie, 'Movies'),
@@ -505,16 +581,18 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Widget _buildSidebarItem(int index, IconData outlineIcon, IconData filledIcon, String title) {
     final isSelected = _tabController.index == index;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+      padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12, vertical: 6),
       child: InkWell(
         onTap: () {
           setState(() {
             _tabController.animateTo(index);
+            _selectedMediaId = null; // reset selected media details when shifting tabs
           });
         },
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 0, vertical: 16),
+          alignment: Alignment.center,
           decoration: BoxDecoration(
             color: isSelected ? const Color(0xFF8A5BFF).withValues(alpha: 0.12) : Colors.transparent,
             borderRadius: BorderRadius.circular(12),
@@ -524,21 +602,24 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             ),
           ),
           child: Row(
+            mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
             children: [
               Icon(
                 isSelected ? filledIcon : outlineIcon,
                 color: isSelected ? const Color(0xFFB593FF) : Colors.white54,
                 size: 22,
               ),
-              const SizedBox(width: 16),
-              Text(
-                title,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.white60,
-                  fontSize: 16,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+              if (_isSidebarExpanded) ...[
+                const SizedBox(width: 16),
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: isSelected ? Colors.white : Colors.white60,
+                    fontSize: 16,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -548,40 +629,51 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   Widget _buildUserProfileCard() {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      padding: const EdgeInsets.all(16),
+      margin: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12),
+      padding: EdgeInsets.all(_isSidebarExpanded ? 16 : 8),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Row(
+        mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
         children: [
-          CircleAvatar(
-            backgroundColor: const Color(0xFF8A5BFF),
-            radius: 20,
-            child: Text(
-              'A',
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontWeight: FontWeight.bold),
+          InkWell(
+            onTap: _isSidebarExpanded ? null : _handleLogout,
+            child: CircleAvatar(
+              backgroundColor: const Color(0xFF8A5BFF),
+              radius: 20,
+              child: Text(
+                'A',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontWeight: FontWeight.bold),
+              ),
             ),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'admin',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-                Text(
-                  'Server Owner',
-                  style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
-                ),
-              ],
+          if (_isSidebarExpanded) ...[
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'admin',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  Text(
+                    'Server Owner',
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
+                  ),
+                ],
+              ),
             ),
-          ),
+            IconButton(
+              icon: const Icon(Icons.logout, color: Colors.white30, size: 20),
+              onPressed: _handleLogout,
+              tooltip: 'Logga ut',
+            ),
+          ],
         ],
       ),
     );
@@ -678,6 +770,23 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+  Widget _buildGenreFilterBadge() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Chip(
+        backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.1),
+        side: const BorderSide(color: Color(0xFF8A5BFF)),
+        label: Text('Genre: $_genreFilter', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        deleteIcon: const Icon(Icons.close, color: Colors.white, size: 18),
+        onDeleted: () {
+          setState(() {
+            _genreFilter = null;
+          });
+        },
+      ),
+    );
+  }
+
   Widget _buildMoviesView() {
     if (_loadingMedia) {
       return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))));
@@ -691,19 +800,41 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       return _buildEmptyState('No movies found', 'Go to the Library Scanner tab to import your media files.');
     }
 
-    return GridView.builder(
-      padding: const EdgeInsets.only(top: 10, bottom: 30),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 220,
-        mainAxisSpacing: 30,
-        crossAxisSpacing: 24,
-        childAspectRatio: 0.72,
-      ),
-      itemCount: _movies.length,
-      itemBuilder: (context, index) {
-        final movie = _movies[index];
-        return _buildMediaCard(movie);
-      },
+    final filteredMovies = _genreFilter == null 
+        ? _movies 
+        : _movies.where((m) => (m['genre'] as String? ?? '').contains(_genreFilter!)).toList();
+
+    if (filteredMovies.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildGenreFilterBadge(),
+          Expanded(child: _buildEmptyState('Inga filmer matchar genren "$_genreFilter"', 'Ta bort filtret för att se alla filmer.')),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_genreFilter != null) _buildGenreFilterBadge(),
+        Expanded(
+          child: GridView.builder(
+            padding: const EdgeInsets.only(top: 10, bottom: 30),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisSpacing: 30,
+              crossAxisSpacing: 24,
+              childAspectRatio: 0.72,
+            ),
+            itemCount: filteredMovies.length,
+            itemBuilder: (context, index) {
+              final movie = filteredMovies[index];
+              return _buildMediaCard(movie);
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -720,24 +851,48 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       return _buildEmptyState('No TV shows found', 'Go to the Library Scanner tab to import your media files.');
     }
 
-    return GridView.builder(
-      padding: const EdgeInsets.only(top: 10, bottom: 30),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 220,
-        mainAxisSpacing: 30,
-        crossAxisSpacing: 24,
-        childAspectRatio: 0.72,
-      ),
-      itemCount: _shows.length,
-      itemBuilder: (context, index) {
-        final show = _shows[index];
-        return _buildMediaCard(show);
-      },
+    final filteredShows = _genreFilter == null 
+        ? _shows 
+        : _shows.where((s) => (s['genre'] as String? ?? '').contains(_genreFilter!)).toList();
+
+    if (filteredShows.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildGenreFilterBadge(),
+          Expanded(child: _buildEmptyState('Inga serier matchar genren "$_genreFilter"', 'Ta bort filtret för att se alla serier.')),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_genreFilter != null) _buildGenreFilterBadge(),
+        Expanded(
+          child: GridView.builder(
+            padding: const EdgeInsets.only(top: 10, bottom: 30),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisSpacing: 30,
+              crossAxisSpacing: 24,
+              childAspectRatio: 0.72,
+            ),
+            itemCount: filteredShows.length,
+            itemBuilder: (context, index) {
+              final show = filteredShows[index];
+              return _buildMediaCard(show);
+            },
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildMediaCard(dynamic item) {
-    final title = item['title'] ?? 'Unknown';
+    final title = (_titleDisplayStyle == 'Original' && item['original_title'] != null && (item['original_title'] as String).isNotEmpty)
+        ? item['original_title']
+        : (item['title'] ?? 'Unknown');
     final type = item['type'] ?? 'Movie';
     final resolution = item['resolution'] ?? '1080p';
     final versionsCount = item['versions'] != null ? (item['versions'] as List).length : 1;
@@ -746,116 +901,134 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     
     // Check if it's TV show to show episodes count
     final episodesCount = item['episodes'] != null ? (item['episodes'] as List).length : 0;
+    final posterPath = item['poster_path'];
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.03),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Simulated Poster Area (Glassmorphism & Gradient)
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    const Color(0xFF8A5BFF).withValues(alpha: 0.1),
-                    const Color(0xFF8A5BFF).withValues(alpha: 0.25),
-                  ],
-                ),
-              ),
-              child: Stack(
-                children: [
-                  Center(
-                    child: Icon(
-                      type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
-                      color: Colors.white24,
-                      size: 48,
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _selectedMediaId = item['id'].toString();
+          });
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.03),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Simulated Poster Area (Glassmorphism & Gradient)
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        const Color(0xFF8A5BFF).withValues(alpha: 0.1),
+                        const Color(0xFF8A5BFF).withValues(alpha: 0.25),
+                      ],
                     ),
+                    image: posterPath != null
+                        ? DecorationImage(
+                            image: NetworkImage(posterPath),
+                            fit: BoxFit.cover,
+                          )
+                        : null,
                   ),
-                  
-                  // Resolution Badge
-                  if (type == 'Movie')
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF8A5BFF),
-                          borderRadius: BorderRadius.circular(6),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF8A5BFF).withValues(alpha: 0.3),
-                              blurRadius: 6,
-                            )
-                          ],
-                        ),
-                        child: Text(
-                          resolution.toUpperCase(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
+                  child: Stack(
+                    children: [
+                      if (posterPath == null)
+                        Center(
+                          child: Icon(
+                            type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
+                            color: Colors.white24,
+                            size: 48,
                           ),
                         ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          
-          // Details Area
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
+                      
+                      // Resolution Badge
+                      if (type == 'Movie')
+                        Positioned(
+                          top: 12,
+                          right: 12,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF8A5BFF),
+                              borderRadius: BorderRadius.circular(6),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFF8A5BFF).withValues(alpha: 0.3),
+                                  blurRadius: 6,
+                                )
+                              ],
+                            ),
+                            child: Text(
+                              resolution.toUpperCase(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              ),
+              
+              // Details Area
+              Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      genre,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.35),
-                        fontSize: 12,
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
                       ),
                     ),
-                    Text(
-                      type == 'Movie' 
-                        ? (versionsCount > 1 ? '$versionsCount versions' : 'Movie')
-                        : '$episodesCount eps',
-                      style: TextStyle(
-                        color: const Color(0xFFB593FF).withValues(alpha: 0.8),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          genre,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.35),
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          type == 'Movie' 
+                            ? (versionsCount > 1 ? '$versionsCount versions' : 'Movie')
+                            : '$episodesCount eps',
+                          style: TextStyle(
+                            color: const Color(0xFFB593FF).withValues(alpha: 0.8),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1092,56 +1265,78 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     final id = pathItem['id'];
     final folderPath = pathItem['path'];
     final type = pathItem['type'];
+    final isThisPathScanning = _isScanning && (_currentlyScanningPath == folderPath || _currentlyScanningPath == null);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.02),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.folder_outlined, color: const Color(0xFFB593FF).withValues(alpha: 0.8), size: 24),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Text(
-              folderPath,
-              style: const TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.w500),
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.02),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.folder_outlined, color: const Color(0xFFB593FF).withValues(alpha: 0.8), size: 24),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  folderPath,
+                  style: const TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.w500),
+                ),
+              ),
+              
+              // Action: Edit path
+              IconButton(
+                onPressed: () => _showEditPathDialog(pathItem),
+                icon: const Icon(Icons.edit_outlined, color: Colors.blueAccent),
+                tooltip: 'Edit Folder Path',
+              ),
+              
+              // Action: Scan folder
+              IconButton(
+                onPressed: _isScanning 
+                  ? null 
+                  : () => _triggerScanOfSpecificPath(folderPath, type),
+                icon: const Icon(Icons.sync_outlined, color: Colors.greenAccent),
+                tooltip: 'Scan Folder Now',
+              ),
+              
+              // Action: Remove path
+              IconButton(
+                onPressed: () => _deletePath(id),
+                icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                tooltip: 'Remove Folder',
+              ),
+            ],
+          ),
+        ),
+        if (isThisPathScanning) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: const LinearProgressIndicator(
+                backgroundColor: Colors.white10,
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8A5BFF)),
+                minHeight: 3,
+              ),
             ),
           ),
-          
-          // Action: Edit path
-          IconButton(
-            onPressed: () => _showEditPathDialog(pathItem),
-            icon: const Icon(Icons.edit_outlined, color: Colors.blueAccent),
-            tooltip: 'Edit Folder Path',
-          ),
-          
-          // Action: Scan folder
-          IconButton(
-            onPressed: _isScanning 
-              ? null 
-              : () => _triggerScanOfSpecificPath(folderPath, type),
-            icon: const Icon(Icons.sync_outlined, color: Colors.greenAccent),
-            tooltip: 'Scan Folder Now',
-          ),
-          
-          // Action: Remove path
-          IconButton(
-            onPressed: () => _deletePath(id),
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            tooltip: 'Remove Folder',
-          ),
+          const SizedBox(height: 12),
+        ] else ...[
+          const SizedBox(height: 12),
         ],
-      ),
+      ],
     );
   }
 
   Future<void> _triggerScanOfSpecificPath(String folderPath, String type) async {
     setState(() {
       _isScanning = true;
+      _currentlyScanningPath = folderPath;
       _scanStatusText = 'Scanning $type...';
     });
 
@@ -1315,6 +1510,58 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     }
   }
 
+  Future<void> _loadSettings() async {
+    if (_isLoadingSettings) return;
+    setState(() {
+      _isLoadingSettings = true;
+    });
+    try {
+      final settings = await widget.apiService.getSettings();
+      setState(() {
+        _tmdbKeyController.text = settings['TMDB_API_KEY'] ?? '';
+        _omdbKeyController.text = settings['OMDB_API_KEY'] ?? '';
+        _simklKeyController.text = settings['SIMKL_CLIENT_ID'] ?? '';
+        _defaultSubLangController.text = settings['DEFAULT_SUBTITLE_LANG'] ?? 'sv';
+        _metadataLanguage = settings['METADATA_LANGUAGE'] ?? 'sv-SE';
+        _fallbackLanguage = settings['METADATA_FALLBACK_LANGUAGE'] ?? 'en-US';
+        _defaultAudioLanguage = settings['DEFAULT_AUDIO_LANG'] ?? 'sv';
+        _watchProviderRegion = settings['WATCH_PROVIDER_REGION'] ?? 'SE';
+        _titleDisplayStyle = settings['TITLE_DISPLAY_STYLE'] ?? 'Translated';
+        _preferLocalNfo = settings['PREFER_LOCAL_NFO'] != 'false';
+        _isLoadingSettings = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingSettings = false;
+      });
+      debugPrint('Error loading settings: $e');
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    try {
+      await widget.apiService.updateSettings({
+        'TMDB_API_KEY': _tmdbKeyController.text.trim(),
+        'OMDB_API_KEY': _omdbKeyController.text.trim(),
+        'SIMKL_CLIENT_ID': _simklKeyController.text.trim(),
+        'DEFAULT_SUBTITLE_LANG': _defaultSubLangController.text.trim(),
+        'METADATA_LANGUAGE': _metadataLanguage,
+        'METADATA_FALLBACK_LANGUAGE': _fallbackLanguage,
+        'DEFAULT_AUDIO_LANG': _defaultAudioLanguage,
+        'WATCH_PROVIDER_REGION': _watchProviderRegion,
+        'TITLE_DISPLAY_STYLE': _titleDisplayStyle,
+        'PREFER_LOCAL_NFO': _preferLocalNfo ? 'true' : 'false',
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inställningar sparade!'), backgroundColor: Color(0xFF8A5BFF)),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save settings: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
   Future<void> _renameDevice(String deviceId, String currentName) async {
     final TextEditingController controller = TextEditingController(text: currentName);
     final String? newName = await showDialog<String>(
@@ -1397,35 +1644,225 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildSettingsView() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Trusted Devices', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 10),
-        const Text('Manage devices that have access to this server. Devices are added when paired with a PIN.', style: TextStyle(color: Colors.white54)),
-        const SizedBox(height: 20),
-        Expanded(
-          child: _isLoadingDevices
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header with Save Button
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Inställningar', style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF8A5BFF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                ),
+                onPressed: _saveSettings,
+                icon: const Icon(Icons.save),
+                label: const Text('Spara Inställningar', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 30),
+
+          // Metadata & Library Scanner Preferences
+          _buildSettingsSection(
+            'Bibliotek & Metadata',
+            Icons.library_books_outlined,
+            [
+              _buildSettingField('TMDB API Nyckel', _tmdbKeyController, obscure: true),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildSettingsDropdown(
+                      'Metadataspråk',
+                      _metadataLanguage,
+                      ['sv-SE', 'en-US', 'no-NO'],
+                      (val) {
+                        if (val != null) setState(() => _metadataLanguage = val);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: _buildSettingsDropdown(
+                      'Fallback Metadataspråk',
+                      _fallbackLanguage,
+                      ['sv-SE', 'en-US', 'no-NO'],
+                      (val) {
+                        if (val != null) setState(() => _fallbackLanguage = val);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildSettingsDropdown(
+                      'Streamingregion (JustWatch)',
+                      _watchProviderRegion,
+                      ['SE', 'US', 'NO', 'GB'],
+                      (val) {
+                        if (val != null) setState(() => _watchProviderRegion = val);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: _buildSettingsDropdown(
+                      'Standard Titelvisning',
+                      _titleDisplayStyle,
+                      ['Translated', 'Original'],
+                      (val) {
+                        if (val != null) setState(() => _titleDisplayStyle = val);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              // Prefer Local NFO Switch in Settings
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.03)),
+                ),
+                child: SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  title: const Text(
+                    'Prefer local NFO metadata',
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(
+                    'Import titles and details from local .nfo files instead of fetching online.',
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11.5),
+                  ),
+                  value: _preferLocalNfo,
+                  activeThumbColor: const Color(0xFF8A5BFF),
+                  activeTrackColor: const Color(0xFF8A5BFF).withValues(alpha: 0.25),
+                  onChanged: (bool val) {
+                    setState(() {
+                      _preferLocalNfo = val;
+                    });
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 30),
+
+          // Playback Preferences
+          _buildSettingsSection(
+            'Uppspelning standardinställningar',
+            Icons.play_circle_outline,
+            [
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildSettingsDropdown(
+                      'Default Ljudspråk',
+                      _defaultAudioLanguage,
+                      ['sv', 'en', 'no'],
+                      (val) {
+                        if (val != null) setState(() => _defaultAudioLanguage = val);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: _buildSettingsDropdown(
+                      'Default Undertext-språk',
+                      _defaultSubLangController.text,
+                      ['sv', 'en', 'no', 'None'],
+                      (val) {
+                        if (val != null) {
+                          setState(() {
+                            _defaultSubLangController.text = val;
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 30),
+
+          // Trakt / Simkl Sync Section
+          _buildSettingsSection(
+            'Tredjepartssynkning (Tvåvägs)',
+            Icons.sync,
+            [
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildSyncCard(
+                      'Trakt.tv',
+                      'Synkronisera din watch-historik och 0-10 betyg automatiskt.',
+                      Colors.redAccent,
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Öppnar Trakt OAuth...')),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: _buildSyncCard(
+                      'Simkl',
+                      'Håll din Simkl anime- och filmprofil uppdaterad automatiskt.',
+                      Colors.green,
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Öppnar Simkl OAuth...')),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 30),
+
+          // Trusted Devices List
+          const Text('Betrodda Enheter', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          _isLoadingDevices
               ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))))
               : _trustedDevices.isEmpty
-                  ? const Center(child: Text('No devices found', style: TextStyle(color: Colors.white54)))
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Text('Inga enheter parade än.', style: TextStyle(color: Colors.white38)),
+                    )
                   : ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
                       itemCount: _trustedDevices.length,
                       itemBuilder: (context, index) {
                         final device = _trustedDevices[index];
                         final isCurrentDevice = device['device_id'] == widget.apiService.getOrCreateDeviceId();
                         
-                        // Parse date to be a bit nicer if it exists
                         String addedText = '';
                         if (device['paired_at'] != null) {
-                          addedText = 'Added: ${device['paired_at']}';
+                          addedText = 'Parat: ${device['paired_at']}';
                         }
 
                         return Container(
                           margin: const EdgeInsets.only(bottom: 12),
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.05),
+                            color: Colors.white.withValues(alpha: 0.03),
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                           ),
@@ -1445,7 +1882,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                           Container(
                                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                             decoration: BoxDecoration(color: const Color(0xFF8A5BFF).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10)),
-                                            child: const Text('This Device', style: TextStyle(color: Color(0xFFB593FF), fontSize: 12, fontWeight: FontWeight.bold)),
+                                            child: const Text('Denna Enhet', style: TextStyle(color: Color(0xFFB593FF), fontSize: 11, fontWeight: FontWeight.bold)),
                                           )
                                         ]
                                       ],
@@ -1460,18 +1897,139 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                               IconButton(
                                 icon: const Icon(Icons.edit, color: Colors.white60),
                                 onPressed: () => _renameDevice(device['device_id'], device['device_name'] ?? ''),
-                                tooltip: 'Rename',
+                                tooltip: 'Byt namn',
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.redAccent),
                                 onPressed: () => _removeDevice(device['device_id']),
-                                tooltip: 'Remove device',
+                                tooltip: 'Ta bort enhet',
                               ),
                             ],
                           ),
                         );
                       },
                     ),
+          const SizedBox(height: 60),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsSection(String title, IconData icon, List<Widget> children) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.01),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: const Color(0xFF8A5BFF), size: 24),
+              const SizedBox(width: 12),
+              Text(title, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const Divider(color: Colors.white10, height: 32),
+          ...children
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsDropdown(String label, String value, List<String> options, ValueChanged<String?> onChanged) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.w500)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              isExpanded: true,
+              value: value,
+              dropdownColor: const Color(0xFF15102A),
+              icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white54),
+              items: options.map((opt) {
+                return DropdownMenuItem<String>(
+                  value: opt,
+                  child: Text(opt, style: const TextStyle(color: Colors.white)),
+                );
+              }).toList(),
+              onChanged: onChanged,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSyncCard(String label, String description, Color color, VoidCallback onTap) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.1)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(description, style: const TextStyle(color: Colors.white54, fontSize: 13, height: 1.4)),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            ),
+            onPressed: onTap,
+            child: const Text('Anslut konto', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingField(String label, TextEditingController controller, {bool obscure = false}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.w500)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          obscureText: obscure,
+          style: const TextStyle(color: Colors.white, fontSize: 15),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: Colors.black.withValues(alpha: 0.3),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF8A5BFF), width: 1.5),
+            ),
+          ),
         ),
       ],
     );

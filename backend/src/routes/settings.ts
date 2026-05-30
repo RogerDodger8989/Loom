@@ -3,62 +3,89 @@ import db from '../config/database';
 
 export default async function settingsRoutes(fastify: FastifyInstance) {
   
-  // GET /api/settings/tmdb
-  // Retrieves the current TMDB API Key (Admin only)
-  fastify.get(
-    '/api/settings/tmdb',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-          // Admin check could be added here
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized' });
-        }
-      }]
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const keys = ['TMDB_API_KEY', 'OMDB_API_KEY', 'SIMKL_CLIENT_ID', 'DEFAULT_SUBTITLE_LANG'];
-        const placeholders = keys.map(() => '?').join(',');
-        const rows = db.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...keys) as { key: string, value: string }[];
-        
-        const settings = {
-          TMDB_API_KEY: '',
-          OMDB_API_KEY: '',
-          SIMKL_CLIENT_ID: '',
-          DEFAULT_SUBTITLE_LANG: 'sv'
-        };
+  // GET /api/settings & /api/settings/tmdb
+  // Retrieves current Loom global system settings
+  const getSettingsHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const keys = [
+        'TMDB_API_KEY', 
+        'OMDB_API_KEY', 
+        'SIMKL_CLIENT_ID', 
+        'DEFAULT_SUBTITLE_LANG',
+        'METADATA_LANGUAGE',
+        'METADATA_FALLBACK_LANGUAGE',
+        'DEFAULT_AUDIO_LANG',
+        'WATCH_PROVIDER_REGION',
+        'TITLE_DISPLAY_STYLE',
+        'PREFER_LOCAL_NFO'
+      ];
+      const placeholders = keys.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...keys) as { key: string, value: string }[];
+      
+      const settings = {
+        TMDB_API_KEY: '',
+        OMDB_API_KEY: '',
+        SIMKL_CLIENT_ID: '',
+        DEFAULT_SUBTITLE_LANG: 'sv',
+        METADATA_LANGUAGE: 'sv-SE',
+        METADATA_FALLBACK_LANGUAGE: 'en-US',
+        DEFAULT_AUDIO_LANG: 'en',
+        WATCH_PROVIDER_REGION: 'SE',
+        TITLE_DISPLAY_STYLE: 'Translated',
+        PREFER_LOCAL_NFO: 'true'
+      };
 
-        rows.forEach(r => {
-          if (r.key in settings) {
-            (settings as any)[r.key] = r.value;
-          }
-        });
-        
-        return reply.send(settings);
-      } catch (err) {
-        console.error('[Settings] Failed to get settings:', err);
-        return reply.code(500).send({ error: 'Failed to retrieve settings' });
-      }
+      rows.forEach(r => {
+        if (r.key in settings) {
+          (settings as any)[r.key] = r.value;
+        }
+      });
+      
+      return reply.send(settings);
+    } catch (err) {
+      console.error('[Settings] Failed to get settings:', err);
+      return reply.code(500).send({ error: 'Failed to retrieve settings' });
     }
-  );
+  };
+
+  const authOptions = {
+    preValidation: [async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await request.jwtVerify();
+      } catch (err) {
+        reply.code(401).send({ error: 'Unauthorized' });
+      }
+    }]
+  };
+
+  fastify.get('/api/settings', authOptions, getSettingsHandler);
+  fastify.get('/api/settings/tmdb', authOptions, getSettingsHandler);
 
   // PUT /api/settings
-  // Updates global system settings
+  // Updates Loom global system settings
   fastify.put(
     '/api/settings',
     {
       preValidation: [async (request, reply) => {
         try {
           await request.jwtVerify();
-          // Admin check could be added here
         } catch (err) {
           reply.code(401).send({ error: 'Unauthorized' });
         }
       }]
     },
-    async (request: FastifyRequest<{ Body: { TMDB_API_KEY?: string; OMDB_API_KEY?: string; SIMKL_CLIENT_ID?: string; DEFAULT_SUBTITLE_LANG?: string } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Body: { 
+      TMDB_API_KEY?: string; 
+      OMDB_API_KEY?: string; 
+      SIMKL_CLIENT_ID?: string; 
+      DEFAULT_SUBTITLE_LANG?: string;
+      METADATA_LANGUAGE?: string;
+      METADATA_FALLBACK_LANGUAGE?: string;
+      DEFAULT_AUDIO_LANG?: string;
+      WATCH_PROVIDER_REGION?: string;
+      TITLE_DISPLAY_STYLE?: string;
+      PREFER_LOCAL_NFO?: string;
+    } }>, reply: FastifyReply) => {
       try {
         const body = request.body;
         
@@ -76,6 +103,12 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         updateSetting('OMDB_API_KEY', body.OMDB_API_KEY);
         updateSetting('SIMKL_CLIENT_ID', body.SIMKL_CLIENT_ID);
         updateSetting('DEFAULT_SUBTITLE_LANG', body.DEFAULT_SUBTITLE_LANG);
+        updateSetting('METADATA_LANGUAGE', body.METADATA_LANGUAGE);
+        updateSetting('METADATA_FALLBACK_LANGUAGE', body.METADATA_FALLBACK_LANGUAGE);
+        updateSetting('DEFAULT_AUDIO_LANG', body.DEFAULT_AUDIO_LANG);
+        updateSetting('WATCH_PROVIDER_REGION', body.WATCH_PROVIDER_REGION);
+        updateSetting('TITLE_DISPLAY_STYLE', body.TITLE_DISPLAY_STYLE);
+        updateSetting('PREFER_LOCAL_NFO', body.PREFER_LOCAL_NFO);
 
         return reply.send({ success: true });
       } catch (err) {

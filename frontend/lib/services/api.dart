@@ -218,6 +218,25 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> fetchPersonDetails(String id) async {
+    if (_token == null) {
+      throw Exception('Not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/people/$id'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to load person details: ${response.statusCode}');
+    }
+  }
+
   /// Authenticated: Fetch shows library
   Future<List<dynamic>> fetchShows() async {
     if (_token == null) {
@@ -468,6 +487,48 @@ class ApiService {
       return jsonDecode(response.body);
     } else {
       throw Exception('Failed to remove device: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Search TMDB candidates for a media item
+  Future<List<dynamic>> searchTmdbCandidates(String id, String query, {String? year}) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final uri = Uri.parse('$baseUrl/api/media/items/$id/search-tmdb').replace(
+      queryParameters: {
+        'query': query,
+        if (year != null && year.isNotEmpty) 'year': year,
+      },
+    );
+    final response = await http.get(
+      uri,
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to search TMDB candidates: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Manually pair a movie to a specific TMDB ID
+  Future<Map<String, dynamic>> fixMatch(String id, String tmdbId) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/match'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({
+        'tmdbId': tmdbId,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to fix match: ${response.body}');
     }
   }
 }

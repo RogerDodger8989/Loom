@@ -25,8 +25,7 @@ class LoomApp extends StatelessWidget {
           seedColor: const Color(0xFF8A5BFF),
           brightness: Brightness.dark,
           primary: const Color(0xFF8A5BFF),
-          background: const Color(0xFF0A0714),
-          surface: const Color(0xFF15102A),
+          surface: const Color(0xFF0A0714),
         ),
         scaffoldBackgroundColor: const Color(0xFF0A0714),
         textTheme: const TextTheme(

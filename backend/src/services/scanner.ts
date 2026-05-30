@@ -3,6 +3,7 @@ import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/database';
 import { tmdbService } from './tmdb';
+import axios from 'axios';
 
 export class ScannerService {
   /**
@@ -87,19 +88,47 @@ export class ScannerService {
           break;
         }
       }
-      }
     }
 
     let tmdbRatings: any = null;
     let tmdbCast: any = null;
+    let tmdbProviders: any = null;
+    let tmdbTrailer: string | null = null;
+    let omdbAwards: string | null = null;
 
-    // 2. TMDB API Fetch (if preferLocalNfo is false, OR if local NFO is missing/incomplete)
-    if (!preferLocalNfo || (!hasLocalNfo && !metadata.plot)) {
+    // 2. TMDB API Fetch (Always query online source to enrich metadata with cast, watch providers, original title, awards, etc.)
+    const needsOnlineData = true;
+    if (needsOnlineData) {
       const tmdbData = await tmdbService.searchMovie(metadata.title, metadata.year);
       if (tmdbData) {
         // TMDB overrides/complements
         if (!metadata.plot && tmdbData.overview) metadata.plot = tmdbData.overview;
         if (!metadata.year && tmdbData.release_date) metadata.year = parseInt(tmdbData.release_date.substring(0, 4), 10);
+        
+        // Save genres as comma-separated values
+        if (tmdbData.genres) {
+          metadata.genre = tmdbData.genres.map((g: any) => g.name).join(', ');
+        }
+
+        // Save TMDB / IMDb IDs
+        if (tmdbData.id) metadata.tmdb_id = tmdbData.id.toString();
+        if (tmdbData.imdb_id) metadata.imdb_id = tmdbData.imdb_id;
+
+        // Save original_title
+        if (tmdbData.original_title) metadata.original_title = tmdbData.original_title;
+
+        // Save director
+        if (tmdbData.credits && tmdbData.credits.crew) {
+          const dirObj = tmdbData.credits.crew.find((c: any) => c.job === 'Director');
+          if (dirObj) metadata.director = dirObj.name;
+        }
+
+        // Save collection details
+        if (tmdbData.belongs_to_collection) {
+          metadata.collection_name = tmdbData.belongs_to_collection.name;
+          metadata.collection_id = tmdbData.belongs_to_collection.id.toString();
+        }
+
         // Only use TMDB images if we didn't find local ones
         if (!metadata.poster_path && tmdbData.poster_path) {
           metadata.poster_path = tmdbService.getImageUrl(tmdbData.poster_path, 'w500');
@@ -117,6 +146,37 @@ export class ScannerService {
             character: c.character,
             profile_path: tmdbService.getImageUrl(c.profile_path, 'w500')
           }));
+        }
+
+        // Extract watch providers
+        if (tmdbData['watch/providers'] && tmdbData['watch/providers'].results) {
+          tmdbProviders = tmdbData['watch/providers'].results;
+        }
+
+        // Extract YouTube trailer link
+        if (tmdbData.videos && tmdbData.videos.results) {
+          const trailerObj = tmdbData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer');
+          if (trailerObj) {
+            tmdbTrailer = `https://www.youtube.com/watch?v=${trailerObj.key}`;
+          }
+        }
+
+        // Query OMDb API for awards
+        const omdbKey = tmdbService.getSetting('OMDB_API_KEY');
+        if (omdbKey && metadata.imdb_id) {
+          try {
+            const omdbRes = await axios.get(`http://www.omdbapi.com/`, {
+              params: {
+                apikey: omdbKey,
+                i: metadata.imdb_id
+              }
+            });
+            if (omdbRes.data && omdbRes.data.Awards) {
+              omdbAwards = omdbRes.data.Awards;
+            }
+          } catch (omdbErr) {
+            console.error(`[Scanner] OMDb API request failed for ${metadata.imdb_id}:`, omdbErr);
+          }
         }
       }
     }
@@ -155,6 +215,13 @@ export class ScannerService {
         if (!lockedKeys.includes('genre')) { updateFields.push('genre = ?'); params.push(metadata.genre); }
         if (!lockedKeys.includes('poster_path')) { updateFields.push('poster_path = ?'); params.push(metadata.poster_path); }
         if (!lockedKeys.includes('fanart_path')) { updateFields.push('fanart_path = ?'); params.push(metadata.fanart_path); }
+        if (!lockedKeys.includes('tmdb_id')) { updateFields.push('tmdb_id = ?'); params.push(metadata.tmdb_id || null); }
+        if (!lockedKeys.includes('imdb_id')) { updateFields.push('imdb_id = ?'); params.push(metadata.imdb_id || null); }
+        if (!lockedKeys.includes('collection_name')) { updateFields.push('collection_name = ?'); params.push(metadata.collection_name || null); }
+        if (!lockedKeys.includes('collection_id')) { updateFields.push('collection_id = ?'); params.push(metadata.collection_id || null); }
+        if (!lockedKeys.includes('director')) { updateFields.push('director = ?'); params.push(metadata.director || null); }
+
+        if (!lockedKeys.includes('original_title')) { updateFields.push('original_title = ?'); params.push(metadata.original_title || null); }
 
         if (updateFields.length > 0) {
           params.push(filePath);
@@ -166,24 +233,48 @@ export class ScannerService {
           
           if (tmdbRatings) upsertMetadata(mediaId, 'ratings', JSON.stringify(tmdbRatings));
           if (tmdbCast) upsertMetadata(mediaId, 'cast', JSON.stringify(tmdbCast));
+          if (tmdbProviders) upsertMetadata(mediaId, 'watch_providers', JSON.stringify(tmdbProviders));
+          if (tmdbTrailer) upsertMetadata(mediaId, 'trailer_url', tmdbTrailer);
+          if (omdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards);
           
           return 'updated';
         }
         
         if (tmdbRatings) upsertMetadata(mediaId, 'ratings', JSON.stringify(tmdbRatings));
         if (tmdbCast) upsertMetadata(mediaId, 'cast', JSON.stringify(tmdbCast));
+        if (tmdbProviders) upsertMetadata(mediaId, 'watch_providers', JSON.stringify(tmdbProviders));
+        if (tmdbTrailer) upsertMetadata(mediaId, 'trailer_url', tmdbTrailer);
+        if (omdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards);
         
         return 'skipped';
       } else {
         // Insert new
         const id = uuidv4();
         db.prepare(`
-          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, file_path)
-          VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?)
-        `).run(id, metadata.title, metadata.plot, metadata.year, metadata.genre, metadata.poster_path, metadata.fanart_path, filePath);
+          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id, imdb_id, collection_name, collection_id, director, original_title, file_path)
+          VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id, 
+          metadata.title, 
+          metadata.plot, 
+          metadata.year, 
+          metadata.genre, 
+          metadata.poster_path, 
+          metadata.fanart_path, 
+          metadata.tmdb_id || null, 
+          metadata.imdb_id || null, 
+          metadata.collection_name || null, 
+          metadata.collection_id || null, 
+          metadata.director || null, 
+          metadata.original_title || null,
+          filePath
+        );
         
         if (tmdbRatings) upsertMetadata(id, 'ratings', JSON.stringify(tmdbRatings));
         if (tmdbCast) upsertMetadata(id, 'cast', JSON.stringify(tmdbCast));
+        if (tmdbProviders) upsertMetadata(id, 'watch_providers', JSON.stringify(tmdbProviders));
+        if (tmdbTrailer) upsertMetadata(id, 'trailer_url', tmdbTrailer);
+        if (omdbAwards) upsertMetadata(id, 'awards', omdbAwards);
         
         return 'added';
       }

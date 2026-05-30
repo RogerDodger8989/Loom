@@ -71,6 +71,7 @@ class _PairingScreenState extends State<PairingScreen> {
         }
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });

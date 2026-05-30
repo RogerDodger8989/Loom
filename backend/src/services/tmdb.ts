@@ -6,14 +6,36 @@ const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 export interface TMDBMovie {
   id: number;
   title: string;
+  original_title?: string;
   overview: string;
   release_date: string;
   poster_path: string | null;
   backdrop_path: string | null;
   vote_average?: number;
+  imdb_id?: string | null;
+  genres?: Array<{ id: number; name: string }>;
+  belongs_to_collection?: {
+    id: number;
+    name: string;
+    poster_path: string | null;
+    backdrop_path: string | null;
+  } | null;
   credits?: {
     cast: any[];
     crew: any[];
+  };
+  'watch/providers'?: {
+    results: {
+      [countryCode: string]: {
+        link: string;
+        flatrate?: any[];
+        rent?: any[];
+        buy?: any[];
+      };
+    };
+  };
+  videos?: {
+    results: any[];
   };
 }
 
@@ -22,8 +44,15 @@ export class TMDBService {
    * Helper to fetch the TMDB API Key from the database
    */
   private getApiKey(): string {
+    return this.getSetting('TMDB_API_KEY');
+  }
+
+  /**
+   * Helper to fetch any system setting from database
+   */
+  public getSetting(key: string): string {
     try {
-      const row = db.prepare("SELECT value FROM system_settings WHERE key = 'TMDB_API_KEY'").get() as { value: string } | undefined;
+      const row = db.prepare("SELECT value FROM system_settings WHERE key = ?").get(key) as { value: string } | undefined;
       return row ? row.value : '';
     } catch (e) {
       return '';
@@ -41,31 +70,90 @@ export class TMDBService {
       return this.getMockMovie(title, year);
     }
 
+    const prefLang = this.getSetting('METADATA_LANGUAGE') || 'sv-SE';
+    const fallbackLang = this.getSetting('METADATA_FALLBACK_LANGUAGE') || 'en-US';
+
     try {
       const response = await axios.get(`${TMDB_BASE_URL}/search/movie`, {
         params: {
           api_key: apiKey,
           query: title,
           year: year,
-          language: 'sv-SE' // Prefer Swedish descriptions if available
+          language: prefLang
         }
       });
 
       if (response.data && response.data.results && response.data.results.length > 0) {
-        const match = response.data.results[0];
-        // Fetch full details including credits
+        let match = response.data.results[0];
+        
+        // Intelligent selection: Prioritize exact year matches and popular releases to avoid matching obscure documentaries
+        if (year) {
+          const exactYearMatches = response.data.results.filter((m: any) => {
+            const relYear = m.release_date ? parseInt(m.release_date.substring(0, 4), 10) : null;
+            return relYear === year;
+          });
+          if (exactYearMatches.length > 0) {
+            match = exactYearMatches.reduce((prev: any, current: any) => 
+              ((prev.popularity || 0) > (current.popularity || 0)) ? prev : current
+            );
+          } else {
+            const closeYearMatches = response.data.results.filter((m: any) => {
+              const relYear = m.release_date ? parseInt(m.release_date.substring(0, 4), 10) : null;
+              return relYear && Math.abs(relYear - year) <= 1;
+            });
+            if (closeYearMatches.length > 0) {
+              match = closeYearMatches.reduce((prev: any, current: any) => 
+                ((prev.popularity || 0) > (current.popularity || 0)) ? prev : current
+              );
+            }
+          }
+        } else {
+          // If no year is specified, select the candidate with the highest popularity to avoid obscure releases
+          match = response.data.results.reduce((prev: any, current: any) => 
+            ((prev.popularity || 0) > (current.popularity || 0)) ? prev : current
+          );
+        }
+        
         try {
+          // Fetch full details with preferred language including watch providers, credits, and videos
           const detailResponse = await axios.get(`${TMDB_BASE_URL}/movie/${match.id}`, {
             params: {
               api_key: apiKey,
-              language: 'sv-SE',
-              append_to_response: 'credits'
+              language: prefLang,
+              append_to_response: 'credits,watch/providers,videos'
             }
           });
-          return detailResponse.data;
+          
+          let movieData = detailResponse.data;
+
+          // If overview is missing or incomplete, query the fallback language
+          if ((!movieData.overview || movieData.overview.trim() === '') && prefLang !== fallbackLang) {
+            try {
+              const fallbackResponse = await axios.get(`${TMDB_BASE_URL}/movie/${match.id}`, {
+                params: {
+                  api_key: apiKey,
+                  language: fallbackLang,
+                  append_to_response: 'credits,watch/providers,videos'
+                }
+              });
+              if (fallbackResponse.data && fallbackResponse.data.overview) {
+                movieData.overview = fallbackResponse.data.overview;
+                if ((!movieData.credits || !movieData.credits.cast || movieData.credits.cast.length === 0) && fallbackResponse.data.credits) {
+                  movieData.credits = fallbackResponse.data.credits;
+                }
+                if ((!movieData.videos || !movieData.videos.results || fallbackResponse.data.videos.results.length > 0) && fallbackResponse.data.videos) {
+                  movieData.videos = fallbackResponse.data.videos;
+                }
+              }
+            } catch (fallbackErr) {
+              console.error(`[TMDB] Fallback language query failed for movie ID ${match.id}:`, fallbackErr);
+            }
+          }
+
+          return movieData;
         } catch (detailErr) {
-          console.error(`[TMDB] Failed to fetch full details for ${match.id}:`, detailErr);
-          return match; // fallback to basic search result
+          console.error(`[TMDB] Failed to fetch full details for movie ID ${match.id}:`, detailErr);
+          return match;
         }
       }
       return null;
@@ -83,11 +171,86 @@ export class TMDBService {
       title: title,
       overview: `(Mock Data) En fantastisk film om ${title}. Denna data hämtades eftersom ingen TMDB API-nyckel var konfigurerad.`,
       release_date: year ? `${year}-01-01` : '2023-01-01',
-      poster_path: null, // TMDB format is /path.jpg
+      poster_path: null,
       backdrop_path: null,
       vote_average: 0.0,
       credits: { cast: [], crew: [] }
     };
+  }
+
+  /**
+   * Search candidate movies from TMDB (returns all candidate matches)
+   */
+  public async searchMovieCandidates(title: string, year?: number): Promise<any[]> {
+    const apiKey = this.getApiKey();
+    if (!apiKey) return [];
+
+    const prefLang = this.getSetting('METADATA_LANGUAGE') || 'sv-SE';
+    try {
+      const response = await axios.get(`${TMDB_BASE_URL}/search/movie`, {
+        params: {
+          api_key: apiKey,
+          query: title,
+          year: year,
+          language: prefLang
+        }
+      });
+      return response.data?.results || [];
+    } catch (e) {
+      console.error(`[TMDB] Failed to search candidates for ${title}:`, e);
+      return [];
+    }
+  }
+
+  /**
+   * Fetch full movie details directly by TMDB ID
+   */
+  public async fetchMovieById(id: string): Promise<any> {
+    const apiKey = this.getApiKey();
+    if (!apiKey) return null;
+
+    const prefLang = this.getSetting('METADATA_LANGUAGE') || 'sv-SE';
+    const fallbackLang = this.getSetting('METADATA_FALLBACK_LANGUAGE') || 'en-US';
+
+    try {
+      const detailResponse = await axios.get(`${TMDB_BASE_URL}/movie/${id}`, {
+        params: {
+          api_key: apiKey,
+          language: prefLang,
+          append_to_response: 'credits,watch/providers,videos'
+        }
+      });
+      
+      let movieData = detailResponse.data;
+
+      if ((!movieData.overview || movieData.overview.trim() === '') && prefLang !== fallbackLang) {
+        try {
+          const fallbackResponse = await axios.get(`${TMDB_BASE_URL}/movie/${id}`, {
+            params: {
+              api_key: apiKey,
+              language: fallbackLang,
+              append_to_response: 'credits,watch/providers,videos'
+            }
+          });
+          if (fallbackResponse.data && fallbackResponse.data.overview) {
+            movieData.overview = fallbackResponse.data.overview;
+            if ((!movieData.credits || !movieData.credits.cast || movieData.credits.cast.length === 0) && fallbackResponse.data.credits) {
+              movieData.credits = fallbackResponse.data.credits;
+            }
+            if ((!movieData.videos || !movieData.videos.results || fallbackResponse.data.videos.results.length > 0) && fallbackResponse.data.videos) {
+              movieData.videos = fallbackResponse.data.videos;
+            }
+          }
+        } catch (fallbackErr) {
+          console.error(`[TMDB] Fallback language query failed for movie ID ${id}:`, fallbackErr);
+        }
+      }
+
+      return movieData;
+    } catch (e) {
+      console.error(`[TMDB] Failed to fetch movie by ID ${id}:`, e);
+      return null;
+    }
   }
 
   /**

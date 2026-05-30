@@ -60,6 +60,10 @@ db.exec(`
       fanart_path TEXT,
       tmdb_id TEXT,
       imdb_id TEXT,
+      collection_name TEXT,
+      collection_id TEXT,
+      director TEXT,
+      original_title TEXT,
       file_path TEXT,
       added_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -163,7 +167,11 @@ const columnsToAdd = [
   'plot TEXT',
   'genre TEXT',
   'poster_path TEXT',
-  'fanart_path TEXT'
+  'fanart_path TEXT',
+  'collection_name TEXT',
+  'collection_id TEXT',
+  'director TEXT',
+  'original_title TEXT'
 ];
 
 for (const col of columnsToAdd) {
