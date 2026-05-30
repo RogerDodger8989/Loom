@@ -237,7 +237,7 @@ class ApiService {
 
   /// Convenience: Save user's personal rating for a media item
   Future<void> saveRating(String id, double rating) async {
-    await saveMediaMetadata(id, 'my_rating', rating.toStringAsFixed(1));
+    await saveMediaMetadata(id, 'my_rating', rating.round().toString());
   }
 
   Future<Map<String, dynamic>> fetchCollectionItems(String collectionId) async {

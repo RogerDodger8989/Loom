@@ -14,6 +14,12 @@ async function settingsRoutes(fastify) {
                 'TMDB_API_KEY',
                 'OMDB_API_KEY',
                 'SIMKL_CLIENT_ID',
+                'SIMKL_CLIENT_SECRET',
+                'SIMKL_ACCESS_TOKEN',
+                'TRAKT_API_KEY',
+                'TRAKT_CLIENT_SECRET',
+                'TRAKT_ACCESS_TOKEN',
+                'TMDB_USER_AUTH',
                 'DEFAULT_SUBTITLE_LANG',
                 'METADATA_LANGUAGE',
                 'METADATA_FALLBACK_LANGUAGE',
@@ -28,6 +34,12 @@ async function settingsRoutes(fastify) {
                 TMDB_API_KEY: '',
                 OMDB_API_KEY: '',
                 SIMKL_CLIENT_ID: '',
+                SIMKL_CLIENT_SECRET: '',
+                SIMKL_ACCESS_TOKEN: '',
+                TRAKT_API_KEY: '',
+                TRAKT_CLIENT_SECRET: '',
+                TRAKT_ACCESS_TOKEN: '',
+                TMDB_USER_AUTH: '',
                 DEFAULT_SUBTITLE_LANG: 'sv',
                 METADATA_LANGUAGE: 'sv-SE',
                 METADATA_FALLBACK_LANGUAGE: 'en-US',
@@ -86,6 +98,12 @@ async function settingsRoutes(fastify) {
             updateSetting('TMDB_API_KEY', body.TMDB_API_KEY);
             updateSetting('OMDB_API_KEY', body.OMDB_API_KEY);
             updateSetting('SIMKL_CLIENT_ID', body.SIMKL_CLIENT_ID);
+            updateSetting('SIMKL_CLIENT_SECRET', body.SIMKL_CLIENT_SECRET);
+            updateSetting('SIMKL_ACCESS_TOKEN', body.SIMKL_ACCESS_TOKEN);
+            updateSetting('TRAKT_API_KEY', body.TRAKT_API_KEY);
+            updateSetting('TRAKT_CLIENT_SECRET', body.TRAKT_CLIENT_SECRET);
+            updateSetting('TRAKT_ACCESS_TOKEN', body.TRAKT_ACCESS_TOKEN);
+            updateSetting('TMDB_USER_AUTH', body.TMDB_USER_AUTH);
             updateSetting('DEFAULT_SUBTITLE_LANG', body.DEFAULT_SUBTITLE_LANG);
             updateSetting('METADATA_LANGUAGE', body.METADATA_LANGUAGE);
             updateSetting('METADATA_FALLBACK_LANGUAGE', body.METADATA_FALLBACK_LANGUAGE);

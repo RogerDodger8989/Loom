@@ -69,22 +69,18 @@ Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fu
 - **Bildmodul (Fotoalbum):** Mappbaserad struktur lagrad i databasen. Backend genererar automatiskt on-the-fly nerskalade miniatyrer (via Sharp) i cache för snabb laddning. Originalen förblir orörda.
 
 ## 10. Aktuell verklighet i kodbasen
-- Media-detaljvyn visar redan tagline, director, cast, keywords, production companies, watch providers, trailer och liknande media.
-- Awards är fortfarande ett aktivt felsökningsområde. Backend försöker nu fylla `awards` via OMDb först och sedan via TMDB:s publika awards-sida, men UI visar fortfarande inget för vissa titlar.
-- Den praktiska databasen i workspace ligger i `config/loom.db` i rotmappen.
-- Nästa IDE ska prioritera att bekräfta om `metadata.awards` faktiskt sparas i SQLite eller om felet sitter i frontend-renderingen/parsen.
-
+* **Premium OAuth & Betygssynk**: OAuth är helt integrerat och klart för Trakt.tv och Simkl. Användaren ansluter med ett klick via inställningarna. Loom startar automatiskt ett bakgrundsjobb som hämtar och importerar alla användarens historiska betyg till Loom SQLite-databasen direkt vid anslutning. Nya betyg som sätts i Loom synkas ut i realtid till Trakt, Simkl och TMDB.
+* **UX & Design**: Inställningssidan är helt omstrukturerad för att gruppera inmatningsfält, snabblänkar för registrering, Redirect URI-instruktioner och OAuth-knappar bredvid varandra för optimal användarvänlighet.
+* **Miljö**: SQLite-databasen under utveckling lagras i `/config/loom.db` i rotnivå. Både backend och frontend snurrar i hot reload utan kompileringsfel.
 
 ---
 
 ## Implementeringsstatus (Uppdaterad 2026-05-30)
 
-Kärnan i systemet är nu byggd och fungerande. Se **HANDOFF.md** for detaljerad status om vad som ar implementerat och vad som aterstar.
+Kärnan i systemet är nu byggd och fullt fungerande inklusive premium design, enhetsparning, och nu även full tvåvägs betygssynk via OAuth. Se **HANDOFF.md** för detaljerad status.
 
-**Aktiva tjanster:**
-- Backend: `http://localhost:8080`
-- Frontend: `http://localhost:50645`
+**Aktiva tjänster:**
+- Backend: `http://localhost:8080` (Fastify API)
+- Frontend: `http://localhost:50645` (Flutter Web)
 
-**Naasta steg:** Riktiga IMDb/Simkl-betyg, ffprobe for ljud/undertext, och TV-seriestruktur.
-
-**Nuvarande fokus:** Awards-nomineringar syns fortfarande inte i UI trots backend-fallback. Felsök datavägen från `GET /api/media/items/:id` till `media_details_screen.dart`.
+**Nästa steg:** Riktiga IMDb-betyg cachade från OMDb i scanner-steget, ffprobe integration för faktiska ljud/undertextspår, samt TV-seriestruktur.

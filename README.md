@@ -28,9 +28,11 @@ flutter run -d web-server --web-port=50645
 
 ## Senaste status
 
-Media-detaljsidan har redan stöd för tagline, cast, keywords, production companies, trailer, Similar och betyg. Awards/nomineringar är fortfarande under felsökning: backend har nu både OMDb- och TMDB-baserad fallback, men vissa titlar visar fortfarande inget i UI.
+Loom har nu fullt stöd för **premium OAuth-anslutning av Trakt.tv och Simkl**! Användaren parar sina konton med ett enda klick direkt under respektive tjänst i inställningarna (som dessutom städats upp och grupperats för optimal användarvänlighet). 
 
-Om du tar över arbetet, börja i [HANDOFF.md](HANDOFF.md) och kontrollera först om `metadata.awards` faktiskt finns i `config/loom.db` efter att en film öppnats eller skannats om.
+Vid lyckad OAuth-koppling startar backend omedelbart ett bakgrundsjobb som hämtar och importerar **hela användarens historiska betygshistorik** från Trakt/Simkl direkt in i Loom. Nya betyg som sätts i Loom synkas ut i realtid till Trakt, Simkl och TMDB automatiskt!
+
+Om du tar över arbetet, börja i [HANDOFF.md](HANDOFF.md) för full status.
 
 ### Starta frontend (Android TV)
 ```bash
@@ -45,10 +47,10 @@ flutter run -d <android-device-id>
 | Lager | Teknologi |
 |---|---|
 | **Backend** | Node.js + TypeScript + Fastify |
-| **Databas** | SQLite (WAL-mode), fil: `backend/config/loom.db` |
 | **Databas** | SQLite (WAL-mode), fil: `config/loom.db` i workspace-roten |
 | **Frontend** | Flutter (Web + Android TV, gemensam kodbas) |
 | **Metadata** | TMDB API + OMDb API + TMDB awards-sidan som fallback |
+| **Synkning** | Äkta tvåvägs ratings-synk via OAuth (Trakt & Simkl) i realtid |
 | **Streaming** | FFmpeg (direct play + HLS transkodning) |
 | **Autentisering** | JWT + PIN-parningssystem |
 
@@ -67,22 +69,24 @@ Loom/
 │   │   │   ├── media.ts          # GET/POST /api/media/*, /api/playlists
 │   │   │   ├── settings.ts       # GET/POST /api/settings
 │   │   │   ├── auth.ts           # POST /api/auth/pair/*
+│   │   │   ├── oauth.ts          # OAuth authorize & callback för Trakt & Simkl
 │   │   │   └── playback.ts       # POST /api/playback/progress, /stream
 │   │   └── services/
 │   │       ├── scanner.ts        # Biblioteksskanning, NFO-parsing
-│   │       └── tmdb.ts           # TMDB API-wrapper
+│   │       ├── tmdb.ts           # TMDB API-wrapper
+│   │       └── rating_sync.ts    # Envägs & tvåvägs ratings-synk och import
 │   └── package.json
 ├── frontend/
 │   ├── lib/
 │   │   ├── main.dart             # Startpunkt, MaterialApp
 │   │   ├── screens/
-│   │   │   ├── dashboard_screen.dart      # Huvudvy med sidebar + TabBarView
-│   │   │   ├── media_details_screen.dart  # Filmdetaljer, skådespelare, betyg
+│   │   │   ├── dashboard_screen.dart      # Huvudvy med sidebar, API-fält, OAuth
+│   │   │   ├── media_details_screen.dart  # Filmdetaljer, skådespelare, betyg-slider
 │   │   │   ├── person_details_screen.dart # Skådespelarinfo
 │   │   │   ├── pairing_screen.dart        # PIN-parning
 │   │   │   └── resume_playback_modal.dart # "Fortsätt titta?"-modal
 │   │   └── services/
-│   │       └── api.dart          # HTTP-wrapper mot backend
+│   │       └── api.dart          # HTTP-wrapper mot backend (WASM-kompatibel)
 │   └── pubspec.yaml
 ├── README.md                     # ← Du är här
 ├── HANDOFF.md                    # Detaljerad handover till nästa IDE/AI
@@ -93,15 +97,23 @@ Loom/
 
 ## API-översikt (Backend)
 
-### Media
+### Media & Ratings
 | Metod | Endpoint | Beskrivning |
 |---|---|---|
 | `GET` | `/api/media/items` | Hämta alla mediafiler |
 | `GET` | `/api/media/items/:id` | Hämta en films fullständiga data + metadata |
 | `POST` | `/api/media/items/:id/seen` | Markera som sedd/osedd |
-| `POST` | `/api/media/items/:id/rating` | Sätt betyg (0–10) |
+| `POST` | `/api/media/items/:id/metadata` | Spara metadata / betyg (0–10) |
 | `POST` | `/api/media/items/:id/match` | Länka om till annat TMDB-ID |
 | `GET` | `/api/media/search-tmdb` | Sök kandidater på TMDB |
+
+### OAuth Synk
+| Metod | Endpoint | Beskrivning |
+|---|---|---|
+| `GET` | `/api/oauth/trakt/authorize` | Initiera Trakt OAuth-flöde |
+| `GET` | `/api/oauth/trakt/callback` | Callback för Trakt (sparar token & startar import) |
+| `GET` | `/api/oauth/simkl/authorize` | Initiera Simkl OAuth-flöde |
+| `GET` | `/api/oauth/simkl/callback` | Callback för Simkl (sparar token & startar import) |
 
 ### Spellista
 | Metod | Endpoint | Beskrivning |
@@ -109,72 +121,13 @@ Loom/
 | `POST` | `/api/playlists` | Skapa ny spellista |
 | `POST` | `/api/playlists/:id/items` | Lägg till film i spellista |
 
-### Uppspelning & Progress
-| Metod | Endpoint | Beskrivning |
-|---|---|---|
-| `GET` | `/api/stream/:id` | Starta direktuppspelning |
-| `POST` | `/api/playback/progress` | Spara uppspelningsframsteg |
-
-### Autentisering
-| Metod | Endpoint | Beskrivning |
-|---|---|---|
-| `POST` | `/api/auth/pair/request` | Begär PIN-kod |
-| `GET` | `/api/auth/pair/status` | Kontrollera parkopplingsstatus |
-| `POST` | `/api/auth/pair/confirm` | Admin bekräftar parning |
-
-### Inställningar
-| Metod | Endpoint | Beskrivning |
-|---|---|---|
-| `GET` | `/api/settings` | Hämta alla inställningar |
-| `POST` | `/api/settings` | Uppdatera inställningar |
-| `POST` | `/api/scan/trigger` | Starta biblioteksskanning |
-
 ---
-
-## Databasskiss (SQLite)
-
-### `media_items`
-| Kolumn | Typ | Beskrivning |
-|---|---|---|
-| `id` | TEXT PK | UUID |
-| `title` | TEXT | Filmtitel |
-| `year` | INTEGER | Utgivningsår |
-| `file_path` | TEXT | Absolut sökväg till videofil |
-| `tmdb_id` | TEXT | Länk till TMDB |
-| `imdb_id` | TEXT | Länk till IMDb |
-| `type` | TEXT | `movie` / `show` / `music` |
-| `is_seen` | INTEGER | 0/1 |
-| `user_rating` | REAL | 0–10 |
-| `added_at` | DATETIME | Inlagd i biblioteket |
-
-### `media_metadata`
-Nyckel-värde-tabell länkad via `media_item_id`:
-- `poster_path`, `backdrop_path`, `logo_path`
-- `overview`, `tagline`, `runtime`, `release_date`
-- `genres`, `cast`, `directors`, `studios`, `collection_name`
-- `tmdb_rating`, `trailer_url`, `watch_providers`
-- `awards` (OMDb), `age_rating`, `resolution`
-- `playback_progress`, `last_watched_at`
-
-### `playlists` & `playlist_items`
-Skapade on-demand via `/api/playlists`-endpointerna.
-
----
-
-## Miljövariabler (backend/.env)
-
-```env
-TMDB_API_KEY=din_nyckel_här
-OMDB_API_KEY=din_nyckel_här   # För priser (Oscars etc.)
-PORT=8080
-JWT_SECRET=din_hemliga_nyckel
-```
 
 ## För nästa IDE
 
-1. Verifiera awards genom att läsa `GET /api/media/items/:id` för en titel som `A Prophet`.
-2. Om `metadata.awards` finns men UI är tomt, felsök `frontend/lib/screens/media_details_screen.dart`.
-3. Om metadata saknas, kontrollera runtime-hämtningen i `backend/src/routes/media.ts` och `backend/src/services/scanner.ts`.
+1. **IMDb Betyg**: Implementera äkta IMDb-betygshämtning via OMDb API i scanner-steget (`scanner.ts`) så att de sparas i `media_metadata`.
+2. **ffprobe**: Ersätt hårdkodad ljud/undertextinfo genom att köra `ffprobe` på videofilen och spara de riktiga spåren i databasen under skanningen.
+3. **TV-serier**: Bygg ut seriestrukturen (Säsonger och Avsnitt) i frontend.
 
 ---
 
@@ -184,10 +137,4 @@ JWT_SECRET=din_hemliga_nyckel
 2. **Offgrid-first** — Fungerar utan internet efter initial metadatahämtning.
 3. **SQLite WAL** — Enkelt att backa upp, hög lokal prestanda.
 4. **Flutter cross-platform** — Samma kod → Webb + Android TV.
-5. **TMDB som primär källa** — OMDb som komplement (priser).
-
----
-
-## Kända begränsningar / TODO
-
-Se `HANDOFF.md` för fullständig lista på vad som är implementerat och vad som återstår.
+5. **Realtidssynk** — Betygsätt i Loom → Synkas direkt till Trakt, Simkl och TMDB.

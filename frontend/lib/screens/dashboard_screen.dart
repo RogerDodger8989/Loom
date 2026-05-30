@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
+import 'dart:html' as html;
+import 'dart:async';
 import '../services/api.dart';
 import 'pairing_screen.dart';
 import 'media_details_screen.dart';
@@ -44,6 +46,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   final TextEditingController _tmdbKeyController = TextEditingController();
   final TextEditingController _omdbKeyController = TextEditingController();
   final TextEditingController _simklKeyController = TextEditingController();
+  final TextEditingController _simklSecretController = TextEditingController();
+  final TextEditingController _simklTokenController = TextEditingController();
+  final TextEditingController _traktKeyController = TextEditingController();
+  final TextEditingController _traktSecretController = TextEditingController();
+  final TextEditingController _traktTokenController = TextEditingController();
+  final TextEditingController _tmdbAuthController = TextEditingController();
   final TextEditingController _defaultSubLangController = TextEditingController(text: 'sv');
   bool _isLoadingSettings = false;
   
@@ -77,6 +85,16 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   void dispose() {
     _tabController.dispose();
     _pathController.dispose();
+    _tmdbKeyController.dispose();
+    _omdbKeyController.dispose();
+    _simklKeyController.dispose();
+    _simklSecretController.dispose();
+    _simklTokenController.dispose();
+    _traktKeyController.dispose();
+    _traktSecretController.dispose();
+    _traktTokenController.dispose();
+    _tmdbAuthController.dispose();
+    _defaultSubLangController.dispose();
     super.dispose();
   }
 
@@ -558,8 +576,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           constraints: _isSidebarExpanded ? const BoxConstraints() : const BoxConstraints(maxWidth: 36, maxHeight: 36),
                           onPressed: () {
                             setState(() {
-                              _selectedMediaId = null;
-                              _selectedPersonId = null;
+                              if (_selectedPersonId != null) {
+                                _selectedPersonId = null;
+                              } else if (_selectedMediaId != null) {
+                                _selectedMediaId = null;
+                              }
                             });
                           },
                         ),
@@ -1751,11 +1772,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               value: _preferLocalNfo,
               activeThumbColor: const Color(0xFF8A5BFF),
               activeTrackColor: const Color(0xFF8A5BFF).withValues(alpha: 0.25),
-              onChanged: (bool val) {
-                setState(() {
-                  _preferLocalNfo = val;
-                });
-              },
+              onChanged: _setPreferLocalNfo,
             ),
           ),
           
@@ -1819,6 +1836,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _tmdbKeyController.text = settings['TMDB_API_KEY'] ?? '';
         _omdbKeyController.text = settings['OMDB_API_KEY'] ?? '';
         _simklKeyController.text = settings['SIMKL_CLIENT_ID'] ?? '';
+        _simklSecretController.text = settings['SIMKL_CLIENT_SECRET'] ?? '';
+        _simklTokenController.text = settings['SIMKL_ACCESS_TOKEN'] ?? '';
+        _traktKeyController.text = settings['TRAKT_API_KEY'] ?? '';
+        _traktSecretController.text = settings['TRAKT_CLIENT_SECRET'] ?? '';
+        _traktTokenController.text = settings['TRAKT_ACCESS_TOKEN'] ?? '';
+        _tmdbAuthController.text = settings['TMDB_USER_AUTH'] ?? '';
         _defaultSubLangController.text = settings['DEFAULT_SUBTITLE_LANG'] ?? 'sv';
         _metadataLanguage = settings['METADATA_LANGUAGE'] ?? 'sv-SE';
         _fallbackLanguage = settings['METADATA_FALLBACK_LANGUAGE'] ?? 'en-US';
@@ -1842,6 +1865,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         'TMDB_API_KEY': _tmdbKeyController.text.trim(),
         'OMDB_API_KEY': _omdbKeyController.text.trim(),
         'SIMKL_CLIENT_ID': _simklKeyController.text.trim(),
+        'SIMKL_CLIENT_SECRET': _simklSecretController.text.trim(),
+        'SIMKL_ACCESS_TOKEN': _simklTokenController.text.trim(),
+        'TRAKT_API_KEY': _traktKeyController.text.trim(),
+        'TRAKT_CLIENT_SECRET': _traktSecretController.text.trim(),
+        'TRAKT_ACCESS_TOKEN': _traktTokenController.text.trim(),
+        'TMDB_USER_AUTH': _tmdbAuthController.text.trim(),
         'DEFAULT_SUBTITLE_LANG': _defaultSubLangController.text.trim(),
         'METADATA_LANGUAGE': _metadataLanguage,
         'METADATA_FALLBACK_LANGUAGE': _fallbackLanguage,
@@ -1856,6 +1885,23 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to save settings: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  Future<void> _setPreferLocalNfo(bool value) async {
+    setState(() {
+      _preferLocalNfo = value;
+    });
+
+    try {
+      await widget.apiService.updateSettings({
+        'PREFER_LOCAL_NFO': value ? 'true' : 'false',
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save local NFO preference: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -1974,8 +2020,144 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               _buildSettingField('TMDB API Nyckel', _tmdbKeyController, obscure: true),
               const SizedBox(height: 20),
               _buildSettingField('OMDb API Nyckel', _omdbKeyController, obscure: true),
-              const SizedBox(height: 20),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: InkWell(
+                  onTap: () => html.window.open('https://www.omdbapi.com/apikey.aspx', '_blank'),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.open_in_new, size: 12, color: Colors.white38),
+                      SizedBox(width: 4),
+                      Text(
+                        'Skaffa en gratis OMDb API-nyckel här (Välj Free)',
+                        style: TextStyle(color: Colors.white38, fontSize: 11, decoration: TextDecoration.underline),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 30),
+              
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Simkl Integration', style: TextStyle(color: Colors.green, fontSize: 15, fontWeight: FontWeight.bold)),
+                  TextButton.icon(
+                    onPressed: () => html.window.open('https://simkl.com/settings/developer/', '_blank'),
+                    icon: const Icon(Icons.open_in_new, size: 12, color: Colors.green),
+                    label: const Text('Skapa Simkl App', style: TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
               _buildSettingField('Simkl Client ID', _simklKeyController, obscure: true),
+              const SizedBox(height: 20),
+              _buildSettingField('Simkl Client Secret', _simklSecretController, obscure: true),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Text(
+                  'Registrera din Simkl-app med Redirect URI:\nhttp://localhost:8080/api/oauth/simkl/callback',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11, height: 1.4),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _buildOAuthConnectorRow(
+                label: 'Simkl',
+                isConnected: _simklTokenController.text.isNotEmpty,
+                color: Colors.green,
+                onTap: () async {
+                  if (_simklTokenController.text.isNotEmpty) {
+                    setState(() {
+                      _simklTokenController.clear();
+                    });
+                    await _saveSettings();
+                  } else {
+                    await _saveSettings();
+                    html.window.open('${widget.apiService.baseUrl}/api/oauth/simkl/authorize', '_blank');
+                    Timer.periodic(const Duration(seconds: 2), (timer) async {
+                      if (timer.tick > 30) {
+                        timer.cancel();
+                      }
+                      final settings = await widget.apiService.getSettings();
+                      if (settings['SIMKL_ACCESS_TOKEN'] != null && settings['SIMKL_ACCESS_TOKEN'].toString().isNotEmpty) {
+                        setState(() {
+                          _simklTokenController.text = settings['SIMKL_ACCESS_TOKEN'];
+                        });
+                        timer.cancel();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Simkl framgångsrikt ansluten! ✅'), backgroundColor: Colors.green),
+                        );
+                      }
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 20),
+              _buildSettingField('Simkl Access Token', _simklTokenController, obscure: true),
+              const SizedBox(height: 30),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Trakt.tv Integration', style: TextStyle(color: Colors.redAccent, fontSize: 15, fontWeight: FontWeight.bold)),
+                  TextButton.icon(
+                    onPressed: () => html.window.open('https://trakt.tv/oauth/applications', '_blank'),
+                    icon: const Icon(Icons.open_in_new, size: 12, color: Colors.redAccent),
+                    label: const Text('Skapa Trakt App', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _buildSettingField('Trakt API Key (Client ID)', _traktKeyController, obscure: true),
+              const SizedBox(height: 20),
+              _buildSettingField('Trakt Client Secret', _traktSecretController, obscure: true),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Text(
+                  'Registrera din Trakt-app med Redirect URI:\nhttp://localhost:8080/api/oauth/trakt/callback',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11, height: 1.4),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _buildOAuthConnectorRow(
+                label: 'Trakt.tv',
+                isConnected: _traktTokenController.text.isNotEmpty,
+                color: Colors.redAccent,
+                onTap: () async {
+                  if (_traktTokenController.text.isNotEmpty) {
+                    setState(() {
+                      _traktTokenController.clear();
+                    });
+                    await _saveSettings();
+                  } else {
+                    await _saveSettings();
+                    html.window.open('${widget.apiService.baseUrl}/api/oauth/trakt/authorize', '_blank');
+                    Timer.periodic(const Duration(seconds: 2), (timer) async {
+                      if (timer.tick > 30) {
+                        timer.cancel();
+                      }
+                      final settings = await widget.apiService.getSettings();
+                      if (settings['TRAKT_ACCESS_TOKEN'] != null && settings['TRAKT_ACCESS_TOKEN'].toString().isNotEmpty) {
+                        setState(() {
+                          _traktTokenController.text = settings['TRAKT_ACCESS_TOKEN'];
+                        });
+                        timer.cancel();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Trakt.tv framgångsrikt ansluten! ✅'), backgroundColor: Colors.green),
+                        );
+                      }
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 20),
+              _buildSettingField('Trakt Access Token', _traktTokenController, obscure: true),
+              const SizedBox(height: 25),
+              _buildSettingField('TMDB User Auth', _tmdbAuthController, obscure: true),
               const SizedBox(height: 20),
               Row(
                 children: [
@@ -2050,11 +2232,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   value: _preferLocalNfo,
                   activeThumbColor: const Color(0xFF8A5BFF),
                   activeTrackColor: const Color(0xFF8A5BFF).withValues(alpha: 0.25),
-                  onChanged: (bool val) {
-                    setState(() {
-                      _preferLocalNfo = val;
-                    });
-                  },
+                  onChanged: _setPreferLocalNfo,
                 ),
               ),
             ],
@@ -2090,44 +2268,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             _defaultSubLangController.text = val;
                           });
                         }
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 30),
-
-          // Trakt / Simkl Sync Section
-          _buildSettingsSection(
-            'Tredjepartssynkning (Tvåvägs)',
-            Icons.sync,
-            [
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildSyncCard(
-                      'Trakt.tv',
-                      'Synkronisera din watch-historik och 0-10 betyg automatiskt.',
-                      Colors.redAccent,
-                      () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Öppnar Trakt OAuth...')),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: _buildSyncCard(
-                      'Simkl',
-                      'Håll din Simkl anime- och filmprofil uppdaterad automatiskt.',
-                      Colors.green,
-                      () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Öppnar Simkl OAuth...')),
-                        );
                       },
                     ),
                   ),
@@ -2275,30 +2415,46 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
-  Widget _buildSyncCard(String label, String description, Color color, VoidCallback onTap) {
+  Widget _buildOAuthConnectorRow({
+    required String label,
+    required bool isConnected,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.04),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withValues(alpha: 0.1)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.12)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text(description, style: const TextStyle(color: Colors.white54, fontSize: 13, height: 1.4)),
-          const SizedBox(height: 16),
-          ElevatedButton(
+          Row(
+            children: [
+              Icon(isConnected ? Icons.check_circle : Icons.link, color: isConnected ? Colors.green : color, size: 20),
+              const SizedBox(width: 10),
+              Text(
+                isConnected ? '$label är kopplad' : 'Koppla till $label',
+                style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-              backgroundColor: color,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              backgroundColor: isConnected ? Colors.white12 : color,
+              foregroundColor: isConnected ? Colors.white70 : Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              elevation: isConnected ? 0 : 2,
             ),
             onPressed: onTap,
-            child: const Text('Anslut konto', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            icon: Icon(isConnected ? Icons.link_off : Icons.login, size: 14),
+            label: Text(
+              isConnected ? 'Koppla från' : 'Anslut nu',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),

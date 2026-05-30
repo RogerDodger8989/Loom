@@ -8,6 +8,8 @@ export interface TMDBMovie {
     poster_path: string | null;
     backdrop_path: string | null;
     vote_average?: number;
+    vote_count?: number;
+    trailer_url?: string;
     imdb_id?: string | null;
     external_ids?: {
         imdb_id?: string | null;

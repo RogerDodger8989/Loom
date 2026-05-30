@@ -77,10 +77,47 @@ class TMDBService {
                         params: {
                             api_key: apiKey,
                             language: prefLang,
-                            append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
+                            append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids,images',
+                            include_image_language: 'sv,en,null'
                         }
                     });
                     let movieData = detailResponse.data;
+                    // Dynamically extract logo_path for ClearLOGO support from images.logos
+                    if (movieData.images && movieData.images.logos && movieData.images.logos.length > 0) {
+                        const preferredLogo = movieData.images.logos.find((l) => l.iso_639_1 === 'sv' || l.iso_639_1 === 'en') || movieData.images.logos[0];
+                        if (preferredLogo) {
+                            movieData.logo_path = preferredLogo.file_path;
+                        }
+                    }
+                    // Extract official YouTube trailer URL from primary language response
+                    if (movieData.videos && movieData.videos.results && movieData.videos.results.length > 0) {
+                        const officialTrailer = movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+                            || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+                            || movieData.videos.results.find((v) => v.site === 'YouTube');
+                        if (officialTrailer) {
+                            movieData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
+                        }
+                    }
+                    // TMDB videos are rarely localized - always fetch videos in en-US as fallback if no trailer found
+                    if (!movieData.trailer_url && prefLang !== 'en-US') {
+                        try {
+                            const videoRes = await axios_1.default.get(`${TMDB_BASE_URL}/movie/${match.id}/videos`, {
+                                params: { api_key: apiKey, language: 'en-US' }
+                            });
+                            if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
+                                const enTrailer = videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+                                    || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+                                    || videoRes.data.results.find((v) => v.site === 'YouTube');
+                                if (enTrailer) {
+                                    movieData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
+                                    console.log(`[TMDB] Found trailer via en-US fallback for movie ${match.id}: ${movieData.trailer_url}`);
+                                }
+                            }
+                        }
+                        catch (videoErr) {
+                            console.error(`[TMDB] en-US video fallback failed for movie ${match.id}:`, videoErr);
+                        }
+                    }
                     // If overview is missing or incomplete, query the fallback language
                     if ((!movieData.overview || movieData.overview.trim() === '') && prefLang !== fallbackLang) {
                         try {
@@ -88,7 +125,7 @@ class TMDBService {
                                 params: {
                                     api_key: apiKey,
                                     language: fallbackLang,
-                                    append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
+                                    append_to_response: 'credits,watch/providers,keywords,similar,external_ids,images'
                                 }
                             });
                             if (fallbackResponse.data && fallbackResponse.data.overview) {
@@ -98,9 +135,6 @@ class TMDBService {
                                 }
                                 if ((!movieData.credits || !movieData.credits.cast || movieData.credits.cast.length === 0) && fallbackResponse.data.credits) {
                                     movieData.credits = fallbackResponse.data.credits;
-                                }
-                                if ((!movieData.videos || !movieData.videos.results || fallbackResponse.data.videos.results.length > 0) && fallbackResponse.data.videos) {
-                                    movieData.videos = fallbackResponse.data.videos;
                                 }
                                 if ((!movieData.keywords || !movieData.keywords.keywords || movieData.keywords.keywords.length === 0) && fallbackResponse.data.keywords) {
                                     movieData.keywords = fallbackResponse.data.keywords;
@@ -177,17 +211,54 @@ class TMDBService {
                 params: {
                     api_key: apiKey,
                     language: prefLang,
-                    append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
+                    append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids,images',
+                    include_image_language: 'sv,en,null'
                 }
             });
             let movieData = detailResponse.data;
+            // Dynamically extract logo_path for ClearLOGO support from images.logos
+            if (movieData.images && movieData.images.logos && movieData.images.logos.length > 0) {
+                const preferredLogo = movieData.images.logos.find((l) => l.iso_639_1 === 'sv' || l.iso_639_1 === 'en') || movieData.images.logos[0];
+                if (preferredLogo) {
+                    movieData.logo_path = preferredLogo.file_path;
+                }
+            }
+            // Extract official YouTube trailer URL from primary language response
+            if (movieData.videos && movieData.videos.results && movieData.videos.results.length > 0) {
+                const officialTrailer = movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+                    || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+                    || movieData.videos.results.find((v) => v.site === 'YouTube');
+                if (officialTrailer) {
+                    movieData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
+                }
+            }
+            // TMDB videos are rarely localized - always fetch videos in en-US as fallback if no trailer found
+            if (!movieData.trailer_url && prefLang !== 'en-US') {
+                try {
+                    const videoRes = await axios_1.default.get(`${TMDB_BASE_URL}/movie/${id}/videos`, {
+                        params: { api_key: apiKey, language: 'en-US' }
+                    });
+                    if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
+                        const enTrailer = videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+                            || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+                            || videoRes.data.results.find((v) => v.site === 'YouTube');
+                        if (enTrailer) {
+                            movieData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
+                            console.log(`[TMDB] Found trailer via en-US fallback for movie ${id}: ${movieData.trailer_url}`);
+                        }
+                    }
+                }
+                catch (videoErr) {
+                    console.error(`[TMDB] en-US video fallback failed for movie ${id}:`, videoErr);
+                }
+            }
             if ((!movieData.overview || movieData.overview.trim() === '') && prefLang !== fallbackLang) {
                 try {
                     const fallbackResponse = await axios_1.default.get(`${TMDB_BASE_URL}/movie/${id}`, {
                         params: {
                             api_key: apiKey,
                             language: fallbackLang,
-                            append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids'
+                            append_to_response: 'credits,watch/providers,keywords,similar,external_ids,images'
                         }
                     });
                     if (fallbackResponse.data && fallbackResponse.data.overview) {
@@ -197,9 +268,6 @@ class TMDBService {
                         }
                         if ((!movieData.credits || !movieData.credits.cast || movieData.credits.cast.length === 0) && fallbackResponse.data.credits) {
                             movieData.credits = fallbackResponse.data.credits;
-                        }
-                        if ((!movieData.videos || !movieData.videos.results || fallbackResponse.data.videos.results.length > 0) && fallbackResponse.data.videos) {
-                            movieData.videos = fallbackResponse.data.videos;
                         }
                         if ((!movieData.keywords || !movieData.keywords.keywords || movieData.keywords.keywords.length === 0) && fallbackResponse.data.keywords) {
                             movieData.keywords = fallbackResponse.data.keywords;

@@ -44,6 +44,7 @@ const auth_1 = __importDefault(require("./routes/auth"));
 const library_1 = __importDefault(require("./routes/library"));
 const media_1 = __importDefault(require("./routes/media"));
 const settings_1 = __importDefault(require("./routes/settings"));
+const oauth_1 = __importDefault(require("./routes/oauth"));
 // Load environment variables
 dotenv.config();
 const app = (0, fastify_1.default)({
@@ -84,6 +85,7 @@ app.register(auth_1.default);
 app.register(library_1.default);
 app.register(media_1.default);
 app.register(settings_1.default);
+app.register(oauth_1.default);
 // Global Error Handler
 app.setErrorHandler((error, request, reply) => {
     app.log.error(error);

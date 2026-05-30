@@ -6,6 +6,7 @@ import authRoutes from './routes/auth';
 import libraryRoutes from './routes/library';
 import mediaRoutes from './routes/media';
 import settingsRoutes from './routes/settings';
+import oauthRoutes from './routes/oauth';
 import db from './config/database'; // Import ensures database gets initialized and seeded on boot
 
 // Load environment variables
@@ -53,6 +54,7 @@ app.register(authRoutes);
 app.register(libraryRoutes);
 app.register(mediaRoutes);
 app.register(settingsRoutes);
+app.register(oauthRoutes);
 
 // Global Error Handler
 app.setErrorHandler((error, request, reply) => {

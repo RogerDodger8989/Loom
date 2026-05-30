@@ -61,6 +61,9 @@ class ScannerService {
         for (const file of files) {
             const ext = path.extname(file).toLowerCase();
             if (videoExts.includes(ext)) {
+                if (this.isSupplementalVideo(file)) {
+                    continue;
+                }
                 if (type === 'Movie') {
                     const result = await this.processMovieFile(file, preferLocalNfo);
                     if (result === 'added')
@@ -131,7 +134,11 @@ class ScannerService {
         let omdbMetascore = null;
         let omdbRtRating = null;
         let simklRating = null;
+        let simklVotes = null;
+        let traktRating = null;
+        let traktVotes = null;
         let tmdbTagline = null;
+        let omdbImdbVotes = null;
         let tmdbKeywords = null;
         let tmdbProductionCompanies = null;
         let tmdbProductionCountries = null;
@@ -208,7 +215,7 @@ class ScannerService {
                     metadata.fanart_path = tmdb_1.tmdbService.getImageUrl(tmdbData.backdrop_path, 'original');
                 }
                 if (tmdbData.vote_average) {
-                    tmdbRatings = { tmdb: tmdbData.vote_average };
+                    tmdbRatings = { tmdb: tmdbData.vote_average, tmdb_votes: tmdbData.vote_count };
                 }
                 if (tmdbData.credits && tmdbData.credits.cast) {
                     tmdbCast = tmdbData.credits.cast.slice(0, 15).map((c) => ({
@@ -223,7 +230,10 @@ class ScannerService {
                     tmdbProviders = tmdbData['watch/providers'].results;
                 }
                 // Extract YouTube trailer link
-                if (tmdbData.videos && tmdbData.videos.results) {
+                if (tmdbData.trailer_url) {
+                    tmdbTrailer = tmdbData.trailer_url;
+                }
+                else if (tmdbData.videos && tmdbData.videos.results) {
                     const trailerObj = tmdbData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer');
                     if (trailerObj) {
                         tmdbTrailer = `https://www.youtube.com/watch?v=${trailerObj.key}`;
@@ -242,6 +252,9 @@ class ScannerService {
                             if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
                                 omdbImdbRating = omdbRes.data.imdbRating;
                             }
+                            if (omdbRes.data.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
+                                omdbImdbVotes = omdbRes.data.imdbVotes;
+                            }
                             if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
                                 omdbMetascore = omdbRes.data.Metascore;
                             }
@@ -257,25 +270,57 @@ class ScannerService {
                         console.error(`[Scanner] OMDb API request failed for ${imdbId}:`, omdbErr);
                     }
                 }
-                // Query Simkl API for awards AND ratings
+                // Query Simkl API for awards and ratings, and Trakt for its own ratings
                 const simklClientId = tmdb_1.tmdbService.getSetting('SIMKL_CLIENT_ID');
+                const traktApiKey = tmdb_1.tmdbService.getSetting('TRAKT_API_KEY');
                 if (simklClientId && imdbId) {
                     try {
-                        const simklRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
+                        const simklLookupRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
                             params: { imdb: imdbId, client_id: simklClientId }
                         });
-                        if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
-                            const simklData = simklRes.data[0];
-                            if (simklData.ratings && simklData.ratings.simkl) {
-                                const ratingVal = simklData.ratings.simkl.rating;
-                                if (ratingVal) {
-                                    simklRating = ratingVal.toString();
+                        const simklLookupData = Array.isArray(simklLookupRes.data)
+                            ? simklLookupRes.data[0]
+                            : simklLookupRes.data;
+                        const simklId = this.extractSimklId(simklLookupData);
+                        if (simklId) {
+                            const simklRatingsRes = await axios_1.default.get(`https://api.simkl.com/ratings`, {
+                                params: {
+                                    simkl: simklId,
+                                    fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
+                                    client_id: simklClientId,
                                 }
-                            }
+                            });
+                            const parsedSimklRatings = this.extractSimklRatings(simklRatingsRes.data);
+                            simklRating = parsedSimklRatings.simklRating;
+                            simklVotes = parsedSimklRatings.simklVotes;
                         }
                     }
                     catch (simklErr) {
-                        console.error(`[Scanner] Simkl API request failed for ${imdbId}:`, simklErr);
+                        console.error(`[Scanner] Simkl/Trakt API request failed for ${imdbId}:`, simklErr);
+                    }
+                }
+                if (traktApiKey && imdbId) {
+                    try {
+                        const traktRes = await axios_1.default.get(`https://api.trakt.tv/search/imdb/${imdbId}`, {
+                            params: {
+                                type: 'movie',
+                                extended: 'full',
+                            },
+                            headers: {
+                                'trakt-api-key': traktApiKey,
+                                'trakt-api-version': '2',
+                                'User-Agent': 'Loom/1.0',
+                            },
+                        });
+                        const traktData = Array.isArray(traktRes.data) ? traktRes.data[0] : traktRes.data;
+                        if (traktData) {
+                            const parsedTraktRatings = this.extractTraktRatings(traktData);
+                            traktRating = parsedTraktRatings.traktRating;
+                            traktVotes = parsedTraktRatings.traktVotes;
+                        }
+                    }
+                    catch (traktErr) {
+                        console.error(`[Scanner] Trakt API request failed for ${imdbId}:`, traktErr);
                     }
                 }
                 if (!omdbAwards && tmdbData.id) {
@@ -376,12 +421,20 @@ class ScannerService {
                         upsertMetadata(mediaId, 'awards', omdbAwards || tmdbAwards);
                     if (omdbImdbRating)
                         upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
+                    if (omdbImdbVotes)
+                        upsertMetadata(mediaId, 'imdb_votes', omdbImdbVotes);
                     if (omdbMetascore)
                         upsertMetadata(mediaId, 'metascore', omdbMetascore);
                     if (omdbRtRating)
                         upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
                     if (simklRating)
                         upsertMetadata(mediaId, 'simkl_rating', simklRating);
+                    if (simklVotes)
+                        upsertMetadata(mediaId, 'simkl_votes', simklVotes);
+                    if (traktRating)
+                        upsertMetadata(mediaId, 'trakt_rating', traktRating);
+                    if (traktVotes)
+                        upsertMetadata(mediaId, 'trakt_votes', traktVotes);
                     if (tmdbTagline)
                         upsertMetadata(mediaId, 'tagline', tmdbTagline);
                     if (tmdbKeywords)
@@ -397,6 +450,10 @@ class ScannerService {
                         upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
                     if (probeResult.subtitleTracks.length > 0)
                         upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+                    const edition = this.parseEditionFromFilename(fileNameWithoutExt);
+                    if (edition) {
+                        upsertMetadata(mediaId, 'release_version', edition);
+                    }
                     return 'updated';
                 }
                 if (tmdbRatings)
@@ -411,6 +468,8 @@ class ScannerService {
                     upsertMetadata(mediaId, 'awards', omdbAwards);
                 if (omdbImdbRating)
                     upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
+                if (omdbImdbVotes)
+                    upsertMetadata(mediaId, 'imdb_votes', omdbImdbVotes);
                 if (omdbMetascore)
                     upsertMetadata(mediaId, 'metascore', omdbMetascore);
                 if (omdbRtRating)
@@ -424,6 +483,10 @@ class ScannerService {
                     upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
                 if (probeResult.subtitleTracks.length > 0)
                     upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+                const edition = this.parseEditionFromFilename(fileNameWithoutExt);
+                if (edition) {
+                    upsertMetadata(mediaId, 'release_version', edition);
+                }
                 return 'skipped';
             }
             else {
@@ -445,12 +508,20 @@ class ScannerService {
                     upsertMetadata(id, 'awards', omdbAwards || tmdbAwards);
                 if (omdbImdbRating)
                     upsertMetadata(id, 'imdb_rating', omdbImdbRating);
+                if (omdbImdbVotes)
+                    upsertMetadata(id, 'imdb_votes', omdbImdbVotes);
                 if (omdbMetascore)
                     upsertMetadata(id, 'metascore', omdbMetascore);
                 if (omdbRtRating)
                     upsertMetadata(id, 'rt_rating', omdbRtRating);
                 if (simklRating)
                     upsertMetadata(id, 'simkl_rating', simklRating);
+                if (simklVotes)
+                    upsertMetadata(id, 'simkl_votes', simklVotes);
+                if (traktRating)
+                    upsertMetadata(id, 'trakt_rating', traktRating);
+                if (traktVotes)
+                    upsertMetadata(id, 'trakt_votes', traktVotes);
                 if (tmdbTagline)
                     upsertMetadata(id, 'tagline', tmdbTagline);
                 if (tmdbKeywords)
@@ -466,6 +537,10 @@ class ScannerService {
                     upsertMetadata(id, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
                 if (probeResult.subtitleTracks.length > 0)
                     upsertMetadata(id, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+                const edition = this.parseEditionFromFilename(fileNameWithoutExt);
+                if (edition) {
+                    upsertMetadata(id, 'release_version', edition);
+                }
                 return 'added';
             }
         }
@@ -473,6 +548,33 @@ class ScannerService {
             console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
             return 'skipped';
         }
+    }
+    /**
+     * Helper to parse release versions/editions from filename
+     */
+    parseEditionFromFilename(filename) {
+        const filenameLower = filename.toLowerCase();
+        if (/\buncut\b/i.test(filenameLower))
+            return 'Uncut';
+        if (/\bdirector\'?s\.?cut\b/i.test(filenameLower))
+            return "Director's Cut";
+        if (/\bextended\b/i.test(filenameLower))
+            return 'Extended Cut';
+        if (/\btheatrical\b/i.test(filenameLower))
+            return 'Theatrical Cut';
+        if (/\bultimate\b/i.test(filenameLower))
+            return 'Ultimate Edition';
+        if (/\bremastered\b/i.test(filenameLower))
+            return 'Remastered';
+        if (/\bcollector\'?s\.?edition\b/i.test(filenameLower))
+            return "Collector's Edition";
+        if (/\bspecial\.?edition\b/i.test(filenameLower))
+            return 'Special Edition';
+        if (/\b3d\b/i.test(filenameLower))
+            return '3D';
+        if (/\bimax\b/i.test(filenameLower))
+            return 'IMAX';
+        return null;
     }
     /**
      * Helper to extract a clean title from a typical piracy filename like "The.Matrix.1999.1080p.mkv"
@@ -495,6 +597,134 @@ class ScannerService {
             return parseInt(match[0], 10);
         }
         return null;
+    }
+    /**
+     * Skip non-primary movie assets (trailers, samples, extras) so they are not imported as standalone films.
+     */
+    isSupplementalVideo(filePath) {
+        const name = path.parse(filePath).name.toLowerCase();
+        return /(\b|_|\.|-)(trailer|teaser|sample|featurette|behind.?the.?scenes|extras?)(\b|_|\.|-)/i.test(name);
+    }
+    normalizeRatingValue(value) {
+        if (value === undefined || value === null)
+            return null;
+        const cleaned = value.toString().trim().replace(',', '.').replace(/[^0-9.]/g, '');
+        if (!cleaned)
+            return null;
+        const parsed = Number.parseFloat(cleaned);
+        return Number.isFinite(parsed) ? parsed.toString() : null;
+    }
+    normalizeVotesValue(value) {
+        if (value === undefined || value === null)
+            return null;
+        const cleaned = value.toString().replace(/[^0-9]/g, '');
+        if (!cleaned)
+            return null;
+        const parsed = Number.parseInt(cleaned, 10);
+        return Number.isFinite(parsed) ? parsed.toString() : null;
+    }
+    extractSimklId(payload) {
+        const candidates = [
+            payload,
+            payload?.movie,
+            payload?.show,
+            payload?.anime,
+            payload?.item,
+            payload?.data,
+            payload?.result,
+        ].filter(Boolean);
+        for (const candidate of candidates) {
+            const rawId = candidate?.ids?.simkl ?? candidate?.simkl ?? candidate?.simkl_id ?? candidate?.id;
+            if (rawId === undefined || rawId === null) {
+                continue;
+            }
+            const cleaned = rawId.toString().trim();
+            if (!cleaned) {
+                continue;
+            }
+            return cleaned;
+        }
+        return null;
+    }
+    extractSimklRatings(payload) {
+        const candidates = [
+            payload,
+            payload?.movie,
+            payload?.show,
+            payload?.anime,
+            payload?.item,
+            payload?.data,
+            payload?.result,
+        ].filter(Boolean);
+        let simklRating = null;
+        let simklVotes = null;
+        for (const candidate of candidates) {
+            const ratings = candidate?.ratings || {};
+            simklRating = simklRating
+                || this.normalizeRatingValue(ratings?.simkl?.rating)
+                || this.normalizeRatingValue(ratings?.simkl_rating)
+                || this.normalizeRatingValue(candidate?.simkl?.rating)
+                || this.normalizeRatingValue(candidate?.simkl_rating)
+                || this.normalizeRatingValue(candidate?.simklRating)
+                || this.normalizeRatingValue(candidate?.rating);
+            simklVotes = simklVotes
+                || this.normalizeVotesValue(ratings?.simkl?.votes)
+                || this.normalizeVotesValue(ratings?.simkl_votes)
+                || this.normalizeVotesValue(candidate?.simkl?.votes)
+                || this.normalizeVotesValue(candidate?.simkl_votes)
+                || this.normalizeVotesValue(candidate?.simklVotes)
+                || this.normalizeVotesValue(candidate?.votes);
+            if (simklRating && simklVotes) {
+                break;
+            }
+        }
+        return {
+            simklRating,
+            simklVotes,
+        };
+    }
+    extractTraktRatings(payload) {
+        const candidates = [
+            payload,
+            payload?.movie,
+            payload?.show,
+            payload?.anime,
+            payload?.item,
+            payload?.data,
+            payload?.result,
+        ].filter(Boolean);
+        let traktRating = null;
+        let traktVotes = null;
+        for (const candidate of candidates) {
+            const ratings = candidate?.ratings || {};
+            const nestedMovie = candidate?.movie || {};
+            const nestedShow = candidate?.show || {};
+            traktRating = traktRating
+                || this.normalizeRatingValue(ratings?.trakt?.rating)
+                || this.normalizeRatingValue(ratings?.trakt_rating)
+                || this.normalizeRatingValue(candidate?.rating)
+                || this.normalizeRatingValue(nestedMovie?.rating)
+                || this.normalizeRatingValue(nestedShow?.rating)
+                || this.normalizeRatingValue(candidate?.trakt?.rating)
+                || this.normalizeRatingValue(candidate?.trakt_rating)
+                || this.normalizeRatingValue(candidate?.traktRating);
+            traktVotes = traktVotes
+                || this.normalizeVotesValue(ratings?.trakt?.votes)
+                || this.normalizeVotesValue(ratings?.trakt_votes)
+                || this.normalizeVotesValue(candidate?.votes)
+                || this.normalizeVotesValue(nestedMovie?.votes)
+                || this.normalizeVotesValue(nestedShow?.votes)
+                || this.normalizeVotesValue(candidate?.trakt?.votes)
+                || this.normalizeVotesValue(candidate?.trakt_votes)
+                || this.normalizeVotesValue(candidate?.traktVotes);
+            if (traktRating && traktVotes) {
+                break;
+            }
+        }
+        return {
+            traktRating,
+            traktVotes,
+        };
     }
     /**
      * Run ffprobe on a video file to detect audio and subtitle tracks.

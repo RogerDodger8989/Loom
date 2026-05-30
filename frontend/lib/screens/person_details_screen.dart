@@ -70,10 +70,11 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
               const Icon(Icons.error_outline, color: Colors.redAccent, size: 64),
               const SizedBox(height: 16),
               Text('Failed to load person details:\n$_error', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Go Back'),
+              const SizedBox(height: 12),
+              const Text(
+                'Använd vänstermenyn för att gå tillbaka.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54),
               ),
             ],
           ),
@@ -98,22 +99,13 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
         lifeSpan += ' - $deathday';
       }
     }
+    final ageLabel = _buildAgeLabel(birthday, deathday);
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0714),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () {
-            if (widget.onBack != null) {
-              widget.onBack!();
-            } else {
-              Navigator.pop(context);
-            }
-          },
-        ),
         title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
       body: SingleChildScrollView(
@@ -147,6 +139,13 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                       lifeSpan,
                       style: const TextStyle(color: Colors.white70, fontSize: 16, fontWeight: FontWeight.w500),
                     ),
+                    if (ageLabel.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        ageLabel,
+                        style: const TextStyle(color: Color(0xFFB593FF), fontSize: 15, fontWeight: FontWeight.bold),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                   ],
                   if (placeOfBirth.isNotEmpty) ...[
@@ -317,6 +316,28 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
         child: badge,
       ),
     );
+  }
+
+  String _buildAgeLabel(dynamic birthday, dynamic deathday) {
+    final birthdayText = birthday?.toString() ?? '';
+    if (birthdayText.isEmpty) return '';
+
+    final birthDate = DateTime.tryParse(birthdayText);
+    if (birthDate == null) return '';
+
+    final deathDateText = deathday?.toString() ?? '';
+    final endDate = deathDateText.isNotEmpty ? DateTime.tryParse(deathDateText) : DateTime.now();
+    if (endDate == null) return '';
+
+    var age = endDate.year - birthDate.year;
+    final birthdayPassed = endDate.month > birthDate.month ||
+        (endDate.month == birthDate.month && endDate.day >= birthDate.day);
+    if (!birthdayPassed) {
+      age -= 1;
+    }
+
+    if (age < 0) return '';
+    return '$age år';
   }
 
   Widget _buildCreditRow(dynamic credit, {bool isCrew = false}) {

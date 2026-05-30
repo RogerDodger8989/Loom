@@ -27,6 +27,9 @@ export class ScannerService {
       const ext = path.extname(file).toLowerCase();
       
       if (videoExts.includes(ext)) {
+        if (this.isSupplementalVideo(file)) {
+          continue;
+        }
         if (type === 'Movie') {
           const result = await this.processMovieFile(file, preferLocalNfo);
           if (result === 'added') itemsAdded++;
@@ -244,32 +247,59 @@ export class ScannerService {
           }
         }
 
-        // Query Simkl API for awards AND ratings (Simkl + Trakt)
+        // Query Simkl API for awards and ratings, and Trakt for its own ratings
         const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
+        const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
         if (simklClientId && imdbId) {
           try {
-            const simklRes = await axios.get(`https://api.simkl.com/search/id`, {
+            const simklLookupRes = await axios.get(`https://api.simkl.com/search/id`, {
               params: { imdb: imdbId, client_id: simklClientId }
             });
-            if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
-              const simklData = simklRes.data[0];
-              if (simklData.ratings) {
-                if (simklData.ratings.simkl) {
-                  const ratingVal = simklData.ratings.simkl.rating;
-                  const votesVal = simklData.ratings.simkl.votes;
-                  if (ratingVal) simklRating = ratingVal.toString();
-                  if (votesVal) simklVotes = votesVal.toString();
+            const simklLookupData = Array.isArray(simklLookupRes.data)
+              ? simklLookupRes.data[0]
+              : simklLookupRes.data;
+
+            const simklId = this.extractSimklId(simklLookupData);
+
+            if (simklId) {
+              const simklRatingsRes = await axios.get(`https://api.simkl.com/ratings`, {
+                params: {
+                  simkl: simklId,
+                  fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
+                  client_id: simklClientId,
                 }
-                if (simklData.ratings.trakt) {
-                  const traktRatingVal = simklData.ratings.trakt.rating;
-                  const traktVotesVal = simklData.ratings.trakt.votes;
-                  if (traktRatingVal) traktRating = traktRatingVal.toString();
-                  if (traktVotesVal) traktVotes = traktVotesVal.toString();
-                }
-              }
+              });
+              const parsedSimklRatings = this.extractSimklRatings(simklRatingsRes.data);
+              simklRating = parsedSimklRatings.simklRating;
+              simklVotes = parsedSimklRatings.simklVotes;
             }
           } catch (simklErr) {
             console.error(`[Scanner] Simkl/Trakt API request failed for ${imdbId}:`, simklErr);
+          }
+        }
+
+        if (traktApiKey && imdbId) {
+          try {
+            const traktRes = await axios.get(`https://api.trakt.tv/search/imdb/${imdbId}`, {
+              params: {
+                type: 'movie',
+                extended: 'full',
+              },
+              headers: {
+                'trakt-api-key': traktApiKey,
+                'trakt-api-version': '2',
+                'User-Agent': 'Loom/1.0',
+              },
+            });
+
+            const traktData = Array.isArray(traktRes.data) ? traktRes.data[0] : traktRes.data;
+            if (traktData) {
+              const parsedTraktRatings = this.extractTraktRatings(traktData);
+              traktRating = parsedTraktRatings.traktRating;
+              traktVotes = parsedTraktRatings.traktVotes;
+            }
+          } catch (traktErr) {
+            console.error(`[Scanner] Trakt API request failed for ${imdbId}:`, traktErr);
           }
         }
 
@@ -485,6 +515,158 @@ export class ScannerService {
       return parseInt(match[0], 10);
     }
     return null;
+  }
+
+  /**
+   * Skip non-primary movie assets (trailers, samples, extras) so they are not imported as standalone films.
+   */
+  private isSupplementalVideo(filePath: string): boolean {
+    const name = path.parse(filePath).name.toLowerCase();
+    return /(\b|_|\.|-)(trailer|teaser|sample|featurette|behind.?the.?scenes|extras?)(\b|_|\.|-)/i.test(name);
+  }
+
+  private normalizeRatingValue(value: any): string | null {
+    if (value === undefined || value === null) return null;
+    const cleaned = value.toString().trim().replace(',', '.').replace(/[^0-9.]/g, '');
+    if (!cleaned) return null;
+    const parsed = Number.parseFloat(cleaned);
+    return Number.isFinite(parsed) ? parsed.toString() : null;
+  }
+
+  private normalizeVotesValue(value: any): string | null {
+    if (value === undefined || value === null) return null;
+    const cleaned = value.toString().replace(/[^0-9]/g, '');
+    if (!cleaned) return null;
+    const parsed = Number.parseInt(cleaned, 10);
+    return Number.isFinite(parsed) ? parsed.toString() : null;
+  }
+
+  private extractSimklId(payload: any): string | null {
+    const candidates = [
+      payload,
+      payload?.movie,
+      payload?.show,
+      payload?.anime,
+      payload?.item,
+      payload?.data,
+      payload?.result,
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      const rawId = candidate?.ids?.simkl ?? candidate?.simkl ?? candidate?.simkl_id ?? candidate?.id;
+      if (rawId === undefined || rawId === null) {
+        continue;
+      }
+
+      const cleaned = rawId.toString().trim();
+      if (!cleaned) {
+        continue;
+      }
+
+      return cleaned;
+    }
+
+    return null;
+  }
+
+  private extractSimklRatings(payload: any): {
+    simklRating: string | null;
+    simklVotes: string | null;
+  } {
+    const candidates = [
+      payload,
+      payload?.movie,
+      payload?.show,
+      payload?.anime,
+      payload?.item,
+      payload?.data,
+      payload?.result,
+    ].filter(Boolean);
+
+    let simklRating: string | null = null;
+    let simklVotes: string | null = null;
+
+    for (const candidate of candidates) {
+      const ratings = candidate?.ratings || {};
+
+      simklRating = simklRating
+        || this.normalizeRatingValue(ratings?.simkl?.rating)
+        || this.normalizeRatingValue(ratings?.simkl_rating)
+        || this.normalizeRatingValue(candidate?.simkl?.rating)
+        || this.normalizeRatingValue(candidate?.simkl_rating)
+        || this.normalizeRatingValue(candidate?.simklRating)
+        || this.normalizeRatingValue(candidate?.rating);
+
+      simklVotes = simklVotes
+        || this.normalizeVotesValue(ratings?.simkl?.votes)
+        || this.normalizeVotesValue(ratings?.simkl_votes)
+        || this.normalizeVotesValue(candidate?.simkl?.votes)
+        || this.normalizeVotesValue(candidate?.simkl_votes)
+        || this.normalizeVotesValue(candidate?.simklVotes)
+        || this.normalizeVotesValue(candidate?.votes);
+
+      if (simklRating && simklVotes) {
+        break;
+      }
+    }
+
+    return {
+      simklRating,
+      simklVotes,
+    };
+  }
+
+  private extractTraktRatings(payload: any): {
+    traktRating: string | null;
+    traktVotes: string | null;
+  } {
+    const candidates = [
+      payload,
+      payload?.movie,
+      payload?.show,
+      payload?.anime,
+      payload?.item,
+      payload?.data,
+      payload?.result,
+    ].filter(Boolean);
+
+    let traktRating: string | null = null;
+    let traktVotes: string | null = null;
+
+    for (const candidate of candidates) {
+      const ratings = candidate?.ratings || {};
+      const nestedMovie = candidate?.movie || {};
+      const nestedShow = candidate?.show || {};
+
+      traktRating = traktRating
+        || this.normalizeRatingValue(ratings?.trakt?.rating)
+        || this.normalizeRatingValue(ratings?.trakt_rating)
+        || this.normalizeRatingValue(candidate?.rating)
+        || this.normalizeRatingValue(nestedMovie?.rating)
+        || this.normalizeRatingValue(nestedShow?.rating)
+        || this.normalizeRatingValue(candidate?.trakt?.rating)
+        || this.normalizeRatingValue(candidate?.trakt_rating)
+        || this.normalizeRatingValue(candidate?.traktRating);
+
+      traktVotes = traktVotes
+        || this.normalizeVotesValue(ratings?.trakt?.votes)
+        || this.normalizeVotesValue(ratings?.trakt_votes)
+        || this.normalizeVotesValue(candidate?.votes)
+        || this.normalizeVotesValue(nestedMovie?.votes)
+        || this.normalizeVotesValue(nestedShow?.votes)
+        || this.normalizeVotesValue(candidate?.trakt?.votes)
+        || this.normalizeVotesValue(candidate?.trakt_votes)
+        || this.normalizeVotesValue(candidate?.traktVotes);
+
+      if (traktRating && traktVotes) {
+        break;
+      }
+    }
+
+    return {
+      traktRating,
+      traktVotes,
+    };
   }
 
   /**

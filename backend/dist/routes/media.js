@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -8,6 +41,146 @@ const database_1 = __importDefault(require("../config/database"));
 const axios_1 = __importDefault(require("axios"));
 const tmdb_1 = require("../services/tmdb");
 const uuid_1 = require("uuid");
+const path_1 = __importDefault(require("path"));
+const rating_sync_1 = require("../services/rating_sync");
+function normalizeRatingValue(value) {
+    if (value === undefined || value === null)
+        return null;
+    const cleaned = value.toString().trim().replace(',', '.').replace(/[^0-9.]/g, '');
+    if (!cleaned)
+        return null;
+    const parsed = Number.parseFloat(cleaned);
+    return Number.isFinite(parsed) ? parsed.toString() : null;
+}
+function normalizeVotesValue(value) {
+    if (value === undefined || value === null)
+        return null;
+    const cleaned = value.toString().replace(/[^0-9]/g, '');
+    if (!cleaned)
+        return null;
+    const parsed = Number.parseInt(cleaned, 10);
+    return Number.isFinite(parsed) ? parsed.toString() : null;
+}
+function extractSimklId(payload) {
+    const candidates = [
+        payload,
+        payload?.movie,
+        payload?.show,
+        payload?.anime,
+        payload?.item,
+        payload?.data,
+        payload?.result,
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        const rawId = candidate?.ids?.simkl ?? candidate?.simkl ?? candidate?.simkl_id ?? candidate?.id;
+        if (rawId === undefined || rawId === null) {
+            continue;
+        }
+        const cleaned = rawId.toString().trim();
+        if (!cleaned) {
+            continue;
+        }
+        return cleaned;
+    }
+    return null;
+}
+function extractSimklRatings(payload) {
+    const candidates = [
+        payload,
+        payload?.movie,
+        payload?.show,
+        payload?.anime,
+        payload?.item,
+        payload?.data,
+        payload?.result,
+    ].filter(Boolean);
+    let simklRating = null;
+    let simklVotes = null;
+    for (const candidate of candidates) {
+        const ratings = candidate?.ratings || {};
+        simklRating = simklRating
+            || normalizeRatingValue(ratings?.simkl?.rating)
+            || normalizeRatingValue(ratings?.simkl_rating)
+            || normalizeRatingValue(candidate?.simkl?.rating)
+            || normalizeRatingValue(candidate?.simkl_rating)
+            || normalizeRatingValue(candidate?.simklRating)
+            || normalizeRatingValue(candidate?.rating);
+        simklVotes = simklVotes
+            || normalizeVotesValue(ratings?.simkl?.votes)
+            || normalizeVotesValue(ratings?.simkl_votes)
+            || normalizeVotesValue(candidate?.simkl?.votes)
+            || normalizeVotesValue(candidate?.simkl_votes)
+            || normalizeVotesValue(candidate?.simklVotes)
+            || normalizeVotesValue(candidate?.votes);
+        if (simklRating && simklVotes) {
+            break;
+        }
+    }
+    return {
+        simklRating,
+        simklVotes,
+    };
+}
+function extractTraktRatings(payload) {
+    const candidates = [
+        payload,
+        payload?.movie,
+        payload?.show,
+        payload?.anime,
+        payload?.item,
+        payload?.data,
+        payload?.result,
+    ].filter(Boolean);
+    let simklRating = null;
+    let simklVotes = null;
+    let traktRating = null;
+    let traktVotes = null;
+    for (const candidate of candidates) {
+        const ratings = candidate?.ratings || {};
+        const nestedMovie = candidate?.movie || {};
+        const nestedShow = candidate?.show || {};
+        traktRating = traktRating
+            || normalizeRatingValue(ratings?.trakt?.rating)
+            || normalizeRatingValue(ratings?.trakt_rating)
+            || normalizeRatingValue(candidate?.rating)
+            || normalizeRatingValue(nestedMovie?.rating)
+            || normalizeRatingValue(nestedShow?.rating)
+            || normalizeRatingValue(candidate?.trakt?.rating)
+            || normalizeRatingValue(candidate?.trakt_rating)
+            || normalizeRatingValue(candidate?.traktRating);
+        traktVotes = traktVotes
+            || normalizeVotesValue(ratings?.trakt?.votes)
+            || normalizeVotesValue(ratings?.trakt_votes)
+            || normalizeVotesValue(candidate?.votes)
+            || normalizeVotesValue(nestedMovie?.votes)
+            || normalizeVotesValue(nestedShow?.votes)
+            || normalizeVotesValue(candidate?.trakt?.votes)
+            || normalizeVotesValue(candidate?.trakt_votes)
+            || normalizeVotesValue(candidate?.traktVotes);
+        if (traktRating && traktVotes) {
+            break;
+        }
+    }
+    return {
+        traktRating,
+        traktVotes,
+    };
+}
+async function fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType) {
+    const traktRes = await axios_1.default.get(`https://api.trakt.tv/search/imdb/${imdbId}`, {
+        params: {
+            type: mediaType,
+            extended: 'full',
+        },
+        headers: {
+            'trakt-api-key': traktApiKey,
+            'trakt-api-version': '2',
+            'User-Agent': 'Loom/1.0',
+        },
+    });
+    const traktData = Array.isArray(traktRes.data) ? traktRes.data[0] : traktRes.data;
+    return extractTraktRatings(traktData);
+}
 async function mediaRoutes(fastify) {
     // Set up auth guard hook for all media routes
     fastify.addHook('preValidation', async (request, reply) => {
@@ -118,6 +291,9 @@ async function mediaRoutes(fastify) {
           VALUES (?, ?, ?, ?)
           ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
         `).run((0, uuid_1.v4)(), movie.id, key, stringVal);
+            if (key === 'my_rating') {
+                await (0, rating_sync_1.syncExternalRatings)(movie, value);
+            }
             return reply.code(200).send({ ok: true });
         }
         catch (err) {
@@ -166,7 +342,18 @@ async function mediaRoutes(fastify) {
           `).run((0, uuid_1.v4)(), movie.id, key, value);
             };
             const awardsPlaceholder = 'Inga prisuppgifter hittades.';
-            const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path || !metadata.imdb_rating || !metadata.simkl_rating;
+            const simklClientId = tmdb_1.tmdbService.getSetting('SIMKL_CLIENT_ID');
+            const traktApiKey = tmdb_1.tmdbService.getSetting('TRAKT_API_KEY');
+            const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path || !metadata.imdb_rating || !metadata.trailer_url || (simklClientId && (!metadata.simkl_rating || !metadata.trakt_rating));
+            console.log('[Media Details] Diagnostic check for:', movie.title, {
+                needsEnrichment,
+                hasImdbRating: Boolean(metadata.imdb_rating),
+                hasSimklRating: Boolean(metadata.simkl_rating),
+                hasTraktRating: Boolean(metadata.trakt_rating),
+                simklClientId: simklClientId ? 'PRESENT' : 'MISSING',
+                traktApiKey: traktApiKey ? 'PRESENT' : 'MISSING',
+                imdbIdInDb: movie.imdb_id || 'MISSING'
+            });
             if (needsEnrichment) {
                 const tmdbData = movie.tmdb_id
                     ? await tmdb_1.tmdbService.fetchMovieById(movie.tmdb_id.toString())
@@ -221,6 +408,10 @@ async function mediaRoutes(fastify) {
                             upsertMeta('logo_path', logoUrl);
                         }
                     }
+                    if (!metadata.trailer_url && tmdbData.trailer_url) {
+                        metadata.trailer_url = tmdbData.trailer_url;
+                        upsertMeta('trailer_url', tmdbData.trailer_url);
+                    }
                     const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
                     if (imdbId) {
                         const omdbKey = tmdb_1.tmdbService.getSetting('OMDB_API_KEY');
@@ -237,6 +428,10 @@ async function mediaRoutes(fastify) {
                                     if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
                                         metadata.imdb_rating = omdbRes.data.imdbRating;
                                         upsertMeta('imdb_rating', omdbRes.data.imdbRating);
+                                    }
+                                    if (omdbRes.data.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
+                                        metadata.imdb_votes = omdbRes.data.imdbVotes;
+                                        upsertMeta('imdb_votes', omdbRes.data.imdbVotes);
                                     }
                                     if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
                                         metadata.metascore = omdbRes.data.Metascore;
@@ -255,25 +450,55 @@ async function mediaRoutes(fastify) {
                                 console.error('[Media Details] OMDb enrichment failed:', omdbErr);
                             }
                         }
-                        const simklClientId = tmdb_1.tmdbService.getSetting('SIMKL_CLIENT_ID');
-                        if (simklClientId && !metadata.simkl_rating) {
+                        if (simklClientId && (!metadata.simkl_rating || !metadata.simkl_votes)) {
                             try {
-                                const simklRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
+                                const simklLookupRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
                                     params: { imdb: imdbId, client_id: simklClientId }
                                 });
-                                if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
-                                    const simklData = simklRes.data[0];
-                                    if (simklData.ratings && simklData.ratings.simkl) {
-                                        const simklRating = simklData.ratings.simkl.rating;
-                                        if (simklRating) {
-                                            metadata.simkl_rating = simklRating.toString();
-                                            upsertMeta('simkl_rating', simklRating.toString());
+                                const simklLookupData = Array.isArray(simklLookupRes.data)
+                                    ? simklLookupRes.data[0]
+                                    : simklLookupRes.data;
+                                const simklId = extractSimklId(simklLookupData);
+                                if (simklId && (!metadata.simkl_rating || !metadata.simkl_votes)) {
+                                    const simklRatingsRes = await axios_1.default.get(`https://api.simkl.com/ratings`, {
+                                        params: {
+                                            simkl: simklId,
+                                            fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
+                                            client_id: simklClientId,
                                         }
+                                    });
+                                    const parsedSimklRatings = extractSimklRatings(simklRatingsRes.data);
+                                    if (parsedSimklRatings.simklRating) {
+                                        metadata.simkl_rating = parsedSimklRatings.simklRating;
+                                        upsertMeta('simkl_rating', parsedSimklRatings.simklRating);
+                                    }
+                                    if (parsedSimklRatings.simklVotes) {
+                                        metadata.simkl_votes = parsedSimklRatings.simklVotes;
+                                        upsertMeta('simkl_votes', parsedSimklRatings.simklVotes);
                                     }
                                 }
                             }
                             catch (simklErr) {
-                                console.error('[Media Details] Simkl enrichment failed:', simklErr);
+                                console.error('[Media Details] Simkl/Trakt enrichment failed:', simklErr);
+                            }
+                        }
+                        if (traktApiKey && imdbId && (!metadata.trakt_rating || !metadata.trakt_votes)) {
+                            try {
+                                const mediaType = movie.type?.toString().toLowerCase() === 'show' || movie.type?.toString().toLowerCase() === 'tv'
+                                    ? 'show'
+                                    : 'movie';
+                                const parsedTraktRatings = await fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType);
+                                if (parsedTraktRatings.traktRating) {
+                                    metadata.trakt_rating = parsedTraktRatings.traktRating;
+                                    upsertMeta('trakt_rating', parsedTraktRatings.traktRating);
+                                }
+                                if (parsedTraktRatings.traktVotes) {
+                                    metadata.trakt_votes = parsedTraktRatings.traktVotes;
+                                    upsertMeta('trakt_votes', parsedTraktRatings.traktVotes);
+                                }
+                            }
+                            catch (traktErr) {
+                                console.error('[Media Details] Trakt API enrichment failed:', traktErr);
                             }
                         }
                     }
@@ -472,6 +697,44 @@ async function mediaRoutes(fastify) {
         const { id } = request.params;
         const { tmdbId } = request.body;
         try {
+            // Clear all cached/old metadata keys except custom user states
+            database_1.default.prepare(`
+          DELETE FROM media_metadata 
+          WHERE media_item_id = ? 
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+        `).run(id);
+            const movieItem = database_1.default.prepare(`SELECT file_path FROM media_items WHERE id = ?`).get(id);
+            if (movieItem && movieItem.file_path) {
+                const fileName = path_1.default.parse(movieItem.file_path).name.toLowerCase();
+                let edition = null;
+                if (/\buncut\b/i.test(fileName))
+                    edition = 'Uncut';
+                else if (/\bdirector\'?s\.?cut\b/i.test(fileName))
+                    edition = "Director's Cut";
+                else if (/\bextended\b/i.test(fileName))
+                    edition = 'Extended Cut';
+                else if (/\btheatrical\b/i.test(fileName))
+                    edition = 'Theatrical Cut';
+                else if (/\bultimate\b/i.test(fileName))
+                    edition = 'Ultimate Edition';
+                else if (/\bremastered\b/i.test(fileName))
+                    edition = 'Remastered';
+                else if (/\bcollector\'?s\.?edition\b/i.test(fileName))
+                    edition = "Collector's Edition";
+                else if (/\bspecial\.?edition\b/i.test(fileName))
+                    edition = 'Special Edition';
+                else if (/\b3d\b/i.test(fileName))
+                    edition = '3D';
+                else if (/\bimax\b/i.test(fileName))
+                    edition = 'IMAX';
+                if (edition) {
+                    database_1.default.prepare(`
+              INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+            `).run((0, uuid_1.v4)(), id, 'release_version', edition);
+                }
+            }
             const tmdbData = await tmdb_1.tmdbService.fetchMovieById(tmdbId);
             if (!tmdbData) {
                 return reply.code(404).send({ error: 'TMDB movie details not found' });
@@ -482,12 +745,23 @@ async function mediaRoutes(fastify) {
             if (tmdbData.credits && tmdbData.credits.crew) {
                 const dirObj = tmdbData.credits.crew.find((c) => c.job === 'Director');
                 if (dirObj) {
-                    database_1.default.prepare(`INSERT OR REPLACE INTO media_metadata (media_id, key, value) VALUES (?, ?, ?)`).run(id, 'director', JSON.stringify({ id: dirObj.id, name: dirObj.name }));
+                    database_1.default.prepare(`
+              INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+            `).run((0, uuid_1.v4)(), id, 'director', JSON.stringify({ id: dirObj.id, name: dirObj.name }));
                 }
             }
             // Logo (store in metadata for ClearLOGO display)
             if (tmdbData.logo_path) {
-                database_1.default.prepare(`INSERT OR REPLACE INTO media_metadata (media_id, key, value) VALUES (?, ?, ?)`).run(id, 'logo_path', tmdb_1.tmdbService.getImageUrl(tmdbData.logo_path, 'w500'));
+                const logoUrl = tmdb_1.tmdbService.getImageUrl(tmdbData.logo_path, 'w500');
+                if (logoUrl) {
+                    database_1.default.prepare(`
+              INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+            `).run((0, uuid_1.v4)(), id, 'logo_path', logoUrl);
+                }
             }
             // Collection
             let collectionName = null;
@@ -521,7 +795,7 @@ async function mediaRoutes(fastify) {
             };
             // Add additional metadata
             if (tmdbData.vote_average) {
-                upsertMeta('ratings', JSON.stringify({ tmdb: tmdbData.vote_average }));
+                upsertMeta('ratings', JSON.stringify({ tmdb: tmdbData.vote_average, tmdb_votes: tmdbData.vote_count }));
             }
             if (tmdbData.credits && tmdbData.credits.cast) {
                 const cast = tmdbData.credits.cast.slice(0, 15).map((c) => ({
@@ -535,7 +809,10 @@ async function mediaRoutes(fastify) {
             if (tmdbData['watch/providers'] && tmdbData['watch/providers'].results) {
                 upsertMeta('watch_providers', JSON.stringify(tmdbData['watch/providers'].results));
             }
-            if (tmdbData.videos && tmdbData.videos.results) {
+            if (tmdbData.trailer_url) {
+                upsertMeta('trailer_url', tmdbData.trailer_url);
+            }
+            else if (tmdbData.videos && tmdbData.videos.results) {
                 const trailerObj = tmdbData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer');
                 if (trailerObj) {
                     upsertMeta('trailer_url', `https://www.youtube.com/watch?v=${trailerObj.key}`);
@@ -554,6 +831,9 @@ async function mediaRoutes(fastify) {
                         if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
                             upsertMeta('imdb_rating', omdbRes.data.imdbRating);
                         }
+                        if (omdbRes.data.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
+                            upsertMeta('imdb_votes', omdbRes.data.imdbVotes);
+                        }
                         if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
                             upsertMeta('metascore', omdbRes.data.Metascore);
                         }
@@ -568,11 +848,144 @@ async function mediaRoutes(fastify) {
                     console.error('[ManualMatch] OMDb API fetch failed:', omdbErr);
                 }
             }
+            // Fetch Simkl & Trakt Ratings on Manual Match
+            const simklClientId = tmdb_1.tmdbService.getSetting('SIMKL_CLIENT_ID');
+            const traktApiKey = tmdb_1.tmdbService.getSetting('TRAKT_API_KEY');
+            if (simklClientId && tmdbData.imdb_id) {
+                try {
+                    const simklRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
+                        params: { imdb: tmdbData.imdb_id, client_id: simklClientId }
+                    });
+                    const simklData = Array.isArray(simklRes.data)
+                        ? simklRes.data[0]
+                        : simklRes.data;
+                    if (simklData) {
+                        const parsedRatings = extractSimklRatings(simklData);
+                        if (parsedRatings.simklRating)
+                            upsertMeta('simkl_rating', parsedRatings.simklRating);
+                        if (parsedRatings.simklVotes)
+                            upsertMeta('simkl_votes', parsedRatings.simklVotes);
+                    }
+                }
+                catch (simklErr) {
+                    console.error('[ManualMatch] Simkl/Trakt API fetch failed:', simklErr);
+                }
+            }
+            if (traktApiKey && tmdbData.imdb_id) {
+                try {
+                    const mediaType = tmdbData.media_type === 'tv' ? 'show' : 'movie';
+                    const traktRes = await axios_1.default.get(`https://api.trakt.tv/search/imdb/${tmdbData.imdb_id}`, {
+                        params: {
+                            type: mediaType,
+                            extended: 'full',
+                        },
+                        headers: {
+                            'trakt-api-key': traktApiKey,
+                            'trakt-api-version': '2',
+                            'User-Agent': 'Loom/1.0',
+                        },
+                    });
+                    const traktData = Array.isArray(traktRes.data) ? traktRes.data[0] : traktRes.data;
+                    if (traktData) {
+                        const parsedRatings = extractTraktRatings(traktData);
+                        if (parsedRatings.traktRating)
+                            upsertMeta('trakt_rating', parsedRatings.traktRating);
+                        if (parsedRatings.traktVotes)
+                            upsertMeta('trakt_votes', parsedRatings.traktVotes);
+                    }
+                }
+                catch (traktErr) {
+                    console.error('[ManualMatch] Trakt API fetch failed:', traktErr);
+                }
+            }
             return reply.send({ success: true });
         }
         catch (err) {
             console.error(err);
             return reply.code(500).send({ error: 'Failed to manual-match media item', details: err.message });
+        }
+    });
+    // DELETE /api/media/items/:id
+    fastify.delete('/api/media/items/:id', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id);
+            if (!item) {
+                return reply.code(404).send({ error: 'Media item not found' });
+            }
+            // Remove related metadata
+            database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ?`).run(id);
+            // Remove item from database (Note: file on disk is NOT physically deleted!)
+            database_1.default.prepare(`DELETE FROM media_items WHERE id = ?`).run(id);
+            return reply.send({ success: true });
+        }
+        catch (err) {
+            console.error(err);
+            return reply.code(500).send({ error: 'Failed to delete media item', details: err.message });
+        }
+    });
+    // POST /api/media/items/:id/refresh
+    fastify.post('/api/media/items/:id/refresh', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id);
+            if (!item) {
+                return reply.code(404).send({ error: 'Media item not found' });
+            }
+            // Lock key/metadata check bypass: we trigger ScannerService.processMovieFile
+            // to re-fetch and overwrite metadata.
+            const { mediaScanner } = await Promise.resolve().then(() => __importStar(require('../services/scanner')));
+            const res = await mediaScanner.processMovieFile(item.file_path, false);
+            return reply.send({ success: true, status: res });
+        }
+        catch (err) {
+            console.error(err);
+            return reply.code(500).send({ error: 'Failed to refresh metadata', details: err.message });
+        }
+    });
+    // POST /api/media/items/:id/unmatch
+    fastify.post('/api/media/items/:id/unmatch', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id);
+            if (!item) {
+                return reply.code(404).send({ error: 'Media item not found' });
+            }
+            // Clear matches in DB
+            database_1.default.prepare(`
+          UPDATE media_items 
+          SET tmdb_id = NULL, imdb_id = NULL, collection_name = NULL, collection_id = NULL, original_title = NULL, poster_path = NULL, fanart_path = NULL
+          WHERE id = ?
+        `).run(id);
+            // Delete metadata keys except custom ratings/watch statuses if desired, or keep simple and delete all non-playback metadata keys
+            database_1.default.prepare(`
+          DELETE FROM media_metadata 
+          WHERE media_item_id = ? 
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+        `).run(id);
+            return reply.send({ success: true });
+        }
+        catch (err) {
+            console.error(err);
+            return reply.code(500).send({ error: 'Failed to unmatch media item', details: err.message });
+        }
+    });
+    // POST /api/media/items/:id/analyze
+    fastify.post('/api/media/items/:id/analyze', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id);
+            if (!item) {
+                return reply.code(404).send({ error: 'Media item not found' });
+            }
+            // Re-analyze using the public processMovieFile or re-probe
+            const { mediaScanner } = await Promise.resolve().then(() => __importStar(require('../services/scanner')));
+            const res = await mediaScanner.processMovieFile(item.file_path, true);
+            return reply.send({ success: true, status: res });
+        }
+        catch (err) {
+            console.error(err);
+            return reply.code(500).send({ error: 'Failed to analyze media item', details: err.message });
         }
     });
     // GET /api/media/collections/:collectionId

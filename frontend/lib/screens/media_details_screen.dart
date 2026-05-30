@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api.dart';
+import 'dart:async';
 import 'dart:ui';
 import 'dart:html' as html;
 import 'person_details_screen.dart';
@@ -34,6 +35,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   String? _error;
   Map<String, dynamic>? _mediaData;
   double _myRating = 0.0;
+  double? _ratingPreview;
+  bool _isRatingHovering = false;
+  bool _isResetHovering = false;
+  bool _isRatingFlashing = false;
+  int _ratingFlashNonce = 0;
+  Timer? _ratingFlashTimer;
   bool _isWatched = false;
   int _savedProgressSeconds = 0;
   String _titleDisplayStyle = 'Translated';
@@ -45,6 +52,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   void initState() {
     super.initState();
     _fetchDetails();
+  }
+
+  @override
+  void dispose() {
+    _ratingFlashTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _fetchDetails() async {
@@ -126,7 +139,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
       setState(() {
         _mediaData = data;
-        _myRating = savedRating;
+        _myRating = savedRating > 0 ? savedRating : 0.0;
         _isWatched = savedWatchStatus;
         _savedProgressSeconds = progress;
         _titleDisplayStyle = titleStyle;
@@ -143,19 +156,38 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   void _onRatingChanged(double val) {
+    final rating = _normalizeRating(val);
     setState(() {
-      _myRating = val;
+      _myRating = rating;
+      _ratingPreview = rating;
+      _isRatingHovering = true;
     });
   }
 
   Future<void> _onRatingChangeEnd(double val) async {
+    final rating = _normalizeRating(val);
+    _ratingFlashTimer?.cancel();
+    setState(() {
+      _myRating = rating;
+      _ratingPreview = rating;
+      _isRatingHovering = false;
+      _isRatingFlashing = true;
+      _ratingFlashNonce++;
+    });
+    _ratingFlashTimer = Timer(const Duration(milliseconds: 750), () {
+      if (!mounted) return;
+      setState(() {
+        _isRatingFlashing = false;
+      });
+    });
+
     // Sync locally and queue background Trakt/Simkl syncs once dragging stops
     try {
       if (mounted) {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Betyg uppdaterat till ${val.toStringAsFixed(1)}! Synkas med Trakt/Simkl.'),
+            content: Text('Betyg uppdaterat till ${rating.toStringAsFixed(0)}! Synkas med Trakt/Simkl.'),
             backgroundColor: const Color(0xFF8A5BFF),
             duration: const Duration(seconds: 2),
           ),
@@ -163,7 +195,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       }
       // Persist rating to server
       try {
-        await widget.apiService.saveRating(widget.mediaId, val);
+        await widget.apiService.saveRating(widget.mediaId, rating);
       } catch (e) {
         debugPrint('Failed to save rating: $e');
         if (mounted) {
@@ -242,6 +274,212 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     );
   }
 
+  double _normalizeRating(double value) {
+    return value.clamp(0.0, 10.0).roundToDouble();
+  }
+
+  void _updateRatingPreviewFromHover(dynamic event, double width) {
+    final usableWidth = width <= 0 ? 1.0 : width;
+    final localPosition = event.localPosition;
+    final clampedDx = (localPosition.dx as double).clamp(0.0, usableWidth);
+    final preview = _normalizeRating(((clampedDx / usableWidth) * 10.0).ceilToDouble());
+    setState(() {
+      _ratingPreview = preview;
+      _isRatingHovering = true;
+    });
+  }
+
+  Widget _buildMyRatingControl() {
+    final displayRating = _isRatingHovering && _ratingPreview != null ? _ratingPreview! : _myRating;
+    final displayText = displayRating.toStringAsFixed(0);
+    final glowColor = _isRatingFlashing
+        ? const Color(0xFFFFD65C)
+        : (_isRatingHovering ? const Color(0xFFB593FF) : const Color(0xFF8A5BFF));
+
+    Widget buildChip(int rating) {
+      final isSelected = rating == displayRating.round();
+      final isHovered = _isRatingHovering && _ratingPreview?.round() == rating;
+      final chipGlow = _isRatingFlashing && isSelected
+          ? const Color(0xFFFFD65C)
+          : (isHovered ? const Color(0xFFB593FF) : const Color(0xFF8A5BFF));
+
+      return MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() {
+          _isRatingHovering = true;
+          _ratingPreview = rating.toDouble();
+        }),
+        child: GestureDetector(
+          onTap: () => _onRatingChangeEnd(rating.toDouble()),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOut,
+            width: 24,
+            height: 24,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: isSelected ? chipGlow.withValues(alpha: 0.22) : Colors.white.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: chipGlow.withValues(alpha: isSelected || isHovered ? 0.9 : 0.22), width: isSelected ? 1.3 : 1.0),
+              boxShadow: [
+                BoxShadow(
+                  color: chipGlow.withValues(alpha: isHovered || isSelected ? 0.36 : 0.08),
+                  blurRadius: isHovered || isSelected ? 10 : 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Text(
+              '$rating',
+              style: TextStyle(
+                color: isSelected ? Colors.white : Colors.white70,
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onExit: (_) => setState(() {
+        _isRatingHovering = false;
+        _ratingPreview = null;
+      }),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+        margin: const EdgeInsets.only(bottom: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.02),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white.withValues(alpha: _isRatingHovering || _isRatingFlashing ? 0.12 : 0.04)),
+        ),
+        child: Row(
+          children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              onEnter: (_) => setState(() => _isResetHovering = true),
+              onExit: (_) => setState(() => _isResetHovering = false),
+              child: GestureDetector(
+                onTap: () => _onRatingChangeEnd(0.0),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _isResetHovering ? const Color(0xFFB9536F) : const Color(0xFF8A5BFF),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.black, width: 1.5),
+                  ),
+                  child: Text(
+                    _isResetHovering ? 'NOLLSTÄLL BETYG' : 'MITT BETYG',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10, letterSpacing: 0.5),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(10, (index) {
+                    final rating = index + 1;
+                    if (index != 0) {
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: buildChip(rating),
+                      );
+                    }
+                    return buildChip(rating);
+                  }),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            AnimatedScale(
+              scale: _isRatingFlashing ? 1.12 : 1.0,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOutBack,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 160),
+                transitionBuilder: (child, animation) {
+                  return FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(
+                      scale: Tween<double>(begin: 1.3, end: 1.0).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutBack)),
+                      child: child,
+                    ),
+                  );
+                },
+                child: Text(
+                  displayText,
+                  key: ValueKey('rating-${_ratingFlashNonce}-$displayText'),
+                  style: TextStyle(
+                    color: _isRatingFlashing ? const Color(0xFFFFF4B0) : const Color(0xFFE7D7FF),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.6,
+                    shadows: [
+                      Shadow(color: glowColor.withValues(alpha: 0.8), blurRadius: _isRatingFlashing ? 12 : 8),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text('/ 10', style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _buildTrailerSearchUrl(String title, String year) {
+    return 'https://www.youtube.com/results?search_query=${Uri.encodeComponent("$title $year Official Trailer")}';
+  }
+
+  Future<void> _launchTrailer(String? trailerUrl, String title, String year) async {
+    final finalTrailerUrl = trailerUrl ?? _buildTrailerSearchUrl(title, year);
+    final action = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF15102A),
+          title: const Text('Öppna trailer', style: TextStyle(color: Colors.white)),
+          content: const Text(
+            'För TV-fjärrkontroll: välj Samma flik så fungerar Back/Retur för att gå tillbaka till filmen.',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'same'),
+              child: const Text('Samma flik', style: TextStyle(color: Color(0xFF8A5BFF))),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'new'),
+              child: const Text('Ny flik', style: TextStyle(color: Colors.white70)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'cancel'),
+              child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (action == 'same') {
+      html.window.open(finalTrailerUrl, '_self');
+    } else if (action == 'new') {
+      html.window.open(finalTrailerUrl, '_blank');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -261,10 +499,11 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               const Icon(Icons.error_outline, color: Colors.redAccent, size: 64),
               const SizedBox(height: 16),
               Text('Failed to load media details:\n$_error', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Go Back'),
+              const SizedBox(height: 12),
+              const Text(
+                'Använd vänstermenyn för att gå tillbaka.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54),
               ),
             ],
           ),
@@ -303,22 +542,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final awardsValue = metadata['awards'] ?? metadata['awards_text'] ?? metadata['award'] ?? metadata['prizes'] ?? metadata['omdb_awards'] ?? metadata['imdb_awards'];
     final awardsString = awardsValue is String ? awardsValue : awardsValue?.toString();
 
+    debugPrint('[Flutter Details] Metadata rating keys present: ${metadata.keys.where((k) => k.contains("rating") || k.contains("vote")).toList()}');
+    debugPrint('[Flutter Details] imdb_rating: ${metadata["imdb_rating"]} (${metadata["imdb_rating"].runtimeType}), simkl_rating: ${metadata["simkl_rating"]} (${metadata["simkl_rating"].runtimeType}), trakt_rating: ${metadata["trakt_rating"]} (${metadata["trakt_rating"].runtimeType})');
+
     return Scaffold(
       backgroundColor: const Color(0xFF0A0714),
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () {
-            if (widget.onBack != null) {
-              widget.onBack!();
-            } else {
-              Navigator.pop(context);
-            }
-          },
-        ),
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -788,26 +1020,18 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 ),
                                 const SizedBox(width: 16),
                                 
-                                // Always-visible Trailer Button with YouTube search query fallback
-                                Builder(
-                                  builder: (context) {
-                                    final finalTrailerUrl = trailerUrl ?? 'https://www.youtube.com/results?search_query=${Uri.encodeComponent("$title $year Official Trailer")}';
-                                    return Padding(
-                                      padding: const EdgeInsets.only(right: 16),
-                                      child: OutlinedButton.icon(
-                                        onPressed: () {
-                                          html.window.open(finalTrailerUrl, '_blank');
-                                        },
-                                        icon: const Icon(Icons.slideshow, size: 22, color: Colors.white),
-                                        label: const Text('Trailer', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                                        style: OutlinedButton.styleFrom(
-                                          side: const BorderSide(color: Colors.white54, width: 1.5),
-                                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                                        ),
-                                      ),
-                                    );
-                                  },
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 16),
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => _launchTrailer(trailerUrl?.toString(), title.toString(), year.toString()),
+                                    icon: const Icon(Icons.slideshow, size: 22, color: Colors.white),
+                                    label: const Text('Trailer', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                                    style: OutlinedButton.styleFrom(
+                                      side: const BorderSide(color: Colors.white54, width: 1.5),
+                                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                                    ),
+                                  ),
                                 ),
 
                                 // Dynamic kebab Menu button frambringande av actions
@@ -1095,31 +1319,31 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         children: [
                           const Text('Betyg', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                           const SizedBox(height: 20),
+                          _buildMyRatingControl(),
+                          const SizedBox(height: 8),
+
                           // Order: IMDb, Simkl, Trakt, TMDB
                           if (media['imdb_id'] != null)
                             _buildRatingRow(
-                              'IMDb', metadata['imdb_rating'] != null ? '${metadata['imdb_rating']} / 10' : '— / 10', const Color(0xFFF5C518),
+                              'IMDb', '${_formatRating(metadata['imdb_rating'])} / 10', const Color(0xFFF5C518),
                               url: 'https://www.imdb.com/title/${media['imdb_id']}',
                               votes: _formatVotes(metadata['imdb_votes']),
                             ),
                           _buildRatingRow(
                             'Simkl', metadata['simkl_rating'] != null 
-                              ? (double.tryParse(metadata['simkl_rating'].toString()) != null 
-                                  ? '${(double.parse(metadata['simkl_rating'].toString()) * 10).toStringAsFixed(0)}%' 
-                                  : '${metadata['simkl_rating']}%')
+                              ? _formatSimklRating(metadata['simkl_rating'])
                               : '—%', const Color(0xFF21C65E),
                             url: media['imdb_id'] != null ? 'https://simkl.com/movies/?q=${Uri.encodeComponent(media['title'] ?? '')}' : null,
                             votes: _formatVotes(metadata['simkl_votes'] ?? ratings['simkl_votes']),
                           ),
-                          if (metadata['trakt_rating'] != null)
-                            _buildRatingRow(
-                              'Trakt', '${metadata['trakt_rating']} / 10', const Color(0xFFED2224),
-                              url: media['imdb_id'] != null ? 'https://trakt.tv/search/imdb/${media['imdb_id']}' : null,
-                              votes: _formatVotes(metadata['trakt_votes']),
-                            ),
+                          _buildRatingRow(
+                            'Trakt', '${_formatRating(metadata['trakt_rating'])} / 10', const Color(0xFFED2224),
+                            url: media['imdb_id'] != null ? 'https://trakt.tv/search/imdb/${media['imdb_id']}' : null,
+                            votes: _formatVotes(metadata['trakt_votes'] ?? ratings['trakt_votes']),
+                          ),
                           if (ratings['tmdb'] != null)
                             _buildRatingRow(
-                              'TMDB', '${ratings['tmdb']} / 10', const Color(0xFF03B6E1),
+                              'TMDB', '${_formatRating(ratings['tmdb'])} / 10', const Color(0xFF03B6E1),
                               url: media['tmdb_id'] != null 
                                   ? (media['type']?.toString().toLowerCase() == 'show' || media['type']?.toString().toLowerCase() == 'tv'
                                       ? 'https://www.themoviedb.org/tv/${media['tmdb_id']}'
@@ -1127,40 +1351,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   : null,
                               votes: _formatVotes(ratings['tmdb_votes']),
                             ),
-                          
-                          const Divider(color: Colors.white12, height: 32),
-
-                          // Eget Betyg slider
-                          const Text('Mitt Betyg', style: TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    activeTrackColor: const Color(0xFF8A5BFF),
-                                    inactiveTrackColor: Colors.white12,
-                                    thumbColor: const Color(0xFF8A5BFF),
-                                    overlayColor: const Color(0x298A5BFF),
-                                  ),
-                                  child: Slider(
-                                    value: _myRating,
-                                    min: 0.0,
-                                    max: 10.0,
-                                    divisions: 10,
-                                    label: _myRating.toStringAsFixed(1),
-                                    onChanged: _onRatingChanged,
-                                    onChangeEnd: _onRatingChangeEnd,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Text(
-                                '${_myRating.toStringAsFixed(0)}/10',
-                                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
                         ],
                       ),
                     ),
@@ -1354,6 +1544,27 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       return '${(count / 1000).toStringAsFixed(1)}K röster';
     }
     return '$count röster';
+  }
+
+  String _formatRating(dynamic rating) {
+    if (rating == null) return '—';
+    final parsed = double.tryParse(rating.toString().replaceAll(',', '.'));
+    if (parsed == null) return rating.toString();
+    return parsed.toStringAsFixed(1);
+  }
+
+  String _formatSimklRating(dynamic rating) {
+    if (rating == null) return '—%';
+    final parsed = double.tryParse(rating.toString().replaceAll(',', '.'));
+    if (parsed == null) return '${rating.toString()}%';
+
+    if (parsed <= 10) {
+      return '${(parsed * 10).toStringAsFixed(0)}%';
+    }
+    if (parsed <= 100) {
+      return '${parsed.toStringAsFixed(0)}%';
+    }
+    return '—%';
   }
 
   Widget _buildRatingRow(String source, String value, Color color, {String? url, String? votes}) {
@@ -2099,9 +2310,13 @@ class _FixMatchDialogState extends State<_FixMatchDialog> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white60),
+                    TextButton.icon(
                       onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, color: Colors.white60, size: 18),
+                      label: const Text(
+                        'Stäng',
+                        style: TextStyle(color: Colors.white60, fontWeight: FontWeight.w600),
+                      ),
                     ),
                   ],
                 ),
@@ -2173,16 +2388,24 @@ class _FixMatchDialogState extends State<_FixMatchDialog> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          ElevatedButton(
+                          Tooltip(
+                            message: 'Matcha den här titeln direkt mot en TMDB-post',
+                            child: ElevatedButton.icon(
                             onPressed: _matching ? null : _applyDirectMatch,
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF8A5BFF),
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                              backgroundColor: const Color(0xFF9A75FF),
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size(176, 50),
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             ),
-                            child: _matching 
-                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                              : const Text('Matcha direkt', style: TextStyle(fontWeight: FontWeight.bold)),
+                            icon: _matching 
+                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.link, size: 18),
+                            label: _matching 
+                              ? const Text('Matchar...', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15))
+                              : const Text('Matcha direkt', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+                          ),
                           ),
                         ],
                       ),
