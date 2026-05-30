@@ -1158,18 +1158,44 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Colors.white10,
+                    color: Colors.white.withValues(alpha: 0.05),
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.4), blurRadius: 10, offset: const Offset(0, 5))],
-                    image: posterPath != null
-                        ? DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover)
-                        : null,
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      if (posterPath == null)
-                        const Center(child: Icon(Icons.movie, color: Colors.white24, size: 32)),
+                      // Gradient placeholder background
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              const Color(0xFF8A5BFF).withValues(alpha: 0.05),
+                              const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                            ],
+                          ),
+                        ),
+                        child: const Center(
+                          child: Icon(Icons.movie_outlined, color: Colors.white24, size: 36),
+                        ),
+                      ),
+                      
+                      // Actual Network Image with CORS fail-safety
+                      if (posterPath != null && posterPath.isNotEmpty)
+                        Image.network(
+                          posterPath,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Center(
+                              child: Icon(Icons.movie_outlined, color: Colors.white24, size: 36),
+                            );
+                          },
+                        ),
                       
                       // Bottom progress bar if playback_progress > 0
                       Builder(builder: (context) {
@@ -1407,16 +1433,28 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         const Color(0xFF8A5BFF).withValues(alpha: 0.25),
                       ],
                     ),
-                    image: posterPath != null
-                        ? DecorationImage(
-                            image: NetworkImage(posterPath),
-                            fit: BoxFit.cover,
-                          )
-                        : null,
                   ),
                   child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      if (posterPath == null)
+                      // Actual Network Image with CORS fail-safety
+                      if (posterPath != null && posterPath.isNotEmpty)
+                        Image.network(
+                          posterPath,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Center(
+                              child: Icon(
+                                type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
+                                color: Colors.white24,
+                                size: 48,
+                              ),
+                            );
+                          },
+                        )
+                      else
                         Center(
                           child: Icon(
                             type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
