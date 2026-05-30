@@ -531,4 +531,38 @@ class ApiService {
       throw Exception('Failed to fix match: ${response.body}');
     }
   }
+
+  /// Authenticated: Create a new playlist and add a media item to it.
+  Future<Map<String, dynamic>> createPlaylistAndAddItem(String playlistName, String mediaItemId) async {
+    if (_token == null) throw Exception('Unauthorized');
+    // Create the playlist
+    final createResp = await http.post(
+      Uri.parse('$baseUrl/api/playlists'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({'name': playlistName}),
+    );
+    if (createResp.statusCode != 200 && createResp.statusCode != 201) {
+      throw Exception('Kunde inte skapa spellista: ${createResp.body}');
+    }
+    final playlist = jsonDecode(createResp.body);
+    final playlistId = playlist['id'];
+
+    // Add the item
+    final addResp = await http.post(
+      Uri.parse('$baseUrl/api/playlists/$playlistId/items'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      },
+      body: jsonEncode({'mediaItemId': mediaItemId}),
+    );
+    if (addResp.statusCode != 200 && addResp.statusCode != 201) {
+      throw Exception('Kunde inte lägga till i spellista: ${addResp.body}');
+    }
+    return jsonDecode(addResp.body);
+  }
 }
+

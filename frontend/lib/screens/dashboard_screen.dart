@@ -55,9 +55,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
     _tabController.addListener(() {
-      if (_tabController.index == 3) {
+      if (_tabController.index == 4) {
         _loadDevices();
         _loadSettings();
       }
@@ -453,6 +453,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                 controller: _tabController,
                                 physics: const NeverScrollableScrollPhysics(),
                                 children: [
+                                  _buildHomeView(),
                                   _buildMoviesView(),
                                   _buildShowsView(),
                                   _buildScannerView(),
@@ -494,31 +495,42 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
               children: [
                 if (_isSidebarExpanded) ...[
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(
-                          Icons.play_circle_fill,
-                          color: Color(0xFF8A5BFF),
-                          size: 26,
-                        ),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: InkWell(
+                      onTap: () {
+                        setState(() {
+                          _tabController.animateTo(0);
+                          _selectedMediaId = null;
+                        });
+                      },
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.play_circle_fill,
+                              color: Color(0xFF8A5BFF),
+                              size: 26,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          const Text(
+                            'LOOM',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 2,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 12),
-                      const Text(
-                        'LOOM',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 2,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                   MouseRegion(
                     cursor: SystemMouseCursors.click,
@@ -562,10 +574,44 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           const SizedBox(height: 40),
           
           // Navigation Items (Tab-based)
-          _buildSidebarItem(0, Icons.movie_outlined, Icons.movie, 'Movies'),
-          _buildSidebarItem(1, Icons.tv_outlined, Icons.tv, 'TV Shows'),
-          _buildSidebarItem(2, Icons.scanner_outlined, Icons.scanner, 'Library Scanner'),
-          _buildSidebarItem(3, Icons.settings_outlined, Icons.settings, 'Settings'),
+          // "Tillbaka" button when a media item is open
+          if (_selectedMediaId != null)
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12, vertical: 4),
+              child: InkWell(
+                onTap: () {
+                  setState(() {
+                    _selectedMediaId = null;
+                  });
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 0, vertical: 12),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.arrow_back_ios_new, color: Color(0xFFB593FF), size: 18),
+                      if (_isSidebarExpanded) ...[
+                        const SizedBox(width: 12),
+                        const Text('Tillbaka', style: TextStyle(color: Color(0xFFB593FF), fontSize: 15, fontWeight: FontWeight.bold)),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          if (_selectedMediaId != null) const SizedBox(height: 8),
+          _buildSidebarItem(0, Icons.home_outlined, Icons.home, 'Hem'),
+          _buildSidebarItem(1, Icons.movie_outlined, Icons.movie, 'Movies'),
+          _buildSidebarItem(2, Icons.tv_outlined, Icons.tv, 'TV Shows'),
+          _buildSidebarItem(3, Icons.scanner_outlined, Icons.scanner, 'Library Scanner'),
+          _buildSidebarItem(4, Icons.settings_outlined, Icons.settings, 'Settings'),
           
           const Spacer(),
           
@@ -703,13 +749,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              _tabController.index == 0 
-                  ? 'Movies' 
-                  : _tabController.index == 1 
-                      ? 'TV Shows' 
+              _tabController.index == 0
+                  ? 'Hem'
+                  : _tabController.index == 1
+                      ? 'Movies'
                       : _tabController.index == 2
-                          ? 'Library Scanner'
-                          : 'Settings',
+                          ? 'TV Shows'
+                          : _tabController.index == 3
+                              ? 'Library Scanner'
+                              : 'Settings',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 32,
@@ -719,11 +767,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             ),
             const SizedBox(height: 6),
             Text(
-              _tabController.index == 2 
-                  ? 'Manage media scan routes and server settings'
+              _tabController.index == 0
+                  ? 'Din mediesamling och aktivitet'
                   : _tabController.index == 3
-                      ? 'Manage trusted devices and server preferences'
-                      : 'Manage and stream your media collection',
+                      ? 'Manage media scan routes and server settings'
+                      : _tabController.index == 4
+                          ? 'Manage trusted devices and server preferences'
+                          : 'Manage and stream your media collection',
               style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
             ),
           ],
@@ -787,7 +837,150 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+
+  Widget _buildHomeView() {
+    final recentMovies = _movies.take(12).toList();
+    final inProgress = _movies.where((m) {
+      final meta = m['metadata'];
+      if (meta is Map) {
+        final progress = int.tryParse(meta['playback_progress']?.toString() ?? '0') ?? 0;
+        return progress > 0;
+      }
+      return false;
+    }).take(8).toList();
+
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Welcome Banner
+          Container(
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFF8A5BFF).withOpacity(0.15),
+                  Colors.transparent,
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFF8A5BFF).withOpacity(0.12)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.play_circle_fill, color: Color(0xFF8A5BFF), size: 48),
+                const SizedBox(width: 20),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Välkommen till Loom', style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
+                      SizedBox(height: 6),
+                      Text('Välj ett innehåll och börja se.', style: TextStyle(color: Colors.white54, fontSize: 15)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 36),
+
+          // Continue Watching Section
+          if (inProgress.isNotEmpty) ...[
+            const Text('Fortsätt titta', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: inProgress.length,
+                itemBuilder: (context, index) {
+                  final movie = inProgress[index];
+                  return _buildHomeCard(movie);
+                },
+              ),
+            ),
+            const SizedBox(height: 32),
+          ],
+
+          // Recently Added Section
+          if (recentMovies.isNotEmpty) ...[
+            const Text('Nyligen tillagda', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: recentMovies.length,
+                itemBuilder: (context, index) {
+                  final movie = recentMovies[index];
+                  return _buildHomeCard(movie);
+                },
+              ),
+            ),
+          ],
+
+          if (_loadingMedia)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(60),
+                child: CircularProgressIndicator(color: Color(0xFF8A5BFF)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomeCard(dynamic movie) {
+    final posterPath = movie['poster_path'];
+    final title = movie['title'] ?? '';
+    final year = movie['year']?.toString() ?? '';
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _selectedMediaId = movie['id']?.toString();
+          });
+        },
+        child: Container(
+          width: 130,
+          margin: const EdgeInsets.only(right: 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white10,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 5))],
+                    image: posterPath != null
+                        ? DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover)
+                        : null,
+                  ),
+                  child: posterPath == null
+                      ? const Center(child: Icon(Icons.movie, color: Colors.white24, size: 32))
+                      : null,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(title, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+              if (year.isNotEmpty)
+                Text(year, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildMoviesView() {
+
     if (_loadingMedia) {
       return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))));
     }

@@ -497,4 +497,64 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       }
     }
   );
+
+  // ─────────────────────────────────────────────────────────────
+  // Playlist Routes
+  // ─────────────────────────────────────────────────────────────
+
+  // POST /api/playlists — Create a new playlist
+  fastify.post(
+    '/api/playlists',
+    async (request: FastifyRequest<{ Body: { name: string } }>, reply: FastifyReply) => {
+      const { name } = request.body;
+      if (!name || !name.trim()) {
+        return reply.code(400).send({ error: 'Playlist name is required' });
+      }
+      try {
+        const id = `pl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        db.prepare(`
+          CREATE TABLE IF NOT EXISTS playlists (
+            id TEXT PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        db.prepare(`INSERT INTO playlists (id, name) VALUES (?, ?)`).run(id, name.trim());
+        return reply.status(201).send({ id, name: name.trim() });
+      } catch (err: any) {
+        if (err.message?.includes('UNIQUE')) {
+          return reply.code(409).send({ error: 'Playlist already exists' });
+        }
+        return reply.code(500).send({ error: 'Failed to create playlist', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/playlists/:id/items — Add a media item to a playlist
+  fastify.post(
+    '/api/playlists/:id/items',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: { mediaItemId: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      const { mediaItemId } = request.body;
+      if (!mediaItemId) {
+        return reply.code(400).send({ error: 'mediaItemId is required' });
+      }
+      try {
+        db.prepare(`
+          CREATE TABLE IF NOT EXISTS playlist_items (
+            id TEXT PRIMARY KEY,
+            playlist_id TEXT NOT NULL,
+            media_item_id TEXT NOT NULL,
+            added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        const itemId = `pli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        db.prepare(`INSERT INTO playlist_items (id, playlist_id, media_item_id) VALUES (?, ?, ?)`)
+          .run(itemId, id, mediaItemId);
+        return reply.status(201).send({ id: itemId, playlist_id: id, media_item_id: mediaItemId });
+      } catch (err: any) {
+        return reply.code(500).send({ error: 'Failed to add item to playlist', details: err.message });
+      }
+    }
+  );
 }

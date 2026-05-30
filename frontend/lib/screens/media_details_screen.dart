@@ -33,6 +33,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   String _titleDisplayStyle = 'Translated';
   String _selectedAudioTrack = 'English (AAC 5.1)';
   String _selectedSubtitle = 'None';
+  bool _isCoverHovered = false;
 
   @override
   void initState() {
@@ -226,7 +227,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final collectionName = media['collection_name'];
     final trailerUrl = media['metadata']?['trailer_url'];
     
-    final genresList = (media['genre'] as String? ?? '').split(', ').filter((g) => g.isNotEmpty).toList();
+    final genresList = (media['genre'] as String? ?? '').split(', ').where((g) => g.isNotEmpty).toList();
     final metadata = (media['metadata'] is Map) ? media['metadata'] as Map<String, dynamic> : {};
     final ratings = (metadata['ratings'] is Map) ? metadata['ratings'] as Map<String, dynamic> : {};
     final cast = (metadata['cast'] is List) ? metadata['cast'] as List<dynamic> : [];
@@ -265,14 +266,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                   child: fanartPath != null
                       ? ShaderMask(
                           shaderCallback: (rect) {
-                            return LinearGradient(
+                            return const LinearGradient(
                               begin: Alignment.topCenter,
                               end: Alignment.bottomCenter,
                               colors: [
-                                Colors.black.withOpacity(0.9),
-                                Colors.black.withOpacity(0.3),
-                                const Color(0xFF0A0714),
+                                Colors.black,
+                                Colors.black,
+                                Colors.transparent,
                               ],
+                              stops: [0.0, 0.45, 1.0],
                             ).createShader(rect);
                           },
                           blendMode: BlendMode.dstIn,
@@ -289,10 +291,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      // Interactive Cover on the Left
+                      // Interactive Cover on the Left (with hover action)
                       if (posterPath != null)
                         MouseRegion(
                           cursor: SystemMouseCursors.click,
+                          onEnter: (_) => setState(() => _isCoverHovered = true),
+                          onExit: (_) => setState(() => _isCoverHovered = false),
                           child: GestureDetector(
                             onTap: _playMedia,
                             child: Container(
@@ -305,23 +309,26 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 ],
                                 image: DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover),
                               ),
-                              child: Stack(
-                                children: [
-                                  // Hover Play Overlay
-                                  Container(
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.2),
-                                      borderRadius: BorderRadius.circular(16),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(16),
+                                child: Stack(
+                                  children: [
+                                    AnimatedOpacity(
+                                      duration: const Duration(milliseconds: 200),
+                                      opacity: _isCoverHovered ? 1.0 : 0.0,
+                                      child: Container(
+                                        color: Colors.black.withOpacity(0.55),
+                                        child: const Center(
+                                          child: CircleAvatar(
+                                            radius: 36,
+                                            backgroundColor: Color(0xFF8A5BFF),
+                                            child: Icon(Icons.play_arrow, size: 40, color: Colors.white),
+                                          ),
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                  const Center(
-                                    child: CircleAvatar(
-                                      radius: 36,
-                                      backgroundColor: Color(0xCC8A5BFF),
-                                      child: Icon(Icons.play_arrow, size: 40, color: Colors.white),
-                                    ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
                           ),
@@ -384,15 +391,16 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 );
                               },
                             ),
-                            // Awards Row
-                            _buildAwardsRow(metadata['awards'] as String?),
+                            
+                            // Premium Quality Badges Row under the Title
+                            _buildQualityBadgesRow(media['file_path'] as String?, media['versions']?[0]?['resolution'] as String? ?? media['resolution'] as String?),
                             const SizedBox(height: 12),
 
                             // Subtitle Metadata details
                             Row(
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                   decoration: BoxDecoration(
                                     border: Border.all(color: Colors.white30),
                                     borderRadius: BorderRadius.circular(4),
@@ -402,12 +410,29 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 const SizedBox(width: 16),
                                 
                                 // Collection Banner
-                                if (collectionName != null) ...[
-                                  const Icon(Icons.layers, color: Color(0xFFB593FF), size: 18),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    collectionName,
-                                    style: const TextStyle(color: Color(0xFFB593FF), fontSize: 16, fontWeight: FontWeight.w500),
+                                if (collectionName != null && collectionName.toString().isNotEmpty) ...[
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFB593FF).withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: const Color(0xFFB593FF).withOpacity(0.3)),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.layers, color: Color(0xFFB593FF), size: 14),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          collectionName,
+                                          style: const TextStyle(
+                                            color: Color(0xFFB593FF),
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                   const SizedBox(width: 16),
                                 ],
@@ -451,6 +476,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 );
                               }).toList(),
                             ),
+                            
+                            // Awards / Priser placed directly under Genre
+                            _buildAwardsRow(metadata['awards'] as String?),
                             const SizedBox(height: 24),
 
                             // Control Actions Row
@@ -459,7 +487,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 ElevatedButton.icon(
                                   onPressed: _playMedia,
                                   icon: const Icon(Icons.play_arrow, size: 28),
-                                  label: const Text('Spela', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                  label: Text(
+                                    _savedProgressSeconds > 0 ? 'Återuppta' : 'Spela',
+                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                  ),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: const Color(0xFF8A5BFF),
                                     foregroundColor: Colors.white,
@@ -487,27 +518,60 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   const SizedBox(width: 16),
                                 ],
 
-                                // Watch Status button
-                                IconButton(
-                                  icon: Icon(
-                                    _isWatched ? Icons.check_circle : Icons.check_circle_outline,
-                                    size: 32,
-                                    color: _isWatched ? const Color(0xFF8A5BFF) : Colors.white70,
+                                // Watch Status button (High contrast circular wrap)
+                                Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.black.withOpacity(0.55),
+                                    border: Border.all(color: Colors.white10),
                                   ),
-                                  onPressed: _toggleWatchStatus,
-                                  tooltip: 'Markera som sedd/osedd',
+                                  child: IconButton(
+                                    icon: Icon(
+                                      _isWatched ? Icons.check_circle : Icons.check_circle_outline,
+                                      size: 26,
+                                      color: _isWatched ? const Color(0xFF8A5BFF) : Colors.white70,
+                                    ),
+                                    onPressed: _toggleWatchStatus,
+                                    tooltip: 'Markera som sedd/osedd',
+                                  ),
                                 ),
                                 const SizedBox(width: 16),
                                 
-                                // More actions button (re-match)
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.more_horiz,
-                                    size: 32,
-                                    color: Colors.white70,
+                                // Add to Playlist Button
+                                Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.black.withOpacity(0.55),
+                                    border: Border.all(color: Colors.white10),
                                   ),
-                                  onPressed: _showFixMatchDialog,
-                                  tooltip: 'Korrigera matchning',
+                                  child: IconButton(
+                                    icon: const Icon(
+                                      Icons.playlist_add,
+                                      size: 26,
+                                      color: Colors.white70,
+                                    ),
+                                    onPressed: _showPlaylistDialog,
+                                    tooltip: 'Lägg till i spellista',
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+
+                                // More actions button (re-match - High contrast circular wrap)
+                                Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.black.withOpacity(0.55),
+                                    border: Border.all(color: Colors.white10),
+                                  ),
+                                  child: IconButton(
+                                    icon: const Icon(
+                                      Icons.more_horiz,
+                                      size: 26,
+                                      color: Colors.white70,
+                                    ),
+                                    onPressed: _showFixMatchDialog,
+                                    tooltip: 'Korrigera matchning',
+                                  ),
                                 ),
                               ],
                             ),
@@ -566,40 +630,53 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           const SizedBox(height: 40),
                         ],
 
-                        const Text('Ljudspår & Undertexter', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _buildDropdown(
-                                'Audio Track', 
-                                _selectedAudioTrack, 
-                                ['English (AAC 5.1)', 'Swedish (Stereo)'], 
-                                (val) {
-                                  if (val != null) {
-                                    setState(() {
-                                      _selectedAudioTrack = val;
-                                    });
-                                  }
-                                }
+                        // Compact Audio & Subtitles Row
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.03),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.white.withOpacity(0.06)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.volume_up_outlined, color: Colors.white38, size: 18),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    isDense: true,
+                                    value: _selectedAudioTrack,
+                                    dropdownColor: const Color(0xFF15102A),
+                                    icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white38, size: 16),
+                                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                    items: ['English (AAC 5.1)', 'Swedish (Stereo)'].map((opt) =>
+                                      DropdownMenuItem(value: opt, child: Text(opt))
+                                    ).toList(),
+                                    onChanged: (val) { if (val != null) setState(() => _selectedAudioTrack = val); },
+                                  ),
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 20),
-                            Expanded(
-                              child: _buildDropdown(
-                                'Subtitles', 
-                                _selectedSubtitle, 
-                                ['None', 'Swedish (SRT)', 'English (SDH)'], 
-                                (val) {
-                                  if (val != null) {
-                                    setState(() {
-                                      _selectedSubtitle = val;
-                                    });
-                                  }
-                                }
+                              Container(width: 1, height: 24, color: Colors.white10, margin: const EdgeInsets.symmetric(horizontal: 12)),
+                              const Icon(Icons.subtitles_outlined, color: Colors.white38, size: 18),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    isDense: true,
+                                    value: _selectedSubtitle,
+                                    dropdownColor: const Color(0xFF15102A),
+                                    icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white38, size: 16),
+                                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                    items: ['None', 'Swedish (SRT)', 'English (SDH)'].map((opt) =>
+                                      DropdownMenuItem(value: opt, child: Text(opt))
+                                    ).toList(),
+                                    onChanged: (val) { if (val != null) setState(() => _selectedSubtitle = val); },
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -622,10 +699,19 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           const Text('Betyg', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                           const SizedBox(height: 20),
                           if (ratings['tmdb'] != null)
-                            _buildRatingRow('TMDB', '${ratings['tmdb']} / 10', Colors.blueAccent),
+                            _buildRatingRow(
+                              'TMDB', '${ratings['tmdb']} / 10', Colors.blueAccent,
+                              url: media['tmdb_id'] != null ? 'https://www.themoviedb.org/movie/${media['tmdb_id']}' : null,
+                            ),
                           if (media['imdb_id'] != null)
-                            _buildRatingRow('IMDb', '7.8 / 10', Colors.amber), // Simulated IMDb score
-                          _buildRatingRow('Simkl', '82%', Colors.green), // Simulated Simkl score
+                            _buildRatingRow(
+                              'IMDb', '7.8 / 10', Colors.amber,
+                              url: 'https://www.imdb.com/title/${media['imdb_id']}',
+                            ),
+                          _buildRatingRow(
+                            'Simkl', '82%', Colors.green,
+                            url: media['imdb_id'] != null ? 'https://simkl.com/movies/?q=${Uri.encodeComponent(media['title'] ?? '')}' : null,
+                          ),
                           
                           const Divider(color: Colors.white12, height: 32),
 
@@ -740,55 +826,110 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     );
   }
 
-  Widget _buildRatingRow(String source, String value, Color color) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+  Widget _buildRatingRow(String source, String value, Color color, {String? url}) {
+    return MouseRegion(
+      cursor: url != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: GestureDetector(
+        onTap: url != null ? () => html.window.open(url, '_blank') : null,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+          margin: const EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(
+            color: url != null ? Colors.white.withOpacity(0.02) : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            border: url != null ? Border.all(color: Colors.white.withOpacity(0.04)) : null,
           ),
-          const SizedBox(width: 12),
-          Text(source, style: const TextStyle(color: Colors.white70, fontSize: 16)),
-          const Spacer(),
-          Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-        ],
+          child: Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+              ),
+              const SizedBox(width: 12),
+              Text(source, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+              if (url != null) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.open_in_new, color: Colors.white24, size: 12),
+              ],
+              const Spacer(),
+              Text(value, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildDropdown(String label, String value, List<String> options, ValueChanged<String?> onChanged) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-        const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.05),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.white12),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              value: value,
-              dropdownColor: const Color(0xFF15102A),
-              icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white54),
-              items: options.map((opt) {
-                return DropdownMenuItem<String>(
-                  value: opt,
-                  child: Text(opt, style: const TextStyle(color: Colors.white)),
-                );
-              }).toList(),
-              onChanged: onChanged,
-            ),
-          ),
+  Widget _buildQualityBadgesRow(String? filePath, String? resolution) {
+    final badges = <Widget>[];
+
+    Widget qualityBadge(String label, {Color color = const Color(0xFFB593FF), IconData? icon}) {
+      return Container(
+        margin: const EdgeInsets.only(right: 8, top: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withOpacity(0.35)),
         ),
-      ],
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, color: color, size: 13),
+              const SizedBox(width: 4),
+            ],
+            Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+          ],
+        ),
+      );
+    }
+
+    // Resolution badge
+    final res = resolution?.toUpperCase() ?? '';
+    if (res.contains('4K') || res.contains('2160')) {
+      badges.add(qualityBadge('4K', color: const Color(0xFF00C9FF), icon: Icons.hd));
+    } else if (res.contains('1080')) {
+      badges.add(qualityBadge('1080p', color: const Color(0xFF7AB8F5)));
+    } else if (res.contains('720')) {
+      badges.add(qualityBadge('720p', color: Colors.white54));
+    }
+
+    // Audio format badges based on filename patterns
+    final path = (filePath ?? '').toLowerCase();
+    if (path.contains('dts-hd') || path.contains('dtshd')) {
+      badges.add(qualityBadge('DTS-HD', color: const Color(0xFFFFD700)));
+    } else if (path.contains('dts')) {
+      badges.add(qualityBadge('DTS', color: const Color(0xFFFFD700)));
+    }
+    if (path.contains('atmos') || path.contains('truehd')) {
+      badges.add(qualityBadge('Atmos', color: const Color(0xFF00E5FF)));
+    } else if (path.contains('5.1') || path.contains('6ch')) {
+      badges.add(qualityBadge('5.1', color: const Color(0xFFB593FF)));
+    } else if (path.contains('7.1') || path.contains('8ch')) {
+      badges.add(qualityBadge('7.1', color: const Color(0xFFB593FF)));
+    }
+    if (path.contains('hdr') || path.contains('hdr10')) {
+      badges.add(qualityBadge('HDR', color: const Color(0xFFFF9800)));
+    }
+
+    if (badges.isEmpty) return const SizedBox();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(children: badges),
+    );
+  }
+
+  void _showPlaylistDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => _PlaylistDialog(
+        mediaId: widget.mediaId,
+        mediaTitle: _mediaData?['title'] ?? '',
+        apiService: widget.apiService,
+      ),
     );
   }
 
@@ -1287,18 +1428,20 @@ class _FixMatchDialogState extends State<_FixMatchDialog> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          ElevatedButton(
+                          ElevatedButton.icon(
                             onPressed: _searching ? null : _searchCandidates,
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white.withOpacity(0.08),
+                              backgroundColor: const Color(0xFF8A5BFF),
                               foregroundColor: Colors.white,
-                              side: BorderSide(color: Colors.white.withOpacity(0.12)),
                               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             ),
-                            child: _searching 
-                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                              : const Icon(Icons.search),
+                            icon: _searching
+                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.search, size: 18),
+                            label: Text(_searching ? 'Söker...' : 'Sök',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                            ),
                           ),
                         ],
                       ),
@@ -1428,6 +1571,170 @@ class _FixMatchDialogState extends State<_FixMatchDialog> {
                   ),
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Playlist Dialog
+// ─────────────────────────────────────────────────────────────────
+class _PlaylistDialog extends StatefulWidget {
+  final String mediaId;
+  final String mediaTitle;
+  final ApiService apiService;
+
+  const _PlaylistDialog({
+    required this.mediaId,
+    required this.mediaTitle,
+    required this.apiService,
+  });
+
+  @override
+  State<_PlaylistDialog> createState() => _PlaylistDialogState();
+}
+
+class _PlaylistDialogState extends State<_PlaylistDialog> {
+  final TextEditingController _newPlaylistController = TextEditingController();
+  bool _isCreating = false;
+  String? _feedback;
+
+  @override
+  void dispose() {
+    _newPlaylistController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _createAndAdd() async {
+    final name = _newPlaylistController.text.trim();
+    if (name.isEmpty) return;
+    setState(() { _isCreating = true; _feedback = null; });
+    try {
+      await widget.apiService.createPlaylistAndAddItem(name, widget.mediaId);
+      setState(() {
+        _isCreating = false;
+        _feedback = '✓ "$name" skapad och "${widget.mediaTitle}" lades till!';
+      });
+    } catch (e) {
+      setState(() {
+        _isCreating = false;
+        _feedback = 'Fel: ${e.toString()}';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 60, vertical: 60),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: Container(
+          width: 480,
+          padding: const EdgeInsets.all(28),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F0B1E).withOpacity(0.96),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 30, offset: const Offset(0, 10)),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Spellistor', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white60),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              const Divider(color: Colors.white10, height: 24),
+              Text(
+                'Lägger till: ${widget.mediaTitle}',
+                style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+
+              const Text('Skapa ny spellista', style: TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _newPlaylistController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Spellista-namn...',
+                        hintStyle: const TextStyle(color: Colors.white30),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.04),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.white.withOpacity(0.06)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFF8A5BFF)),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: _isCreating ? null : _createAndAdd,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF8A5BFF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: _isCreating
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.add, size: 18),
+                    label: const Text('Skapa & Lägg till', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+
+              if (_feedback != null) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _feedback!.startsWith('✓')
+                      ? Colors.green.withOpacity(0.1)
+                      : Colors.redAccent.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: _feedback!.startsWith('✓')
+                        ? Colors.green.withOpacity(0.3)
+                        : Colors.redAccent.withOpacity(0.3),
+                    ),
+                  ),
+                  child: Text(
+                    _feedback!,
+                    style: TextStyle(
+                      color: _feedback!.startsWith('✓') ? Colors.greenAccent : Colors.redAccent,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
