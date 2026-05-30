@@ -32,7 +32,7 @@ class ResumePlaybackModal extends StatelessWidget {
       backgroundColor: const Color(0xFF15102A),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: Colors.white.withOpacity(0.08)),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
       ),
       title: const Row(
         children: [
@@ -58,7 +58,7 @@ class ResumePlaybackModal extends StatelessWidget {
           },
           child: Text(
             'Börja om',
-            style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 16, fontWeight: FontWeight.w500),
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 16, fontWeight: FontWeight.w500),
           ),
         ),
         const SizedBox(width: 8),

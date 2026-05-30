@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../services/api.dart';
 import 'pairing_screen.dart';
 import 'media_details_screen.dart';
+import 'person_details_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
@@ -17,6 +18,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   late TabController _tabController;
   
   String? _selectedMediaId;
+  String? _selectedPersonId;
   bool _isSidebarExpanded = true;
 
   List<dynamic> _movies = [];
@@ -33,7 +35,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   bool _isBrowsingDirectory = false;
   String _scanStatusText = 'Idle';
   Map<String, dynamic>? _lastScanResult;
-  
+
   List<dynamic> _libraryPaths = [];
   List<dynamic> _trustedDevices = [];
   bool _isLoadingDevices = false;
@@ -115,6 +117,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Future<void> _addNewPath(String folderPath, String type) async {
     try {
       await widget.apiService.addLibraryPath(folderPath, type);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Added path: "$folderPath" to ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}'),
@@ -123,6 +126,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       );
       _loadLibraryPaths();
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to add path: $e'), backgroundColor: Colors.redAccent),
       );
@@ -132,6 +136,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Future<void> _deletePath(String id) async {
     try {
       await widget.apiService.deleteLibraryPath(id);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Removed path successfully'),
@@ -139,8 +144,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         ),
       );
       _loadLibraryPaths();
-      _loadAllMedia(); // Reload movies/shows in UI!
+      _loadAllMedia();
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to remove path: $e'), backgroundColor: Colors.redAccent),
       );
@@ -150,6 +156,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Future<void> _updatePath(String id, String newPath) async {
     try {
       final res = await widget.apiService.updateLibraryPath(id, newPath);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Updated path! Bulk modified ${res['updatedCount'] ?? 0} file paths in DB.'),
@@ -157,8 +164,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         ),
       );
       _loadLibraryPaths();
-      _loadAllMedia(); // Reload movies/shows in UI!
+      _loadAllMedia();
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to update path: $e'), backgroundColor: Colors.redAccent),
       );
@@ -380,7 +388,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       setState(() {
         _isScanning = false;
-        _scanStatusText = 'Error';
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to trigger scan: $e'), backgroundColor: Colors.redAccent),
@@ -425,43 +432,64 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             // Main Content Area
             Expanded(
               child: SafeArea(
-                child: _selectedMediaId != null
-                    ? MediaDetailsScreen(
-                        mediaId: _selectedMediaId!,
+                child: _selectedPersonId != null
+                    ? PersonDetailsScreen(
+                        personId: _selectedPersonId!,
                         apiService: widget.apiService,
                         onBack: () {
                           setState(() {
-                            _selectedMediaId = null;
+                            _selectedPersonId = null;
                           });
-                        },
-                        onGenreSelected: (g) {
-                          setState(() {
-                            _selectedMediaId = null;
-                            _genreFilter = g;
-                            _keywordFilter = null; // clear keyword when picking genre
-                          });
-                          // Switch to Movies tab so the filtered list is visible
-                          try {
-                            _tabController.animateTo(1);
-                          } catch (_) {}
-                        },
-                        onKeywordSelected: (k) {
-                          setState(() {
-                            _selectedMediaId = null;
-                            _keywordFilter = k;
-                            _genreFilter = null; // clear genre when picking keyword
-                          });
-                          // Ensure Movies tab is selected when filtering by keyword
-                          try {
-                            _tabController.animateTo(1);
-                          } catch (_) {}
                         },
                         onMediaSelected: (mediaId) {
                           setState(() {
+                            _selectedPersonId = null;
                             _selectedMediaId = mediaId;
                           });
                         },
                       )
+                    : _selectedMediaId != null
+                        ? MediaDetailsScreen(
+                            mediaId: _selectedMediaId!,
+                            apiService: widget.apiService,
+                            onBack: () {
+                              setState(() {
+                                _selectedMediaId = null;
+                              });
+                            },
+                            onGenreSelected: (g) {
+                              setState(() {
+                                _selectedMediaId = null;
+                                _genreFilter = g;
+                                _keywordFilter = null; // clear keyword when picking genre
+                              });
+                              // Switch to Movies tab so the filtered list is visible
+                              try {
+                                _tabController.animateTo(1);
+                              } catch (_) {}
+                            },
+                            onKeywordSelected: (k) {
+                              setState(() {
+                                _selectedMediaId = null;
+                                _keywordFilter = k;
+                                _genreFilter = null; // clear genre when picking keyword
+                              });
+                              // Ensure Movies tab is selected when filtering by keyword
+                              try {
+                                _tabController.animateTo(1);
+                              } catch (_) {}
+                            },
+                            onMediaSelected: (mediaId) {
+                              setState(() {
+                                _selectedMediaId = mediaId;
+                              });
+                            },
+                            onPersonSelected: (personId) {
+                              setState(() {
+                                _selectedPersonId = personId;
+                              });
+                            },
+                          )
                     : Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 30),
                         child: Column(
@@ -516,7 +544,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 24 : 16, vertical: 10),
             child: Column(
               children: [
-                if (_selectedMediaId != null)
+                if (_selectedMediaId != null || _selectedPersonId != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: Align(
@@ -526,9 +554,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         child: IconButton(
                           tooltip: 'Tillbaka',
                           icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                          padding: _isSidebarExpanded ? const EdgeInsets.all(8) : EdgeInsets.zero,
+                          constraints: _isSidebarExpanded ? const BoxConstraints() : const BoxConstraints(maxWidth: 36, maxHeight: 36),
                           onPressed: () {
                             setState(() {
                               _selectedMediaId = null;
+                              _selectedPersonId = null;
                             });
                           },
                         ),
@@ -620,39 +651,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           const SizedBox(height: 40),
           
           // Navigation Items (Tab-based)
-          // "Tillbaka" button when a media item is open
-          if (_selectedMediaId != null)
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12, vertical: 4),
-              child: InkWell(
-                onTap: () {
-                  setState(() {
-                    _selectedMediaId = null;
-                  });
-                },
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 0, vertical: 12),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.04),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.arrow_back_ios_new, color: Color(0xFFB593FF), size: 18),
-                      if (_isSidebarExpanded) ...[
-                        const SizedBox(width: 12),
-                        const Text('Tillbaka', style: TextStyle(color: Color(0xFFB593FF), fontSize: 15, fontWeight: FontWeight.bold)),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          if (_selectedMediaId != null) const SizedBox(height: 8),
+
           _buildSidebarItem(0, Icons.home_outlined, Icons.home, 'Hem'),
           _buildSidebarItem(1, Icons.movie_outlined, Icons.movie, 'Movies'),
           _buildSidebarItem(2, Icons.tv_outlined, Icons.tv, 'TV Shows'),
@@ -721,8 +720,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   Widget _buildUserProfileCard() {
     return Container(
-      margin: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12),
-      padding: EdgeInsets.all(_isSidebarExpanded ? 16 : 8),
+      margin: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 6),
+      padding: EdgeInsets.all(_isSidebarExpanded ? 16 : 6),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(16),
@@ -906,14 +905,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [
-                  const Color(0xFF8A5BFF).withOpacity(0.15),
+                  const Color(0xFF8A5BFF).withValues(alpha: 0.15),
                   Colors.transparent,
                 ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: const Color(0xFF8A5BFF).withOpacity(0.12)),
+              border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.12)),
             ),
             child: Row(
               children: [
@@ -1005,7 +1004,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   decoration: BoxDecoration(
                     color: Colors.white10,
                     borderRadius: BorderRadius.circular(12),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 5))],
+                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.4), blurRadius: 10, offset: const Offset(0, 5))],
                     image: posterPath != null
                         ? DecorationImage(image: NetworkImage(posterPath), fit: BoxFit.cover)
                         : null,
@@ -1658,7 +1657,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       setState(() {
         _isScanning = false;
-        _scanStatusText = 'Error';
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to trigger scan: $e'), backgroundColor: Colors.redAccent),
@@ -2281,9 +2279,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.04),
+        color: color.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.1)),
+        border: Border.all(color: color.withValues(alpha: 0.1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

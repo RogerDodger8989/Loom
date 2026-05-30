@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
+import 'dart:html' as html;
 import '../services/api.dart';
 import 'media_details_screen.dart';
 
 class PersonDetailsScreen extends StatefulWidget {
   final String personId;
   final ApiService apiService;
+  final VoidCallback? onBack;
+  final ValueChanged<String>? onMediaSelected;
 
   const PersonDetailsScreen({
     super.key,
     required this.personId,
     required this.apiService,
+    this.onBack,
+    this.onMediaSelected,
   });
 
   @override
@@ -101,7 +106,13 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            if (widget.onBack != null) {
+              widget.onBack!();
+            } else {
+              Navigator.pop(context);
+            }
+          },
         ),
         title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
@@ -229,16 +240,81 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
   }
 
   Widget _buildExternalBadge(String label, String url, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.5), width: 1),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+    Widget badge;
+    if (label.toLowerCase() == 'imdb') {
+      badge = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5C518),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.black, width: 1.5),
+        ),
+        child: const Text(
+          'IMDb',
+          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: -0.5),
+        ),
+      );
+    } else if (label.toLowerCase() == 'tmdb') {
+      badge = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF03B6E1),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.black, width: 1.5),
+        ),
+        child: const Text(
+          'TMDB',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+        ),
+      );
+    } else if (label.toLowerCase() == 'simkl') {
+      badge = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF21C65E),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.black, width: 1.5),
+        ),
+        child: const Text(
+          'SIMKL',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12, letterSpacing: 0.5),
+        ),
+      );
+    } else if (label.toLowerCase() == 'trakt') {
+      badge = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFFED2224),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.black, width: 1.5),
+        ),
+        child: const Text(
+          'TRAKT',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.5),
+        ),
+      );
+    } else {
+      badge = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withValues(alpha: 0.5), width: 1),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+        ),
+      );
+    }
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () {
+          html.window.open(url, '_blank');
+        },
+        child: badge,
       ),
     );
   }
@@ -253,9 +329,9 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.02),
+        color: Colors.white.withValues(alpha: 0.02),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.04)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
       ),
       child: Row(
         children: [
@@ -315,15 +391,19 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               ),
               onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => MediaDetailsScreen(
-                      mediaId: localId.toString(),
-                      apiService: widget.apiService,
+                if (widget.onMediaSelected != null) {
+                  widget.onMediaSelected!(localId.toString());
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => MediaDetailsScreen(
+                        mediaId: localId.toString(),
+                        apiService: widget.apiService,
+                      ),
                     ),
-                  ),
-                );
+                  );
+                }
               },
               child: const Text('Spela lokalt', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
             )
@@ -331,7 +411,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
+                color: Colors.white.withValues(alpha: 0.04),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: const Text('Ej ägd', style: TextStyle(color: Colors.white30, fontSize: 12)),

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:html' as html;
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
 class ApiService {
   // Configured to point to the Fastify local server.
@@ -459,37 +460,37 @@ class ApiService {
       _token = _readStorage('loom_token');
       final savedDeviceId = _readStorage('loom_device_id');
 
-      print('[LOOM] initializeSession - token: ${_token != null ? "EXISTS" : "NULL"}, deviceId: $savedDeviceId');
+      debugPrint('[LOOM] initializeSession - token: ${_token != null ? "EXISTS" : "NULL"}, deviceId: $savedDeviceId');
 
       if (_token != null) {
         try {
           await fetchLibraryPaths();
-          print('[LOOM] Token is VALID! Auto-logged in.');
+          debugPrint('[LOOM] Token is VALID! Auto-logged in.');
           return true;
         } catch (e) {
-          print('[LOOM] Token invalid: $e. Clearing...');
+          debugPrint('[LOOM] Token invalid: $e. Clearing...');
           clearToken();
         }
       }
 
       // No valid local token - check if server remembers this device
       final deviceId = getOrCreateDeviceId();
-      print('[LOOM] Checking server pairing for deviceId: $deviceId');
+      debugPrint('[LOOM] Checking server pairing for deviceId: $deviceId');
       try {
         final status = await checkPairingStatus(deviceId);
-        print('[LOOM] Server response: paired=${status['paired']}, hasToken=${status['token'] != null}');
+        debugPrint('[LOOM] Server response: paired=${status['paired']}, hasToken=${status['token'] != null}');
         if (status['paired'] == true && status['token'] != null) {
-          print('[LOOM] Device IS paired! Auto-logged in.');
+          debugPrint('[LOOM] Device IS paired! Auto-logged in.');
           return true;
         }
       } catch (e) {
-        print('[LOOM] Error querying pairing status: $e');
+        debugPrint('[LOOM] Error querying pairing status: $e');
       }
 
-      print('[LOOM] initializeSession -> FALSE (showing pairing screen)');
+      debugPrint('[LOOM] initializeSession -> FALSE (showing pairing screen)');
       return false;
     } catch (e) {
-      print('[LOOM] initializeSession EXCEPTION: $e');
+      debugPrint('[LOOM] initializeSession EXCEPTION: $e');
       return false;
     }
   }

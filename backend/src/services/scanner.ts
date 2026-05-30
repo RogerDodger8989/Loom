@@ -101,7 +101,11 @@ export class ScannerService {
     let omdbMetascore: string | null = null;
     let omdbRtRating: string | null = null;
     let simklRating: string | null = null;
+    let simklVotes: string | null = null;
+    let traktRating: string | null = null;
+    let traktVotes: string | null = null;
     let tmdbTagline: string | null = null;
+    let omdbImdbVotes: string | null = null;
     let tmdbKeywords: any = null;
     let tmdbProductionCompanies: any = null;
     let tmdbProductionCountries: any = null;
@@ -185,7 +189,7 @@ export class ScannerService {
           metadata.fanart_path = tmdbService.getImageUrl(tmdbData.backdrop_path, 'original');
         }
         if (tmdbData.vote_average) {
-          tmdbRatings = { tmdb: tmdbData.vote_average };
+          tmdbRatings = { tmdb: tmdbData.vote_average, tmdb_votes: tmdbData.vote_count };
         }
         if (tmdbData.credits && tmdbData.credits.cast) {
           tmdbCast = tmdbData.credits.cast.slice(0, 15).map((c: any) => ({
@@ -202,7 +206,9 @@ export class ScannerService {
         }
 
         // Extract YouTube trailer link
-        if (tmdbData.videos && tmdbData.videos.results) {
+        if (tmdbData.trailer_url) {
+          tmdbTrailer = tmdbData.trailer_url;
+        } else if (tmdbData.videos && tmdbData.videos.results) {
           const trailerObj = tmdbData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer');
           if (trailerObj) {
             tmdbTrailer = `https://www.youtube.com/watch?v=${trailerObj.key}`;
@@ -221,6 +227,9 @@ export class ScannerService {
               if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
                 omdbImdbRating = omdbRes.data.imdbRating;
               }
+              if (omdbRes.data.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
+                omdbImdbVotes = omdbRes.data.imdbVotes;
+              }
               if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
                 omdbMetascore = omdbRes.data.Metascore;
               }
@@ -235,7 +244,7 @@ export class ScannerService {
           }
         }
 
-        // Query Simkl API for awards AND ratings
+        // Query Simkl API for awards AND ratings (Simkl + Trakt)
         const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
         if (simklClientId && imdbId) {
           try {
@@ -244,15 +253,23 @@ export class ScannerService {
             });
             if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
               const simklData = simklRes.data[0];
-              if (simklData.ratings && simklData.ratings.simkl) {
-                const ratingVal = simklData.ratings.simkl.rating;
-                if (ratingVal) {
-                  simklRating = ratingVal.toString();
+              if (simklData.ratings) {
+                if (simklData.ratings.simkl) {
+                  const ratingVal = simklData.ratings.simkl.rating;
+                  const votesVal = simklData.ratings.simkl.votes;
+                  if (ratingVal) simklRating = ratingVal.toString();
+                  if (votesVal) simklVotes = votesVal.toString();
+                }
+                if (simklData.ratings.trakt) {
+                  const traktRatingVal = simklData.ratings.trakt.rating;
+                  const traktVotesVal = simklData.ratings.trakt.votes;
+                  if (traktRatingVal) traktRating = traktRatingVal.toString();
+                  if (traktVotesVal) traktVotes = traktVotesVal.toString();
                 }
               }
             }
           } catch (simklErr) {
-            console.error(`[Scanner] Simkl API request failed for ${imdbId}:`, simklErr);
+            console.error(`[Scanner] Simkl/Trakt API request failed for ${imdbId}:`, simklErr);
           }
         }
 
@@ -322,9 +339,13 @@ export class ScannerService {
           if (tmdbTrailer) upsertMetadata(mediaId, 'trailer_url', tmdbTrailer);
             if (omdbAwards || tmdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards || tmdbAwards as string);
           if (omdbImdbRating) upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
+          if (omdbImdbVotes) upsertMetadata(mediaId, 'imdb_votes', omdbImdbVotes);
           if (omdbMetascore) upsertMetadata(mediaId, 'metascore', omdbMetascore);
           if (omdbRtRating) upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
           if (simklRating) upsertMetadata(mediaId, 'simkl_rating', simklRating);
+          if (simklVotes) upsertMetadata(mediaId, 'simkl_votes', simklVotes);
+          if (traktRating) upsertMetadata(mediaId, 'trakt_rating', traktRating);
+          if (traktVotes) upsertMetadata(mediaId, 'trakt_votes', traktVotes);
           if (tmdbTagline) upsertMetadata(mediaId, 'tagline', tmdbTagline);
           if (tmdbKeywords) upsertMetadata(mediaId, 'keywords', JSON.stringify(tmdbKeywords));
           if (tmdbProductionCompanies) upsertMetadata(mediaId, 'production_companies', JSON.stringify(tmdbProductionCompanies));
@@ -335,6 +356,11 @@ export class ScannerService {
           if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
           if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
           
+          const edition = this.parseEditionFromFilename(fileNameWithoutExt);
+          if (edition) {
+            upsertMetadata(mediaId, 'release_version', edition);
+          }
+
           return 'updated';
         }
         
@@ -344,6 +370,7 @@ export class ScannerService {
         if (tmdbTrailer) upsertMetadata(mediaId, 'trailer_url', tmdbTrailer);
         if (omdbAwards) upsertMetadata(mediaId, 'awards', omdbAwards);
         if (omdbImdbRating) upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
+        if (omdbImdbVotes) upsertMetadata(mediaId, 'imdb_votes', omdbImdbVotes);
         if (omdbMetascore) upsertMetadata(mediaId, 'metascore', omdbMetascore);
         if (omdbRtRating) upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
         if (simklRating) upsertMetadata(mediaId, 'simkl_rating', simklRating);
@@ -353,6 +380,11 @@ export class ScannerService {
         if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
         if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         
+        const edition = this.parseEditionFromFilename(fileNameWithoutExt);
+        if (edition) {
+          upsertMetadata(mediaId, 'release_version', edition);
+        }
+
         return 'skipped';
       } else {
         // Insert new
@@ -383,9 +415,13 @@ export class ScannerService {
         if (tmdbTrailer) upsertMetadata(id, 'trailer_url', tmdbTrailer);
         if (omdbAwards || tmdbAwards) upsertMetadata(id, 'awards', omdbAwards || tmdbAwards as string);
         if (omdbImdbRating) upsertMetadata(id, 'imdb_rating', omdbImdbRating);
+        if (omdbImdbVotes) upsertMetadata(id, 'imdb_votes', omdbImdbVotes);
         if (omdbMetascore) upsertMetadata(id, 'metascore', omdbMetascore);
         if (omdbRtRating) upsertMetadata(id, 'rt_rating', omdbRtRating);
         if (simklRating) upsertMetadata(id, 'simkl_rating', simklRating);
+        if (simklVotes) upsertMetadata(id, 'simkl_votes', simklVotes);
+        if (traktRating) upsertMetadata(id, 'trakt_rating', traktRating);
+        if (traktVotes) upsertMetadata(id, 'trakt_votes', traktVotes);
         if (tmdbTagline) upsertMetadata(id, 'tagline', tmdbTagline);
         if (tmdbKeywords) upsertMetadata(id, 'keywords', JSON.stringify(tmdbKeywords));
         if (tmdbProductionCompanies) upsertMetadata(id, 'production_companies', JSON.stringify(tmdbProductionCompanies));
@@ -396,12 +432,35 @@ export class ScannerService {
         if (probeResult.audioTracks.length > 0) upsertMetadata(id, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
         if (probeResult.subtitleTracks.length > 0) upsertMetadata(id, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         
+        const edition = this.parseEditionFromFilename(fileNameWithoutExt);
+        if (edition) {
+          upsertMetadata(id, 'release_version', edition);
+        }
+
         return 'added';
       }
     } catch (e) {
       console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
       return 'skipped';
     }
+  }
+
+  /**
+   * Helper to parse release versions/editions from filename
+   */
+  private parseEditionFromFilename(filename: string): string | null {
+    const filenameLower = filename.toLowerCase();
+    if (/\buncut\b/i.test(filenameLower)) return 'Uncut';
+    if (/\bdirector\'?s\.?cut\b/i.test(filenameLower)) return "Director's Cut";
+    if (/\bextended\b/i.test(filenameLower)) return 'Extended Cut';
+    if (/\btheatrical\b/i.test(filenameLower)) return 'Theatrical Cut';
+    if (/\bultimate\b/i.test(filenameLower)) return 'Ultimate Edition';
+    if (/\bremastered\b/i.test(filenameLower)) return 'Remastered';
+    if (/\bcollector\'?s\.?edition\b/i.test(filenameLower)) return "Collector's Edition";
+    if (/\bspecial\.?edition\b/i.test(filenameLower)) return 'Special Edition';
+    if (/\b3d\b/i.test(filenameLower)) return '3D';
+    if (/\bimax\b/i.test(filenameLower)) return 'IMAX';
+    return null;
   }
 
   /**
