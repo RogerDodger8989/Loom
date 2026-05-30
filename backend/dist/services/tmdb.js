@@ -223,9 +223,9 @@ class TMDBService {
      */
     async fetchAwardsSummary(id) {
         try {
-            const response = await axios_1.default.get(`${TMDB_BASE_URL}/movie/${id}/awards`, {
-                params: {
-                    language: this.getSetting('METADATA_FALLBACK_LANGUAGE') || 'en-US'
+            const response = await axios_1.default.get(`https://www.themoviedb.org/movie/${id}/awards`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 }
             });
             const html = typeof response.data === 'string' ? response.data : '';

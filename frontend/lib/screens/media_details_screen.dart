@@ -74,15 +74,53 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         debugPrint('Error loading settings in details: $e');
       }
 
+      // Parse audio and subtitle tracks lists
+      final List<dynamic> audioTracks = (metadata['audio_tracks'] is List) 
+          ? metadata['audio_tracks'] as List<dynamic> 
+          : [];
+      final List<dynamic> subtitleTracks = (metadata['subtitle_tracks'] is List) 
+          ? metadata['subtitle_tracks'] as List<dynamic> 
+          : [];
+
       // Pre-select based on settings
-      final audioTrack = (audioLang.toLowerCase() == 'sv' || audioLang.toLowerCase() == 'swedish') 
-          ? 'Swedish (Stereo)' 
-          : 'English (AAC 5.1)';
-      final subtitle = (subLang.toLowerCase() == 'sv' || subLang.toLowerCase() == 'swedish') 
-          ? 'Swedish (SRT)' 
-          : (subLang.toLowerCase() == 'en' || subLang.toLowerCase() == 'english')
-              ? 'English (SDH)'
-              : 'None';
+      String audioTrack = 'English (AAC 5.1)';
+      if (audioTracks.isNotEmpty) {
+        final isSv = (audioLang.toLowerCase() == 'sv' || audioLang.toLowerCase() == 'swedish' || audioLang.toLowerCase() == 'swe');
+        final targetLang = isSv ? 'SWE' : 'ENG';
+        final matchIndex = audioTracks.indexWhere(
+          (t) => t['language']?.toString().toUpperCase() == targetLang
+        );
+        if (matchIndex != -1) {
+          audioTrack = audioTracks[matchIndex]['label']?.toString() ?? 'Unknown Audio';
+        } else {
+          audioTrack = audioTracks.first['label']?.toString() ?? 'Unknown Audio';
+        }
+      } else {
+        audioTrack = (audioLang.toLowerCase() == 'sv' || audioLang.toLowerCase() == 'swedish') 
+            ? 'Swedish (Stereo)' 
+            : 'English (AAC 5.1)';
+      }
+
+      String subtitle = 'None';
+      if (subtitleTracks.isNotEmpty) {
+        final isSv = (subLang.toLowerCase() == 'sv' || subLang.toLowerCase() == 'swedish' || subLang.toLowerCase() == 'swe');
+        final isEn = (subLang.toLowerCase() == 'en' || subLang.toLowerCase() == 'english' || subLang.toLowerCase() == 'eng');
+        if (isSv || isEn) {
+          final targetLang = isSv ? 'SWE' : 'ENG';
+          final matchIndex = subtitleTracks.indexWhere(
+            (t) => t['language']?.toString().toUpperCase() == targetLang
+          );
+          if (matchIndex != -1) {
+            subtitle = subtitleTracks[matchIndex]['label']?.toString() ?? 'None';
+          }
+        }
+      } else {
+        subtitle = (subLang.toLowerCase() == 'sv' || subLang.toLowerCase() == 'swedish') 
+            ? 'Swedish (SRT)' 
+            : (subLang.toLowerCase() == 'en' || subLang.toLowerCase() == 'english')
+                ? 'English (SDH)'
+                : 'None';
+      }
 
       setState(() {
         _mediaData = data;
@@ -242,6 +280,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final collectionId = media['collection_id'];
     final trailerUrl = media['metadata']?['trailer_url'];
     final metadata = (media['metadata'] is Map) ? media['metadata'] as Map<String, dynamic> : {};
+    final audioTracks = (metadata['audio_tracks'] is List) ? metadata['audio_tracks'] as List<dynamic> : [];
+    final subtitleTracks = (metadata['subtitle_tracks'] is List) ? metadata['subtitle_tracks'] as List<dynamic> : [];
     final tagline = metadata['tagline'] as String?;
     final genresList = (media['genre'] as String? ?? '').split(', ').where((g) => g.isNotEmpty).toList();
     final ratings = (metadata['ratings'] is Map) ? metadata['ratings'] as Map<String, dynamic> : {};
@@ -475,14 +515,30 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                     ),
                                     if (subtitleDisplayTitle != null) ...[
                                       const SizedBox(height: 6),
-                                      Text(
-                                        subtitleDisplayTitle,
-                                        style: TextStyle(
-                                          color: Colors.white.withOpacity(0.55),
-                                          fontSize: 16,
-                                          fontStyle: FontStyle.italic,
-                                          fontWeight: FontWeight.w500,
-                                        ),
+                                      Stack(
+                                        children: [
+                                          Text(
+                                            subtitleDisplayTitle,
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              fontStyle: FontStyle.italic,
+                                              fontWeight: FontWeight.w500,
+                                              foreground: Paint()
+                                                ..style = PaintingStyle.stroke
+                                                ..strokeWidth = 1.8
+                                                ..color = Colors.black,
+                                            ),
+                                          ),
+                                          Text(
+                                            subtitleDisplayTitle,
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(0.85),
+                                              fontSize: 16,
+                                              fontStyle: FontStyle.italic,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ],
                                   ],
@@ -491,76 +547,39 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                             ),
                             
                             // Premium Quality Badges Row under the Title
-                            _buildQualityBadgesRow(media['file_path'] as String?, media['versions']?[0]?['resolution'] as String? ?? media['resolution'] as String?),
+                            _buildQualityBadgesRow(
+                              media['file_path'] as String?, 
+                              media['versions']?[0]?['resolution'] as String? ?? media['resolution'] as String?,
+                              metadata: metadata
+                            ),
                             const SizedBox(height: 12),
 
-                            if (tagline != null && tagline.trim().isNotEmpty) ...[
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.04),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.white.withOpacity(0.08)),
-                                ),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Container(
-                                      margin: const EdgeInsets.only(top: 4),
-                                      width: 4,
-                                      height: 20,
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFB593FF),
-                                        borderRadius: BorderRadius.circular(99),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          const Text(
-                                            'TAGLINE',
-                                            style: TextStyle(
-                                              color: Color(0xFFB593FF),
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w800,
-                                              letterSpacing: 1.4,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            tagline,
-                                            style: TextStyle(
-                                              color: Colors.white.withOpacity(0.8),
-                                              fontSize: 16,
-                                              fontStyle: FontStyle.italic,
-                                              height: 1.35,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                            ],
-
-                            // Subtitle Metadata details
+                            // Subtitle Metadata details with highly legible high-contrast outlines
                             Row(
                               children: [
+                                // PG Box with drop shadow and outline
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                   decoration: BoxDecoration(
-                                    border: Border.all(color: Colors.white30),
+                                    color: Colors.black.withOpacity(0.65),
+                                    border: Border.all(color: Colors.black, width: 2),
                                     borderRadius: BorderRadius.circular(4),
+                                    boxShadow: [
+                                      BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 4, offset: const Offset(0, 2)),
+                                    ],
                                   ),
-                                  child: const Text('PG-13', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                                  child: const Text(
+                                    'PG-13', 
+                                    style: TextStyle(
+                                      color: Colors.white, 
+                                      fontSize: 12, 
+                                      fontWeight: FontWeight.bold,
+                                    )
+                                  ),
                                 ),
                                 const SizedBox(width: 16),
                                 
-                                // Collection Banner
+                                // Collection Banner with clear black outline
                                 if (collectionName != null && collectionName.toString().isNotEmpty) ...[
                                   MouseRegion(
                                     cursor: SystemMouseCursors.click,
@@ -571,9 +590,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                       child: Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFFB593FF).withOpacity(0.1),
+                                          color: const Color(0xFFB593FF).withOpacity(0.15),
                                           borderRadius: BorderRadius.circular(6),
-                                          border: Border.all(color: const Color(0xFFB593FF).withOpacity(0.3)),
+                                          border: Border.all(color: Colors.black, width: 2),
+                                          boxShadow: [
+                                            BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 4, offset: const Offset(0, 2)),
+                                          ],
                                         ),
                                         child: Row(
                                           mainAxisSize: MainAxisSize.min,
@@ -596,7 +618,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   const SizedBox(width: 16),
                                 ],
 
-                                // Director as keyword-style chip
+                                // Director as keyword-style chip with premium high-contrast outline
                                 if (directorName != null) ...[
                                   MouseRegion(
                                     cursor: SystemMouseCursors.click,
@@ -617,13 +639,20 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                       child: Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                                         decoration: BoxDecoration(
-                                          color: Colors.white.withOpacity(0.06),
+                                          color: Colors.black.withOpacity(0.65),
                                           borderRadius: BorderRadius.circular(20),
-                                          border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                          border: Border.all(color: Colors.black, width: 2),
+                                          boxShadow: [
+                                            BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 4, offset: const Offset(0, 2)),
+                                          ],
                                         ),
                                         child: Text(
                                           'Regi: $directorName',
-                                          style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
+                                          style: const TextStyle(
+                                            color: Colors.white, 
+                                            fontSize: 12, 
+                                            fontWeight: FontWeight.bold
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -637,6 +666,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               Wrap(
                                 spacing: 8,
                                 runSpacing: 8,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
                                   ...productionCompanies.map((company) {
                                     final companyName = company is Map ? (company['name']?.toString() ?? '') : company.toString();
@@ -650,12 +680,31 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   }),
                                   ...productionCountries.map((country) {
                                     final countryName = country is Map ? (country['name']?.toString() ?? '') : country.toString();
+                                    final iso = country is Map ? (country['iso_3166_1']?.toString() ?? '') : '';
                                     if (countryName.isEmpty) return const SizedBox.shrink();
-                                    return Chip(
-                                      avatar: const Icon(Icons.public, size: 16, color: Color(0xFF8A5BFF)),
-                                      label: Text(countryName, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                                      backgroundColor: Colors.white.withOpacity(0.05),
-                                      side: BorderSide(color: Colors.white.withOpacity(0.08)),
+                                    
+                                    // Generate regional flag emoji
+                                    String flag = '';
+                                    if (iso.length == 2) {
+                                      final int char1 = iso.codeUnitAt(0) - 65 + 127462;
+                                      final int char2 = iso.codeUnitAt(1) - 65 + 127462;
+                                      flag = String.fromCharCode(char1) + String.fromCharCode(char2);
+                                    }
+
+                                    return Tooltip(
+                                      message: countryName,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.05),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                        ),
+                                        child: Text(
+                                          flag.isNotEmpty ? flag : countryName,
+                                          style: TextStyle(fontSize: flag.isNotEmpty ? 20 : 12),
+                                        ),
+                                      ),
                                     );
                                   }),
                                 ],
@@ -683,34 +732,23 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               }).toList(),
                             ),
 
+                            // Collapsible slate/purple keywords/tags wrap with expanding pane
                             if (keywords.isNotEmpty) ...[
                               const SizedBox(height: 12),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: keywords.map((keyword) {
-                                  final keywordLabel = keyword is Map ? (keyword['name']?.toString() ?? '') : keyword.toString();
-                                  if (keywordLabel.isEmpty) return const SizedBox.shrink();
-                                  return ActionChip(
-                                    backgroundColor: Colors.white.withOpacity(0.06),
-                                    side: BorderSide(color: Colors.white.withOpacity(0.08)),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                                    label: Text(keywordLabel, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                                    onPressed: () {
-                                      if (widget.onKeywordSelected != null) {
-                                        widget.onKeywordSelected!(keywordLabel);
-                                      } else if (widget.onGenreSelected != null) {
-                                        widget.onGenreSelected!(keywordLabel);
-                                      } else {
-                                        Navigator.pop(context, keywordLabel);
-                                      }
-                                    },
-                                  );
-                                }).toList(),
+                              _KeywordsExpandableContainer(
+                                keywords: keywords,
+                                onKeywordSelected: (label) {
+                                  if (widget.onKeywordSelected != null) {
+                                    widget.onKeywordSelected!(label);
+                                  } else if (widget.onGenreSelected != null) {
+                                    widget.onGenreSelected!(label);
+                                  } else {
+                                    Navigator.pop(context, label);
+                                  }
+                                },
                               ),
                             ],
 
-                            
                             // Awards / Priser placed directly under Genre
                             _buildAwardsRow(awardsString),
                             const SizedBox(height: 24),
@@ -752,59 +790,147 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   const SizedBox(width: 16),
                                 ],
 
-                                // Watch Status button (High contrast circular wrap)
+                                // Dynamic kebab Menu button frambringande av actions
                                 Container(
                                   decoration: BoxDecoration(
                                     shape: BoxShape.circle,
                                     color: Colors.black.withOpacity(0.55),
                                     border: Border.all(color: Colors.white10),
                                   ),
-                                  child: IconButton(
-                                    icon: Icon(
-                                      _isWatched ? Icons.check_circle : Icons.check_circle_outline,
-                                      size: 26,
-                                      color: _isWatched ? const Color(0xFF8A5BFF) : Colors.white70,
+                                  child: Theme(
+                                    data: Theme.of(context).copyWith(
+                                      cardColor: const Color(0xFF15102A),
                                     ),
-                                    onPressed: _toggleWatchStatus,
-                                    tooltip: 'Markera som sedd/osedd',
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                
-                                // Add to Playlist Button
-                                Container(
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: Colors.black.withOpacity(0.55),
-                                    border: Border.all(color: Colors.white10),
-                                  ),
-                                  child: IconButton(
-                                    icon: const Icon(
-                                      Icons.playlist_add,
-                                      size: 26,
-                                      color: Colors.white70,
+                                    child: PopupMenuButton<String>(
+                                      icon: const Icon(Icons.more_horiz, size: 26, color: Colors.white70),
+                                      tooltip: 'Fler åtgärder',
+                                      onSelected: (value) async {
+                                        if (value == 'playlist') {
+                                          _showPlaylistDialog();
+                                        } else if (value == 'watch') {
+                                          _toggleWatchStatus();
+                                        } else if (value == 'refresh') {
+                                          try {
+                                            setState(() => _isLoading = true);
+                                            await widget.apiService.refreshMediaMetadata(widget.mediaId);
+                                            _fetchDetails();
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(content: Text('Metadata har uppdaterats online!'), backgroundColor: Color(0xFF8A5BFF)),
+                                            );
+                                          } catch (e) {
+                                            setState(() => _isLoading = false);
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(content: Text('Misslyckades uppdatera: $e'), backgroundColor: Colors.redAccent),
+                                            );
+                                          }
+                                        } else if (value == 'analyze') {
+                                          try {
+                                            setState(() => _isLoading = true);
+                                            await widget.apiService.analyzeMediaItem(widget.mediaId);
+                                            _fetchDetails();
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(content: Text('Mediefilen har analyserats om!'), backgroundColor: Color(0xFF8A5BFF)),
+                                            );
+                                          } catch (e) {
+                                            setState(() => _isLoading = false);
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(content: Text('Misslyckades analysera: $e'), backgroundColor: Colors.redAccent),
+                                            );
+                                          }
+                                        } else if (value == 'match') {
+                                          _showFixMatchDialog();
+                                        } else if (value == 'unmatch') {
+                                          try {
+                                            setState(() => _isLoading = true);
+                                            await widget.apiService.unmatchMediaItem(widget.mediaId);
+                                            _fetchDetails();
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(content: Text('Matchning borttagen!'), backgroundColor: Color(0xFF8A5BFF)),
+                                            );
+                                          } catch (e) {
+                                            setState(() => _isLoading = false);
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(content: Text('Misslyckades ta bort matchning: $e'), backgroundColor: Colors.redAccent),
+                                            );
+                                          }
+                                        } else if (value == 'delete') {
+                                          // Confirm dialog
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (ctx) => AlertDialog(
+                                              backgroundColor: const Color(0xFF15102A),
+                                              title: const Text('Ta bort media?', style: TextStyle(color: Colors.white)),
+                                              content: const Text('Är du säker på att du vill ta bort den här filmen från biblioteket? Filen på disken kommer inte raderas.', style: TextStyle(color: Colors.white70)),
+                                              actions: [
+                                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+                                                TextButton(
+                                                  onPressed: () => Navigator.pop(ctx, true),
+                                                  child: const Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm == true) {
+                                            try {
+                                              await widget.apiService.deleteMediaItem(widget.mediaId);
+                                              if (widget.onBack != null) {
+                                                widget.onBack!();
+                                              } else {
+                                                Navigator.pop(context);
+                                              }
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(content: Text('Media raderad från biblioteket.'), backgroundColor: Color(0xFF8A5BFF)),
+                                              );
+                                            } catch (e) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(content: Text('Misslyckades ta bort: $e'), backgroundColor: Colors.redAccent),
+                                              );
+                                            }
+                                          }
+                                        } else if (value == 'statistics') {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Statistik kommer snart!'),
+                                              backgroundColor: Color(0xFF8A5BFF),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      itemBuilder: (context) => [
+                                        const PopupMenuItem(
+                                          value: 'playlist',
+                                          child: Text('Lägg till på spellista', style: TextStyle(color: Colors.white)),
+                                        ),
+                                        PopupMenuItem(
+                                          value: 'watch',
+                                          child: Text(_isWatched ? 'Markera som osedd' : 'Markera som visad', style: const TextStyle(color: Colors.white)),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'refresh',
+                                          child: Text('Uppdatera metadata', style: TextStyle(color: Colors.white)),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'analyze',
+                                          child: Text('Analysera', style: TextStyle(color: Colors.white)),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'match',
+                                          child: Text('Fixa matchning', style: TextStyle(color: Colors.white)),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'unmatch',
+                                          child: Text('Ta bort matchning', style: TextStyle(color: Colors.white)),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'delete',
+                                          child: Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'statistics',
+                                          child: Text('Visa statistik', style: TextStyle(color: Colors.white30)),
+                                        ),
+                                      ],
                                     ),
-                                    onPressed: _showPlaylistDialog,
-                                    tooltip: 'Lägg till i spellista',
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-
-                                // More actions button (re-match - High contrast circular wrap)
-                                Container(
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: Colors.black.withOpacity(0.55),
-                                    border: Border.all(color: Colors.white10),
-                                  ),
-                                  child: IconButton(
-                                    icon: const Icon(
-                                      Icons.more_horiz,
-                                      size: 26,
-                                      color: Colors.white70,
-                                    ),
-                                    onPressed: _showFixMatchDialog,
-                                    tooltip: 'Korrigera matchning',
                                   ),
                                 ),
                               ],
@@ -820,7 +946,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
             // Content & Ratings
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+              padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -830,11 +956,25 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Raw Tagline italicized right above Plot (Handling) without 'Tagline:' prefix text
+                        if (tagline != null && tagline.trim().isNotEmpty) ...[
+                          Text(
+                            tagline,
+                            style: const TextStyle(
+                              color: Color(0xFFB593FF),
+                              fontSize: 19,
+                              fontStyle: FontStyle.italic,
+                              fontWeight: FontWeight.w600,
+                              height: 1.4,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
                         Text(
                           plot,
                           style: const TextStyle(color: Colors.white70, fontSize: 17, height: 1.6),
                         ),
-                        const SizedBox(height: 40),
+                        const SizedBox(height: 20),
                         
                         // Streaming Watch Providers
                         if (providers.isNotEmpty) ...[
@@ -862,7 +1002,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               );
                             }).toList(),
                           ),
-                          const SizedBox(height: 28),
+                          const SizedBox(height: 20),
                         ],
 
                         // Compact Audio & Subtitles Row
@@ -885,9 +1025,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                     dropdownColor: const Color(0xFF15102A),
                                     icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white38, size: 16),
                                     style: const TextStyle(color: Colors.white70, fontSize: 14),
-                                    items: ['English (AAC 5.1)', 'Swedish (Stereo)'].map((opt) =>
-                                      DropdownMenuItem(value: opt, child: Text(opt))
-                                    ).toList(),
+                                    items: (audioTracks.isNotEmpty 
+                                        ? audioTracks.map((t) => t['label']?.toString() ?? '').where((label) => label.isNotEmpty).toList() 
+                                        : ['English (AAC 5.1)', 'Swedish (Stereo)'])
+                                      .map((opt) => DropdownMenuItem(value: opt, child: Text(opt))).toList(),
                                     onChanged: (val) { if (val != null) setState(() => _selectedAudioTrack = val); },
                                   ),
                                 ),
@@ -903,9 +1044,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                     dropdownColor: const Color(0xFF15102A),
                                     icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white38, size: 16),
                                     style: const TextStyle(color: Colors.white70, fontSize: 14),
-                                    items: ['None', 'Swedish (SRT)', 'English (SDH)'].map((opt) =>
-                                      DropdownMenuItem(value: opt, child: Text(opt))
-                                    ).toList(),
+                                    items: (subtitleTracks.isNotEmpty 
+                                        ? ['None', ...subtitleTracks.map((t) => t['label']?.toString() ?? '').where((label) => label.isNotEmpty)] 
+                                        : ['None', 'Swedish (SRT)', 'English (SDH)'])
+                                      .map((opt) => DropdownMenuItem(value: opt, child: Text(opt))).toList(),
                                     onChanged: (val) { if (val != null) setState(() => _selectedSubtitle = val); },
                                   ),
                                 ),
@@ -918,7 +1060,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                   ),
                   const SizedBox(width: 60),
 
-                  // Ratings Panel (1/3 width)
+                  // Ratings Panel (1/3 width) - Shifted upwards and gap minimized
                   Expanded(
                     flex: 1,
                     child: Container(
@@ -933,18 +1075,22 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         children: [
                           const Text('Betyg', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                           const SizedBox(height: 20),
-                          if (ratings['tmdb'] != null)
+                           if (ratings['tmdb'] != null)
                             _buildRatingRow(
                               'TMDB', '${ratings['tmdb']} / 10', Colors.blueAccent,
                               url: media['tmdb_id'] != null ? 'https://www.themoviedb.org/movie/${media['tmdb_id']}' : null,
                             ),
                           if (media['imdb_id'] != null)
                             _buildRatingRow(
-                              'IMDb', '7.8 / 10', Colors.amber,
+                              'IMDb', metadata['imdb_rating'] != null ? '${metadata['imdb_rating']} / 10' : '— / 10', Colors.amber,
                               url: 'https://www.imdb.com/title/${media['imdb_id']}',
                             ),
                           _buildRatingRow(
-                            'Simkl', '82%', Colors.green,
+                            'Simkl', metadata['simkl_rating'] != null 
+                              ? (double.tryParse(metadata['simkl_rating'].toString()) != null 
+                                  ? '${(double.parse(metadata['simkl_rating'].toString()) * 10).toStringAsFixed(0)}%' 
+                                  : '${metadata['simkl_rating']}%')
+                              : '—%', Colors.green,
                             url: media['imdb_id'] != null ? 'https://simkl.com/movies/?q=${Uri.encodeComponent(media['title'] ?? '')}' : null,
                           ),
                           
@@ -989,13 +1135,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               ),
             ),
 
-            // Cast Carousel
+            // Cast Carousel - Spacing optimized and moved up
             if (cast.isNotEmpty) ...[
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 40),
                 child: Text('Skådespelare', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
               SizedBox(
                 height: 230,
                 child: ListView.builder(
@@ -1053,7 +1199,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                   },
                 ),
               ),
-              const SizedBox(height: 60),
+              const SizedBox(height: 30),
             ],
 
             // Similar media should appear below cast and remain library-only via backend filter
@@ -1099,7 +1245,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     );
   }
 
-  Widget _buildQualityBadgesRow(String? filePath, String? resolution) {
+  Widget _buildQualityBadgesRow(String? filePath, String? resolution, {Map<dynamic, dynamic>? metadata}) {
     final badges = <Widget>[];
 
     Widget qualityBadge(String label, {Color color = const Color(0xFFB593FF), IconData? icon}) {
@@ -1107,9 +1253,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         margin: const EdgeInsets.only(right: 8, top: 8),
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.12),
+          color: Colors.black.withOpacity(0.7),
           borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: color.withOpacity(0.35)),
+          border: Border.all(color: Colors.black, width: 2),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 4, offset: const Offset(0, 2)),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1131,23 +1280,52 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     } else if (res.contains('1080')) {
       badges.add(qualityBadge('1080p', color: const Color(0xFF7AB8F5)));
     } else if (res.contains('720')) {
-      badges.add(qualityBadge('720p', color: Colors.white54));
+      badges.add(qualityBadge('720p', color: Colors.white70));
+    } else {
+      badges.add(qualityBadge('HD', color: const Color(0xFF7AB8F5)));
     }
 
-    // Audio format badges based on filename patterns
+    // Audio format badges based on filename patterns and real DB probed audio tracks
     final path = (filePath ?? '').toLowerCase();
-    if (path.contains('dts-hd') || path.contains('dtshd')) {
-      badges.add(qualityBadge('DTS-HD', color: const Color(0xFFFFD700)));
-    } else if (path.contains('dts')) {
-      badges.add(qualityBadge('DTS', color: const Color(0xFFFFD700)));
+    
+    // Check real db tracks first
+    final List<dynamic> audioTracks = (metadata != null && metadata['audio_tracks'] is List)
+        ? metadata['audio_tracks'] as List<dynamic>
+        : [];
+    final List<dynamic> subtitleTracks = (metadata != null && metadata['subtitle_tracks'] is List)
+        ? metadata['subtitle_tracks'] as List<dynamic>
+        : [];
+
+    if (audioTracks.isNotEmpty) {
+      for (final track in audioTracks) {
+        final String codec = track['codec']?.toString().toUpperCase() ?? '';
+        final String lang = track['language']?.toString().toUpperCase() ?? '';
+        final int channels = int.tryParse(track['channels']?.toString() ?? '') ?? 2;
+        final String chLabel = channels >= 8 ? '7.1' : channels >= 6 ? '5.1' : 'Stereo';
+        
+        if (codec.isNotEmpty) {
+          badges.add(qualityBadge('$lang $codec $chLabel', color: const Color(0xFFB593FF)));
+        }
+      }
+    } else {
+      // Filename fallbacks
+      if (path.contains('dts-hd') || path.contains('dtshd')) {
+        badges.add(qualityBadge('DTS-HD', color: const Color(0xFFFFD700)));
+      } else if (path.contains('dts')) {
+        badges.add(qualityBadge('DTS', color: const Color(0xFFFFD700)));
+      }
+      if (path.contains('atmos') || path.contains('truehd')) {
+        badges.add(qualityBadge('Atmos', color: const Color(0xFF00E5FF)));
+      } else if (path.contains('5.1') || path.contains('6ch')) {
+        badges.add(qualityBadge('5.1 Audio', color: const Color(0xFFB593FF)));
+      }
     }
-    if (path.contains('atmos') || path.contains('truehd')) {
-      badges.add(qualityBadge('Atmos', color: const Color(0xFF00E5FF)));
-    } else if (path.contains('5.1') || path.contains('6ch')) {
-      badges.add(qualityBadge('5.1', color: const Color(0xFFB593FF)));
-    } else if (path.contains('7.1') || path.contains('8ch')) {
-      badges.add(qualityBadge('7.1', color: const Color(0xFFB593FF)));
+
+    if (subtitleTracks.isNotEmpty) {
+      final langs = subtitleTracks.map((t) => t['language']?.toString().toUpperCase() ?? '').toSet().toList();
+      badges.add(qualityBadge('TEXT: ${langs.join(", ")}', color: const Color(0xFF00FFCC)));
     }
+
     if (path.contains('hdr') || path.contains('hdr10')) {
       badges.add(qualityBadge('HDR', color: const Color(0xFFFF9800)));
     }
@@ -1342,7 +1520,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   Widget _buildAwardsRow(String? awardsString) {
-    if (awardsString == null || awardsString.trim().isEmpty) return const SizedBox();
+    if (awardsString == null || 
+        awardsString.trim().isEmpty || 
+        awardsString.toLowerCase().contains('inga prisuppgifter') || 
+        awardsString.toLowerCase() == 'n/a') return const SizedBox();
     
     // Parse using regex
     int oscarsWins = 0;
@@ -1509,15 +1690,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SizedBox(height: 8),
-        Text(
-          rawAwardsText,
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.55),
-            fontSize: 12,
-            fontStyle: FontStyle.italic,
-          ),
-        ),
         const SizedBox(height: 8),
         Wrap(
           children: badges,
@@ -2157,6 +2329,100 @@ class _PlaylistDialogState extends State<_PlaylistDialog> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Expandable slate/purple keywords/tags container
+// ─────────────────────────────────────────────────────────────────
+class _KeywordsExpandableContainer extends StatefulWidget {
+  final List<dynamic> keywords;
+  final ValueChanged<String> onKeywordSelected;
+
+  const _KeywordsExpandableContainer({
+    required this.keywords,
+    required this.onKeywordSelected,
+  });
+
+  @override
+  State<_KeywordsExpandableContainer> createState() => _KeywordsExpandableContainerState();
+}
+
+class _KeywordsExpandableContainerState extends State<_KeywordsExpandableContainer> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayList = _expanded ? widget.keywords : widget.keywords.take(6).toList();
+    final hasMore = widget.keywords.length > 6;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1335).withOpacity(0.4),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF8A5BFF).withOpacity(0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.tag, size: 16, color: const Color(0xFFB593FF).withOpacity(0.8)),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'Nyckelord / Taggningar',
+                    style: TextStyle(
+                      color: Color(0xFFB593FF),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+              if (hasMore)
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () => setState(() => _expanded = !_expanded),
+                    child: Text(
+                      _expanded ? 'Visa färre' : 'Visa alla (${widget.keywords.length})',
+                      style: const TextStyle(
+                        color: Color(0xFF8A5BFF),
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: displayList.map((keyword) {
+              final keywordLabel = keyword is Map ? (keyword['name']?.toString() ?? '') : keyword.toString();
+              if (keywordLabel.isEmpty) return const SizedBox.shrink();
+              return ActionChip(
+                backgroundColor: const Color(0xFF281E46).withOpacity(0.6),
+                side: BorderSide(color: const Color(0xFF8A5BFF).withOpacity(0.25)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                label: Text(
+                  keywordLabel, 
+                  style: const TextStyle(color: Color(0xFFD4C7FF), fontSize: 11, fontWeight: FontWeight.w500)
+                ),
+                onPressed: () => widget.onKeywordSelected(keywordLabel),
+              );
+            }).toList(),
+          ),
+        ],
       ),
     );
   }

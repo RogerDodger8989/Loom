@@ -44,7 +44,7 @@ export class ScannerService {
    * Process a single movie video file
    * Returns 'added', 'updated', or 'skipped'
    */
-  private async processMovieFile(filePath: string, preferLocalNfo: boolean = true): Promise<'added' | 'updated' | 'skipped'> {
+  public async processMovieFile(filePath: string, preferLocalNfo: boolean = true): Promise<'added' | 'updated' | 'skipped'> {
     const dir = path.dirname(filePath);
     const fileNameWithoutExt = path.parse(filePath).name;
     const nfoPath = path.join(dir, `${fileNameWithoutExt}.nfo`);
@@ -100,6 +100,7 @@ export class ScannerService {
     let omdbImdbRating: string | null = null;
     let omdbMetascore: string | null = null;
     let omdbRtRating: string | null = null;
+    let simklRating: string | null = null;
     let tmdbTagline: string | null = null;
     let tmdbKeywords: any = null;
     let tmdbProductionCompanies: any = null;
@@ -234,6 +235,27 @@ export class ScannerService {
           }
         }
 
+        // Query Simkl API for awards AND ratings
+        const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
+        if (simklClientId && imdbId) {
+          try {
+            const simklRes = await axios.get(`https://api.simkl.com/search/id`, {
+              params: { imdb: imdbId, client_id: simklClientId }
+            });
+            if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
+              const simklData = simklRes.data[0];
+              if (simklData.ratings && simklData.ratings.simkl) {
+                const ratingVal = simklData.ratings.simkl.rating;
+                if (ratingVal) {
+                  simklRating = ratingVal.toString();
+                }
+              }
+            }
+          } catch (simklErr) {
+            console.error(`[Scanner] Simkl API request failed for ${imdbId}:`, simklErr);
+          }
+        }
+
         if (!omdbAwards && tmdbData.id) {
           tmdbAwards = await tmdbService.fetchAwardsSummary(tmdbData.id.toString());
         }
@@ -257,6 +279,10 @@ export class ScannerService {
     try {
       const existing = db.prepare('SELECT id FROM media_items WHERE file_path = ?').all(filePath) as { id: string }[];
       
+      const directorName = metadata.director && typeof metadata.director === 'object'
+        ? (metadata.director as any).name
+        : metadata.director || null;
+
       if (existing && existing.length > 0) {
         const mediaId = existing[0].id;
         
@@ -278,7 +304,7 @@ export class ScannerService {
         if (!lockedKeys.includes('imdb_id')) { updateFields.push('imdb_id = ?'); params.push(metadata.imdb_id || null); }
         if (!lockedKeys.includes('collection_name')) { updateFields.push('collection_name = ?'); params.push(metadata.collection_name || null); }
         if (!lockedKeys.includes('collection_id')) { updateFields.push('collection_id = ?'); params.push(metadata.collection_id || null); }
-        if (!lockedKeys.includes('director')) { updateFields.push('director = ?'); params.push(metadata.director || null); }
+        if (!lockedKeys.includes('director')) { updateFields.push('director = ?'); params.push(directorName); }
 
         if (!lockedKeys.includes('original_title')) { updateFields.push('original_title = ?'); params.push(metadata.original_title || null); }
 
@@ -298,10 +324,14 @@ export class ScannerService {
           if (omdbImdbRating) upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
           if (omdbMetascore) upsertMetadata(mediaId, 'metascore', omdbMetascore);
           if (omdbRtRating) upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
+          if (simklRating) upsertMetadata(mediaId, 'simkl_rating', simklRating);
           if (tmdbTagline) upsertMetadata(mediaId, 'tagline', tmdbTagline);
           if (tmdbKeywords) upsertMetadata(mediaId, 'keywords', JSON.stringify(tmdbKeywords));
           if (tmdbProductionCompanies) upsertMetadata(mediaId, 'production_companies', JSON.stringify(tmdbProductionCompanies));
           if (tmdbProductionCountries) upsertMetadata(mediaId, 'production_countries', JSON.stringify(tmdbProductionCountries));
+          if (metadata.director && typeof metadata.director === 'object') {
+            upsertMetadata(mediaId, 'director', JSON.stringify(metadata.director));
+          }
           if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
           if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
           
@@ -316,6 +346,10 @@ export class ScannerService {
         if (omdbImdbRating) upsertMetadata(mediaId, 'imdb_rating', omdbImdbRating);
         if (omdbMetascore) upsertMetadata(mediaId, 'metascore', omdbMetascore);
         if (omdbRtRating) upsertMetadata(mediaId, 'rt_rating', omdbRtRating);
+        if (simklRating) upsertMetadata(mediaId, 'simkl_rating', simklRating);
+        if (metadata.director && typeof metadata.director === 'object') {
+          upsertMetadata(mediaId, 'director', JSON.stringify(metadata.director));
+        }
         if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
         if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         
@@ -338,7 +372,7 @@ export class ScannerService {
           metadata.imdb_id || null, 
           metadata.collection_name || null, 
           metadata.collection_id || null, 
-          metadata.director || null, 
+          directorName, 
           metadata.original_title || null,
           filePath
         );
@@ -351,10 +385,14 @@ export class ScannerService {
         if (omdbImdbRating) upsertMetadata(id, 'imdb_rating', omdbImdbRating);
         if (omdbMetascore) upsertMetadata(id, 'metascore', omdbMetascore);
         if (omdbRtRating) upsertMetadata(id, 'rt_rating', omdbRtRating);
+        if (simklRating) upsertMetadata(id, 'simkl_rating', simklRating);
         if (tmdbTagline) upsertMetadata(id, 'tagline', tmdbTagline);
         if (tmdbKeywords) upsertMetadata(id, 'keywords', JSON.stringify(tmdbKeywords));
         if (tmdbProductionCompanies) upsertMetadata(id, 'production_companies', JSON.stringify(tmdbProductionCompanies));
         if (tmdbProductionCountries) upsertMetadata(id, 'production_countries', JSON.stringify(tmdbProductionCountries));
+        if (metadata.director && typeof metadata.director === 'object') {
+          upsertMetadata(id, 'director', JSON.stringify(metadata.director));
+        }
         if (probeResult.audioTracks.length > 0) upsertMetadata(id, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
         if (probeResult.subtitleTracks.length > 0) upsertMetadata(id, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         

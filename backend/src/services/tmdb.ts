@@ -289,9 +289,9 @@ export class TMDBService {
    */
   public async fetchAwardsSummary(id: string): Promise<string | null> {
     try {
-      const response = await axios.get(`${TMDB_BASE_URL}/movie/${id}/awards`, {
-        params: {
-          language: this.getSetting('METADATA_FALLBACK_LANGUAGE') || 'en-US'
+      const response = await axios.get(`https://www.themoviedb.org/movie/${id}/awards`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
       });
 

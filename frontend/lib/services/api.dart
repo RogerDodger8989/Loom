@@ -623,5 +623,61 @@ class ApiService {
     }
     return jsonDecode(addResp.body);
   }
+
+  /// Authenticated: Delete media item from DB
+  Future<void> deleteMediaItem(String id) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/media/items/$id'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete media item: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Refresh media metadata from online services
+  Future<void> refreshMediaMetadata(String id) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/refresh'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to refresh media metadata: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Unmatch media item in database
+  Future<void> unmatchMediaItem(String id) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/unmatch'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to unmatch media item: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Re-analyze media item file tracks
+  Future<void> analyzeMediaItem(String id) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/analyze'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to analyze media item: ${response.body}');
+    }
+  }
 }
 

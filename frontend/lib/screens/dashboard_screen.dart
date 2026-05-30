@@ -1975,6 +1975,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             [
               _buildSettingField('TMDB API Nyckel', _tmdbKeyController, obscure: true),
               const SizedBox(height: 20),
+              _buildSettingField('OMDb API Nyckel', _omdbKeyController, obscure: true),
+              const SizedBox(height: 20),
+              _buildSettingField('Simkl Client ID', _simklKeyController, obscure: true),
+              const SizedBox(height: 20),
               Row(
                 children: [
                   Expanded(

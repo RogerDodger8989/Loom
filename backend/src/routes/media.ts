@@ -205,7 +205,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         };
 
         const awardsPlaceholder = 'Inga prisuppgifter hittades.';
-        const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path;
+        const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path || !metadata.imdb_rating || !metadata.simkl_rating;
         if (needsEnrichment) {
           const tmdbData = movie.tmdb_id
             ? await tmdbService.fetchMovieById(movie.tmdb_id.toString())
@@ -268,19 +268,57 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             }
 
             const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
-            if ((!metadata.awards || metadata.awards === awardsPlaceholder) && imdbId) {
+            if (imdbId) {
               const omdbKey = tmdbService.getSetting('OMDB_API_KEY');
-              if (omdbKey) {
+              if (omdbKey && (!metadata.awards || metadata.awards === awardsPlaceholder || !metadata.imdb_rating)) {
                 try {
                   const omdbRes = await axios.get(`http://www.omdbapi.com/`, {
                     params: { apikey: omdbKey, i: imdbId }
                   });
-                  if (omdbRes.data && omdbRes.data.Awards) {
-                    metadata.awards = omdbRes.data.Awards;
-                    upsertMeta('awards', omdbRes.data.Awards);
+                  if (omdbRes.data) {
+                    if (omdbRes.data.Awards) {
+                      metadata.awards = omdbRes.data.Awards;
+                      upsertMeta('awards', omdbRes.data.Awards);
+                    }
+                    if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
+                      metadata.imdb_rating = omdbRes.data.imdbRating;
+                      upsertMeta('imdb_rating', omdbRes.data.imdbRating);
+                    }
+                    if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
+                      metadata.metascore = omdbRes.data.Metascore;
+                      upsertMeta('metascore', omdbRes.data.Metascore);
+                    }
+                    if (Array.isArray(omdbRes.data.Ratings)) {
+                      const rtEntry = omdbRes.data.Ratings.find((r: any) => r.Source === 'Rotten Tomatoes');
+                      if (rtEntry) {
+                        metadata.rt_rating = rtEntry.Value;
+                        upsertMeta('rt_rating', rtEntry.Value);
+                      }
+                    }
                   }
                 } catch (omdbErr) {
-                  console.error('[Media Details] OMDb awards enrichment failed:', omdbErr);
+                  console.error('[Media Details] OMDb enrichment failed:', omdbErr);
+                }
+              }
+
+              const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
+              if (simklClientId && !metadata.simkl_rating) {
+                try {
+                  const simklRes = await axios.get(`https://api.simkl.com/search/id`, {
+                    params: { imdb: imdbId, client_id: simklClientId }
+                  });
+                  if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
+                    const simklData = simklRes.data[0];
+                    if (simklData.ratings && simklData.ratings.simkl) {
+                      const simklRating = simklData.ratings.simkl.rating;
+                      if (simklRating) {
+                        metadata.simkl_rating = simklRating.toString();
+                        upsertMeta('simkl_rating', simklRating.toString());
+                      }
+                    }
+                  }
+                } catch (simklErr) {
+                  console.error('[Media Details] Simkl enrichment failed:', simklErr);
                 }
               }
             }
@@ -652,6 +690,109 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       } catch (err: any) {
         console.error(err);
         return reply.code(500).send({ error: 'Failed to manual-match media item', details: err.message });
+      }
+    }
+  );
+
+  // DELETE /api/media/items/:id
+  fastify.delete(
+    '/api/media/items/:id',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      try {
+        const item = db.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) {
+          return reply.code(404).send({ error: 'Media item not found' });
+        }
+        
+        // Remove related metadata
+        db.prepare(`DELETE FROM media_metadata WHERE media_item_id = ?`).run(id);
+        
+        // Remove item from database (Note: file on disk is NOT physically deleted!)
+        db.prepare(`DELETE FROM media_items WHERE id = ?`).run(id);
+
+        return reply.send({ success: true });
+      } catch (err: any) {
+        console.error(err);
+        return reply.code(500).send({ error: 'Failed to delete media item', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/media/items/:id/refresh
+  fastify.post(
+    '/api/media/items/:id/refresh',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      try {
+        const item = db.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) {
+          return reply.code(404).send({ error: 'Media item not found' });
+        }
+        
+        // Lock key/metadata check bypass: we trigger ScannerService.processMovieFile
+        // to re-fetch and overwrite metadata.
+        const { mediaScanner } = await import('../services/scanner');
+        const res = await mediaScanner.processMovieFile(item.file_path, false);
+        return reply.send({ success: true, status: res });
+      } catch (err: any) {
+        console.error(err);
+        return reply.code(500).send({ error: 'Failed to refresh metadata', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/media/items/:id/unmatch
+  fastify.post(
+    '/api/media/items/:id/unmatch',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      try {
+        const item = db.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) {
+          return reply.code(404).send({ error: 'Media item not found' });
+        }
+
+        // Clear matches in DB
+        db.prepare(`
+          UPDATE media_items 
+          SET tmdb_id = NULL, imdb_id = NULL, collection_name = NULL, collection_id = NULL, original_title = NULL, poster_path = NULL, fanart_path = NULL
+          WHERE id = ?
+        `).run(id);
+
+        // Delete metadata keys except custom ratings/watch statuses if desired, or keep simple and delete all non-playback metadata keys
+        db.prepare(`
+          DELETE FROM media_metadata 
+          WHERE media_item_id = ? 
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+        `).run(id);
+
+        return reply.send({ success: true });
+      } catch (err: any) {
+        console.error(err);
+        return reply.code(500).send({ error: 'Failed to unmatch media item', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/media/items/:id/analyze
+  fastify.post(
+    '/api/media/items/:id/analyze',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      try {
+        const item = db.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) {
+          return reply.code(404).send({ error: 'Media item not found' });
+        }
+
+        // Re-analyze using the public processMovieFile or re-probe
+        const { mediaScanner } = await import('../services/scanner');
+        const res = await mediaScanner.processMovieFile(item.file_path, true);
+        return reply.send({ success: true, status: res });
+      } catch (err: any) {
+        console.error(err);
+        return reply.code(500).send({ error: 'Failed to analyze media item', details: err.message });
       }
     }
   );

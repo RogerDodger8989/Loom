@@ -166,7 +166,7 @@ async function mediaRoutes(fastify) {
           `).run((0, uuid_1.v4)(), movie.id, key, value);
             };
             const awardsPlaceholder = 'Inga prisuppgifter hittades.';
-            const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path;
+            const needsEnrichment = !metadata.tagline || !metadata.keywords || !metadata.production_companies || !metadata.production_countries || !metadata.awards || metadata.awards === awardsPlaceholder || !metadata.director || !metadata.logo_path || !metadata.imdb_rating || !metadata.simkl_rating;
             if (needsEnrichment) {
                 const tmdbData = movie.tmdb_id
                     ? await tmdb_1.tmdbService.fetchMovieById(movie.tmdb_id.toString())
@@ -222,20 +222,58 @@ async function mediaRoutes(fastify) {
                         }
                     }
                     const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
-                    if ((!metadata.awards || metadata.awards === awardsPlaceholder) && imdbId) {
+                    if (imdbId) {
                         const omdbKey = tmdb_1.tmdbService.getSetting('OMDB_API_KEY');
-                        if (omdbKey) {
+                        if (omdbKey && (!metadata.awards || metadata.awards === awardsPlaceholder || !metadata.imdb_rating)) {
                             try {
                                 const omdbRes = await axios_1.default.get(`http://www.omdbapi.com/`, {
                                     params: { apikey: omdbKey, i: imdbId }
                                 });
-                                if (omdbRes.data && omdbRes.data.Awards) {
-                                    metadata.awards = omdbRes.data.Awards;
-                                    upsertMeta('awards', omdbRes.data.Awards);
+                                if (omdbRes.data) {
+                                    if (omdbRes.data.Awards) {
+                                        metadata.awards = omdbRes.data.Awards;
+                                        upsertMeta('awards', omdbRes.data.Awards);
+                                    }
+                                    if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
+                                        metadata.imdb_rating = omdbRes.data.imdbRating;
+                                        upsertMeta('imdb_rating', omdbRes.data.imdbRating);
+                                    }
+                                    if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
+                                        metadata.metascore = omdbRes.data.Metascore;
+                                        upsertMeta('metascore', omdbRes.data.Metascore);
+                                    }
+                                    if (Array.isArray(omdbRes.data.Ratings)) {
+                                        const rtEntry = omdbRes.data.Ratings.find((r) => r.Source === 'Rotten Tomatoes');
+                                        if (rtEntry) {
+                                            metadata.rt_rating = rtEntry.Value;
+                                            upsertMeta('rt_rating', rtEntry.Value);
+                                        }
+                                    }
                                 }
                             }
                             catch (omdbErr) {
-                                console.error('[Media Details] OMDb awards enrichment failed:', omdbErr);
+                                console.error('[Media Details] OMDb enrichment failed:', omdbErr);
+                            }
+                        }
+                        const simklClientId = tmdb_1.tmdbService.getSetting('SIMKL_CLIENT_ID');
+                        if (simklClientId && !metadata.simkl_rating) {
+                            try {
+                                const simklRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
+                                    params: { imdb: imdbId, client_id: simklClientId }
+                                });
+                                if (simklRes.data && Array.isArray(simklRes.data) && simklRes.data.length > 0) {
+                                    const simklData = simklRes.data[0];
+                                    if (simklData.ratings && simklData.ratings.simkl) {
+                                        const simklRating = simklData.ratings.simkl.rating;
+                                        if (simklRating) {
+                                            metadata.simkl_rating = simklRating.toString();
+                                            upsertMeta('simkl_rating', simklRating.toString());
+                                        }
+                                    }
+                                }
+                            }
+                            catch (simklErr) {
+                                console.error('[Media Details] Simkl enrichment failed:', simklErr);
                             }
                         }
                     }
