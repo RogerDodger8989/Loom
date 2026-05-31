@@ -248,6 +248,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String? _genreFilter;
   String? _keywordFilter;
   String _moviesSearchQuery = '';
+  List<Map<String, dynamic>> _homeSections = [];
 
   final TextEditingController _homeSearchController = TextEditingController();
   Timer? _homeSearchDebounce;
@@ -266,6 +267,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   void initState() {
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
+    _homeSections = _defaultHomeSections();
     _tabController.addListener(() {
       if (_tabController.index == 4) {
         _loadDevices();
@@ -277,6 +279,211 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     _loadLibraryPaths();
     _loadDevices();
     _loadSettings();
+  }
+
+  List<Map<String, dynamic>> _defaultHomeSections() {
+    return [
+      {'id': 'continue_watching', 'title': 'Fortsätt titta', 'visible': true, 'comingSoon': false, 'days': 365},
+      {'id': 'recent_movies', 'title': 'Nyligen tillagda Filmer', 'visible': true, 'comingSoon': false},
+      {'id': 'recent_watched_movies', 'title': 'Nyligen sedda Filmer', 'visible': true, 'comingSoon': false},
+      {'id': 'recent_shows', 'title': 'Nyligen tillagda Serier', 'visible': false, 'comingSoon': true},
+      {'id': 'recent_images', 'title': 'Nyligen tillagda Bilder', 'visible': false, 'comingSoon': true},
+      {'id': 'recent_music', 'title': 'Nyligen tillagda Musik', 'visible': false, 'comingSoon': true},
+      {'id': 'tmdb_trending', 'title': 'Trender från TMDB', 'visible': false, 'comingSoon': true},
+      {'id': 'tmdb_top', 'title': 'Topplistor från TMDB', 'visible': false, 'comingSoon': true},
+      {'id': 'trailers_trending', 'title': 'Trendande trailers', 'visible': false, 'comingSoon': true},
+      {'id': 'trailers_new', 'title': 'Nya Trailers', 'visible': false, 'comingSoon': true},
+      {'id': 'custom_lists', 'title': '<Listor>', 'visible': false, 'comingSoon': true},
+    ];
+  }
+
+  List<Map<String, dynamic>> _cloneHomeSections(List<Map<String, dynamic>> sections) {
+    return sections.map((section) => Map<String, dynamic>.from(section)).toList();
+  }
+
+  void _loadHomeSectionsFromSettings(String? rawLayout) {
+    if (rawLayout == null || rawLayout.trim().isEmpty) {
+      _homeSections = _defaultHomeSections();
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(rawLayout);
+      if (decoded is List) {
+        final parsed = <Map<String, dynamic>>[];
+        for (final entry in decoded) {
+          if (entry is Map) {
+            parsed.add({
+              'id': entry['id']?.toString() ?? '',
+              'title': entry['title']?.toString() ?? '',
+              'visible': entry['visible'] != false,
+              'comingSoon': entry['comingSoon'] == true,
+              if (entry['days'] != null) 'days': int.tryParse(entry['days'].toString()) ?? 365,
+            });
+          }
+        }
+
+        if (parsed.isNotEmpty) {
+          _homeSections = parsed.where((section) => (section['id'] ?? '').toString().isNotEmpty).toList();
+          return;
+        }
+      }
+    } catch (_) {
+      // Fall back to defaults if the saved layout cannot be parsed.
+    }
+
+    _homeSections = _defaultHomeSections();
+  }
+
+  String _serializeHomeSections() {
+    return jsonEncode(_homeSections.map((section) {
+      return {
+        'id': section['id'],
+        'title': section['title'],
+        'visible': section['visible'] != false,
+        'comingSoon': section['comingSoon'] == true,
+        if (section['days'] != null) 'days': section['days'],
+      };
+    }).toList());
+  }
+
+  void _openHomeLayoutEditor() {
+    final editableSections = _cloneHomeSections(_homeSections.isEmpty ? _defaultHomeSections() : _homeSections);
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, dialogSetState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF11151D),
+              title: const Text('Redigera hemsektioner', style: TextStyle(color: Colors.white)),
+              content: SizedBox(
+                width: 760,
+                height: 580,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Dra rubrikerna för att ändra ordning och slå av/på synlighet per rubrik.',
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.60), fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+                    Expanded(
+                      child: ReorderableListView.builder(
+                        buildDefaultDragHandles: false,
+                        itemCount: editableSections.length,
+                        onReorder: (oldIndex, newIndex) {
+                          dialogSetState(() {
+                            if (newIndex > oldIndex) newIndex -= 1;
+                            final item = editableSections.removeAt(oldIndex);
+                            editableSections.insert(newIndex, item);
+                          });
+                        },
+                        itemBuilder: (context, index) {
+                          final section = editableSections[index];
+                          final isContinueWatching = section['id'] == 'continue_watching';
+                          final isComingSoon = section['comingSoon'] == true;
+                          final daysValue = section['days'] as int?;
+
+                          return Container(
+                            key: ValueKey(section['id']),
+                            margin: const EdgeInsets.only(bottom: 10),
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF171C26),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                            ),
+                            child: Row(
+                              children: [
+                                ReorderableDragStartListener(
+                                  index: index,
+                                  child: const Padding(
+                                    padding: EdgeInsets.only(right: 10),
+                                    child: Icon(Icons.drag_indicator, color: Colors.white38),
+                                  ),
+                                ),
+                                Checkbox(
+                                  value: section['visible'] != false,
+                                  activeColor: const Color(0xFF8A5BFF),
+                                  onChanged: (value) {
+                                    dialogSetState(() {
+                                      section['visible'] = value == true;
+                                    });
+                                  },
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        section['title']?.toString() ?? '',
+                                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
+                                      ),
+                                      if (isComingSoon)
+                                        Text(
+                                          'Kommer senare',
+                                          style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                if (isContinueWatching) ...[
+                                  const SizedBox(width: 12),
+                                  DropdownButton<int?>(
+                                    value: daysValue,
+                                    dropdownColor: const Color(0xFF11151D),
+                                    underline: const SizedBox.shrink(),
+                                    iconEnabledColor: Colors.white54,
+                                    items: const [
+                                      DropdownMenuItem<int?>(value: 30, child: Text('30 dagar')),
+                                      DropdownMenuItem<int?>(value: 60, child: Text('60 dagar')),
+                                      DropdownMenuItem<int?>(value: 180, child: Text('180 dagar')),
+                                      DropdownMenuItem<int?>(value: 365, child: Text('365 dagar')),
+                                      DropdownMenuItem<int?>(value: null, child: Text('Ingen begränsning')),
+                                    ],
+                                    onChanged: (value) {
+                                      dialogSetState(() {
+                                        section['days'] = value;
+                                      });
+                                    },
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Avbryt', style: TextStyle(color: Colors.white70)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF)),
+                  onPressed: () async {
+                    setState(() {
+                      _homeSections = editableSections;
+                    });
+                    await _saveSettings();
+                    if (mounted) {
+                      Navigator.of(dialogContext).pop();
+                    }
+                  },
+                  child: const Text('Spara'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -998,10 +1205,23 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               ),
             const SizedBox(height: 6),
             if (isHome)
-              SizedBox(
-                width: 680,
-                child: _buildHomeSearchBox(),
-              )
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, right: 10),
+                      child: IconButton(
+                        tooltip: 'Redigera hemsektioner',
+                        onPressed: _openHomeLayoutEditor,
+                        icon: const Icon(Icons.tune, color: Colors.white70),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 680,
+                      child: _buildHomeSearchBox(),
+                    ),
+                  ],
+                )
             else
               Text(
                 _tabController.index == 3
@@ -1052,6 +1272,85 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           ],
         ),
       ],
+    );
+  }
+
+  bool _isWithinDays(String? timestamp, int? days) {
+    if (days == null || days <= 0) return true;
+    if (timestamp == null || timestamp.isEmpty) return true;
+    final parsed = DateTime.tryParse(timestamp);
+    if (parsed == null) return true;
+    return DateTime.now().difference(parsed).inDays <= days;
+  }
+
+  List<dynamic> _getContinueWatchingMovies(List<dynamic> movies, int? days) {
+    return movies.where((movie) {
+      final metadata = movie['metadata'];
+      if (metadata is! Map) return false;
+      final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
+      if (progress <= 0) return false;
+      return _isWithinDays(movie['last_watched_at']?.toString(), days);
+    }).toList();
+  }
+
+  List<dynamic> _getRecentlyWatchedMovies(List<dynamic> movies) {
+    final watched = movies.where((movie) {
+      final metadata = movie['metadata'];
+      return metadata is Map && metadata['watch_status'] == 'watched';
+    }).toList();
+
+    watched.sort((a, b) {
+      final aTime = DateTime.tryParse(a['last_watched_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = DateTime.tryParse(b['last_watched_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+
+    return watched;
+  }
+
+  Widget _buildHomeSectionHeader(String title, {String? subtitle}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+          if (subtitle != null) ...[
+            const SizedBox(height: 6),
+            Text(subtitle, style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 13)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomePosterStrip(List<dynamic> items) {
+    return SizedBox(
+      height: 200,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: items.length,
+        itemBuilder: (context, index) => _buildHomeCard(items[index]),
+      ),
+    );
+  }
+
+  Widget _buildHomeComingSoonPlaceholder(String title) {
+    return Container(
+      height: 150,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+          '$title kommer senare',
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+      ),
     );
   }
 
@@ -1558,55 +1857,80 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   Widget _buildHomeView() {
     final recentMovies = _movies.take(12).toList();
-    final inProgress = _movies.where((m) {
-      final meta = m['metadata'];
-      if (meta is Map) {
-        final progress = int.tryParse(meta['playback_progress']?.toString() ?? '0') ?? 0;
-        return progress > 0;
-      }
-      return false;
-    }).take(8).toList();
+    final watchedMovies = _getRecentlyWatchedMovies(_movies).take(12).toList();
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Welcome Banner
-          // Welcome banner removed per user request
+          for (final section in _homeSections) ...[
+            if (section['visible'] != false)
+              Builder(
+                builder: (context) {
+                  final sectionId = section['id']?.toString() ?? '';
+                  final title = section['title']?.toString() ?? '';
+                  final comingSoon = section['comingSoon'] == true;
+                  final days = section['days'] as int?;
 
-          // Continue Watching Section
-          if (inProgress.isNotEmpty) ...[
-            const Text('Fortsätt titta', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 200,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: inProgress.length,
-                itemBuilder: (context, index) {
-                  final movie = inProgress[index];
-                  return _buildHomeCard(movie);
+                  if (sectionId == 'continue_watching') {
+                    final continueWatching = _getContinueWatchingMovies(_movies, days).take(8).toList();
+                    if (continueWatching.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildHomeSectionHeader(title, subtitle: days == null ? 'Ingen begränsning' : 'Senaste $days dagar'),
+                          _buildHomePosterStrip(continueWatching),
+                        ],
+                      ),
+                    );
+                  }
+
+                  if (sectionId == 'recent_movies') {
+                    if (recentMovies.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildHomeSectionHeader(title),
+                          _buildHomePosterStrip(recentMovies),
+                        ],
+                      ),
+                    );
+                  }
+
+                  if (sectionId == 'recent_watched_movies') {
+                    if (watchedMovies.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildHomeSectionHeader(title),
+                          _buildHomePosterStrip(watchedMovies),
+                        ],
+                      ),
+                    );
+                  }
+
+                  if (comingSoon) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildHomeSectionHeader(title),
+                          _buildHomeComingSoonPlaceholder(title),
+                        ],
+                      ),
+                    );
+                  }
+
+                  return const SizedBox.shrink();
                 },
               ),
-            ),
-            const SizedBox(height: 32),
-          ],
-
-          // Recently Added Section
-          if (recentMovies.isNotEmpty) ...[
-            const Text('Nyligen tillagda', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 200,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: recentMovies.length,
-                itemBuilder: (context, index) {
-                  final movie = recentMovies[index];
-                  return _buildHomeCard(movie);
-                },
-              ),
-            ),
           ],
 
           if (_loadingMedia)
@@ -2661,6 +2985,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _watchProviderRegion = settings['WATCH_PROVIDER_REGION'] ?? 'SE';
         _titleDisplayStyle = settings['TITLE_DISPLAY_STYLE'] ?? 'Translated';
         _preferLocalNfo = settings['PREFER_LOCAL_NFO'] != 'false';
+        _loadHomeSectionsFromSettings(settings['HOME_LAYOUT']);
         _syncTraktRatings = settings['sync_trakt_ratings'] != 'false';
         _syncTraktWatched = settings['sync_trakt_watched'] != 'false';
         _syncSimklRatings = settings['sync_simkl_ratings'] != 'false';
@@ -2694,6 +3019,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         'WATCH_PROVIDER_REGION': _watchProviderRegion,
         'TITLE_DISPLAY_STYLE': _titleDisplayStyle,
         'PREFER_LOCAL_NFO': _preferLocalNfo ? 'true' : 'false',
+        'HOME_LAYOUT': _serializeHomeSections(),
         'sync_trakt_ratings': _syncTraktRatings ? 'true' : 'false',
         'sync_trakt_watched': _syncTraktWatched ? 'true' : 'false',
         'sync_simkl_ratings': _syncSimklRatings ? 'true' : 'false',

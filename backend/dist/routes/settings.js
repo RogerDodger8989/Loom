@@ -27,6 +27,7 @@ async function settingsRoutes(fastify) {
                 'WATCH_PROVIDER_REGION',
                 'TITLE_DISPLAY_STYLE',
                 'PREFER_LOCAL_NFO',
+                'HOME_LAYOUT',
                 'sync_trakt_ratings',
                 'sync_trakt_watched',
                 'sync_simkl_ratings',
@@ -51,6 +52,7 @@ async function settingsRoutes(fastify) {
                 WATCH_PROVIDER_REGION: 'SE',
                 TITLE_DISPLAY_STYLE: 'Translated',
                 PREFER_LOCAL_NFO: 'true',
+                HOME_LAYOUT: '',
                 sync_trakt_ratings: 'true',
                 sync_trakt_watched: 'true',
                 sync_simkl_ratings: 'true',
@@ -119,6 +121,7 @@ async function settingsRoutes(fastify) {
             updateSetting('WATCH_PROVIDER_REGION', body.WATCH_PROVIDER_REGION);
             updateSetting('TITLE_DISPLAY_STYLE', body.TITLE_DISPLAY_STYLE);
             updateSetting('PREFER_LOCAL_NFO', body.PREFER_LOCAL_NFO);
+            updateSetting('HOME_LAYOUT', body.HOME_LAYOUT);
             updateSetting('sync_trakt_ratings', body.sync_trakt_ratings);
             updateSetting('sync_trakt_watched', body.sync_trakt_watched);
             updateSetting('sync_simkl_ratings', body.sync_simkl_ratings);

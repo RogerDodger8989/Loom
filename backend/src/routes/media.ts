@@ -200,7 +200,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         // Query to get all movies that are NOT restricted for this user
         // Excludes matches on GENRE, RATING, or KEYWORD restriction patterns completely at the DB layer
         const moviesQuery = `
-          SELECT mi.* FROM media_items mi
+          SELECT mi.*, (SELECT MAX(updated_at) FROM watch_history wh WHERE wh.media_item_id = mi.id) as last_watched_at FROM media_items mi
           WHERE mi.type = 'Movie'
           AND mi.id NOT IN (
             SELECT mm.media_item_id 
@@ -221,6 +221,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           imdb_id: string | null;
           file_path: string;
           added_at: string;
+          last_watched_at: string | null;
           poster_path: string | null;
           fanart_path: string | null;
           plot: string | null;
@@ -266,6 +267,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
                 fanart_path: movie.fanart_path,
                 plot: movie.plot,
                 year: movie.year,
+                last_watched_at: movie.last_watched_at,
                 genre: movie.genre || movie.metadata.genre || 'Movie',
                 added_at: movie.added_at,
                 metadata: movie.metadata,
@@ -285,6 +287,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           // Separated Mode: Return items individually and add a clear visual badge indicator
           const badgedMovies = moviesWithMetadata.map(movie => ({
             ...movie,
+            last_watched_at: movie.last_watched_at,
             resolution_badge: movie.resolution // e.g. "4K" or "1080p"
           }));
 
