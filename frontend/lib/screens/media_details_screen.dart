@@ -47,6 +47,65 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   String _selectedAudioTrack = 'English (AAC 5.1)';
   String _selectedSubtitle = 'None';
   bool _isCoverHovered = false;
+  bool _isInWatchlist = false;
+  bool _isWatchlistLoading = false;
+
+  Future<void> _toggleWatchlist() async {
+    if (_mediaData == null) return;
+    setState(() {
+      _isWatchlistLoading = true;
+    });
+    try {
+      final tmdbId = _mediaData!['tmdb_id']?.toString();
+      final title = _mediaData!['title']?.toString() ?? '';
+      final type = _mediaData!['type']?.toString() ?? 'Movie';
+      final year = int.tryParse(_mediaData!['year']?.toString() ?? '');
+      final posterPath = _mediaData!['poster_path']?.toString();
+
+      if (tmdbId == null) throw Exception('Saknar TMDB ID');
+
+      if (_isInWatchlist) {
+        await widget.apiService.removeFromWatchlist(tmdbId);
+        setState(() {
+          _isInWatchlist = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$title" har tagits bort från din bevakningslista.'),
+            backgroundColor: const Color(0xFF15102A),
+          ),
+        );
+      } else {
+        await widget.apiService.addToWatchlist(
+          tmdbId: tmdbId,
+          title: title,
+          type: type,
+          year: year,
+          posterPath: posterPath,
+        );
+        setState(() {
+          _isInWatchlist = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$title" har lagts till i din bevakningslista för nerladdning!'),
+            backgroundColor: const Color(0xFF8A5BFF),
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Ett fel uppstod: $e'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    } finally {
+      setState(() {
+        _isWatchlistLoading = false;
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -137,6 +196,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                 : 'None';
       }
 
+      final bool isInWatchlist = data['is_in_watchlist'] as bool? ?? false;
+
       setState(() {
         _mediaData = data;
         _myRating = savedRating > 0 ? savedRating : 0.0;
@@ -145,6 +206,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         _titleDisplayStyle = titleStyle;
         _selectedAudioTrack = audioTrack;
         _selectedSubtitle = subtitle;
+        _isInWatchlist = isInWatchlist;
         _isLoading = false;
       });
     } catch (e) {
@@ -660,7 +722,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               onEnter: (_) => setState(() => _isCoverHovered = true),
                               onExit: (_) => setState(() => _isCoverHovered = false),
                               child: GestureDetector(
-                                onTap: _playMedia,
+                                onTap: widget.mediaId.startsWith('external_') ? _toggleWatchlist : _playMedia,
                                 child: Container(
                                   width: 220,
                                   height: 330,
@@ -680,11 +742,17 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                           opacity: _isCoverHovered ? 1.0 : 0.0,
                                           child: Container(
                                             color: Colors.black.withValues(alpha: 0.55),
-                                            child: const Center(
+                                            child: Center(
                                               child: CircleAvatar(
                                                 radius: 36,
-                                                backgroundColor: Color(0xFF8A5BFF),
-                                                child: Icon(Icons.play_arrow, size: 40, color: Colors.white),
+                                                backgroundColor: const Color(0xFF8A5BFF),
+                                                child: Icon(
+                                                  widget.mediaId.startsWith('external_')
+                                                      ? (_isInWatchlist ? Icons.playlist_add_check : Icons.playlist_add)
+                                                      : Icons.play_arrow,
+                                                  size: 40,
+                                                  color: Colors.white,
+                                                ),
                                               ),
                                             ),
                                           ),
@@ -1080,185 +1148,228 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                             _buildAwardsRow(awardsString),
                             const SizedBox(height: 24),
 
-                            // Control Actions Row
-                            Row(
-                              children: [
-                                ElevatedButton.icon(
-                                  onPressed: _playMedia,
-                                  icon: const Icon(Icons.play_arrow, size: 28),
-                                  label: Text(
-                                    _savedProgressSeconds > 0 ? 'Återuppta' : 'Spela',
-                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF8A5BFF),
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                                    elevation: 8,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                
-                                Padding(
-                                  padding: const EdgeInsets.only(right: 16),
-                                  child: OutlinedButton.icon(
-                                    onPressed: () => _launchTrailer(trailerUrl?.toString(), title.toString(), year.toString()),
-                                    icon: const Icon(Icons.slideshow, size: 22, color: Colors.white),
-                                    label: const Text('Trailer', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                                    style: OutlinedButton.styleFrom(
-                                      side: const BorderSide(color: Colors.white54, width: 1.5),
-                                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                                    ),
-                                  ),
-                                ),
+                             // Control Actions Row
+                             Row(
+                               children: [
+                                 if (widget.mediaId.startsWith('external_')) ...[
+                                   // Watchlist Add/Remove Action for external item
+                                   ElevatedButton.icon(
+                                     onPressed: _isWatchlistLoading ? null : _toggleWatchlist,
+                                     icon: _isWatchlistLoading
+                                         ? const SizedBox(
+                                             width: 20,
+                                             height: 20,
+                                             child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                           )
+                                         : Icon(_isInWatchlist ? Icons.playlist_add_check : Icons.playlist_add, size: 28),
+                                     label: Text(
+                                       _isInWatchlist ? 'I bevakningslistan' : 'Lägg till i bevakningslista',
+                                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                     ),
+                                     style: ElevatedButton.styleFrom(
+                                       backgroundColor: _isInWatchlist ? const Color(0xFF281E46) : const Color(0xFF8A5BFF),
+                                       foregroundColor: Colors.white,
+                                       side: _isInWatchlist ? const BorderSide(color: Color(0xFF8A5BFF), width: 1.5) : null,
+                                       padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
+                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                                       elevation: 8,
+                                     ),
+                                   ),
+                                   const SizedBox(width: 16),
+                                   
+                                   if (trailerUrl != null && trailerUrl.toString().isNotEmpty) ...[
+                                     Padding(
+                                       padding: const EdgeInsets.only(right: 16),
+                                       child: OutlinedButton.icon(
+                                         onPressed: () => _launchTrailer(trailerUrl.toString(), title.toString(), year.toString()),
+                                         icon: const Icon(Icons.slideshow, size: 22, color: Colors.white),
+                                         label: const Text('Trailer', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                                         style: OutlinedButton.styleFrom(
+                                           side: const BorderSide(color: Colors.white54, width: 1.5),
+                                           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                                         ),
+                                       ),
+                                     ),
+                                   ],
+                                 ] else ...[
+                                   ElevatedButton.icon(
+                                     onPressed: _playMedia,
+                                     icon: const Icon(Icons.play_arrow, size: 28),
+                                     label: Text(
+                                       _savedProgressSeconds > 0 ? 'Återuppta' : 'Spela',
+                                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                     ),
+                                     style: ElevatedButton.styleFrom(
+                                       backgroundColor: const Color(0xFF8A5BFF),
+                                       foregroundColor: Colors.white,
+                                       padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
+                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                                       elevation: 8,
+                                     ),
+                                   ),
+                                   const SizedBox(width: 16),
+                                   
+                                   Padding(
+                                     padding: const EdgeInsets.only(right: 16),
+                                     child: OutlinedButton.icon(
+                                       onPressed: () => _launchTrailer(trailerUrl?.toString(), title.toString(), year.toString()),
+                                       icon: const Icon(Icons.slideshow, size: 22, color: Colors.white),
+                                       label: const Text('Trailer', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                                       style: OutlinedButton.styleFrom(
+                                         side: const BorderSide(color: Colors.white54, width: 1.5),
+                                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                                       ),
+                                     ),
+                                   ),
 
-                                // Dynamic kebab Menu button frambringande av actions
-                                Container(
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: Colors.black.withValues(alpha: 0.55),
-                                    border: Border.all(color: Colors.white10),
-                                  ),
-                                  child: Theme(
-                                    data: Theme.of(context).copyWith(
-                                      cardColor: const Color(0xFF15102A),
-                                    ),
-                                    child: PopupMenuButton<String>(
-                                      icon: const Icon(Icons.more_horiz, size: 26, color: Colors.white70),
-                                      tooltip: 'Fler åtgärder',
-                                      onSelected: (value) async {
-                                        if (value == 'playlist') {
-                                          _showPlaylistDialog();
-                                        } else if (value == 'watch') {
-                                          _toggleWatchStatus();
-                                        } else if (value == 'refresh') {
-                                          try {
-                                            setState(() => _isLoading = true);
-                                            await widget.apiService.refreshMediaMetadata(widget.mediaId);
-                                            _fetchDetails();
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              const SnackBar(content: Text('Metadata har uppdaterats online!'), backgroundColor: Color(0xFF8A5BFF)),
-                                            );
-                                          } catch (e) {
-                                            setState(() => _isLoading = false);
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text('Misslyckades uppdatera: $e'), backgroundColor: Colors.redAccent),
-                                            );
-                                          }
-                                        } else if (value == 'analyze') {
-                                          try {
-                                            setState(() => _isLoading = true);
-                                            await widget.apiService.analyzeMediaItem(widget.mediaId);
-                                            _fetchDetails();
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              const SnackBar(content: Text('Mediefilen har analyserats om!'), backgroundColor: Color(0xFF8A5BFF)),
-                                            );
-                                          } catch (e) {
-                                            setState(() => _isLoading = false);
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text('Misslyckades analysera: $e'), backgroundColor: Colors.redAccent),
-                                            );
-                                          }
-                                        } else if (value == 'match') {
-                                          _showFixMatchDialog();
-                                        } else if (value == 'unmatch') {
-                                          try {
-                                            setState(() => _isLoading = true);
-                                            await widget.apiService.unmatchMediaItem(widget.mediaId);
-                                            _fetchDetails();
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              const SnackBar(content: Text('Matchning borttagen!'), backgroundColor: Color(0xFF8A5BFF)),
-                                            );
-                                          } catch (e) {
-                                            setState(() => _isLoading = false);
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text('Misslyckades ta bort matchning: $e'), backgroundColor: Colors.redAccent),
-                                            );
-                                          }
-                                        } else if (value == 'delete') {
-                                          // Confirm dialog
-                                          final confirm = await showDialog<bool>(
-                                            context: context,
-                                            builder: (ctx) => AlertDialog(
-                                              backgroundColor: const Color(0xFF15102A),
-                                              title: const Text('Ta bort media?', style: TextStyle(color: Colors.white)),
-                                              content: const Text('Är du säker på att du vill ta bort den här filmen från biblioteket? Filen på disken kommer inte raderas.', style: TextStyle(color: Colors.white70)),
-                                              actions: [
-                                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
-                                                TextButton(
-                                                  onPressed: () => Navigator.pop(ctx, true),
-                                                  child: const Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                          if (confirm == true) {
-                                            try {
-                                              await widget.apiService.deleteMediaItem(widget.mediaId);
-                                              if (widget.onBack != null) {
-                                                widget.onBack!();
-                                              } else {
-                                                Navigator.pop(context);
-                                              }
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                const SnackBar(content: Text('Media raderad från biblioteket.'), backgroundColor: Color(0xFF8A5BFF)),
-                                              );
-                                            } catch (e) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(content: Text('Misslyckades ta bort: $e'), backgroundColor: Colors.redAccent),
-                                              );
-                                            }
-                                          }
-                                        } else if (value == 'statistics') {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(
-                                              content: Text('Statistik kommer snart!'),
-                                              backgroundColor: Color(0xFF8A5BFF),
-                                            ),
-                                          );
-                                        }
-                                      },
-                                      itemBuilder: (context) => [
-                                        const PopupMenuItem(
-                                          value: 'playlist',
-                                          child: Text('Lägg till på spellista', style: TextStyle(color: Colors.white)),
-                                        ),
-                                        PopupMenuItem(
-                                          value: 'watch',
-                                          child: Text(_isWatched ? 'Markera som osedd' : 'Markera som visad', style: const TextStyle(color: Colors.white)),
-                                        ),
-                                        const PopupMenuItem(
-                                          value: 'refresh',
-                                          child: Text('Uppdatera metadata', style: TextStyle(color: Colors.white)),
-                                        ),
-                                        const PopupMenuItem(
-                                          value: 'analyze',
-                                          child: Text('Analysera', style: TextStyle(color: Colors.white)),
-                                        ),
-                                        const PopupMenuItem(
-                                          value: 'match',
-                                          child: Text('Fixa matchning', style: TextStyle(color: Colors.white)),
-                                        ),
-                                        const PopupMenuItem(
-                                          value: 'unmatch',
-                                          child: Text('Ta bort matchning', style: TextStyle(color: Colors.white)),
-                                        ),
-                                        const PopupMenuItem(
-                                          value: 'delete',
-                                          child: Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
-                                        ),
-                                        const PopupMenuItem(
-                                          value: 'statistics',
-                                          child: Text('Visa statistik', style: TextStyle(color: Colors.white30)),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                                   // Dynamic kebab Menu button frambringande av actions
+                                   Container(
+                                     decoration: BoxDecoration(
+                                       shape: BoxShape.circle,
+                                       color: Colors.black.withValues(alpha: 0.55),
+                                       border: Border.all(color: Colors.white10),
+                                     ),
+                                     child: Theme(
+                                       data: Theme.of(context).copyWith(
+                                         cardColor: const Color(0xFF15102A),
+                                       ),
+                                       child: PopupMenuButton<String>(
+                                         icon: const Icon(Icons.more_horiz, size: 26, color: Colors.white70),
+                                         tooltip: 'Fler åtgärder',
+                                         onSelected: (value) async {
+                                           if (value == 'playlist') {
+                                             _showPlaylistDialog();
+                                           } else if (value == 'watch') {
+                                             _toggleWatchStatus();
+                                           } else if (value == 'refresh') {
+                                             try {
+                                               setState(() => _isLoading = true);
+                                               await widget.apiService.refreshMediaMetadata(widget.mediaId);
+                                               _fetchDetails();
+                                               ScaffoldMessenger.of(context).showSnackBar(
+                                                 const SnackBar(content: Text('Metadata har uppdaterats online!'), backgroundColor: Color(0xFF8A5BFF)),
+                                               );
+                                             } catch (e) {
+                                               setState(() => _isLoading = false);
+                                               ScaffoldMessenger.of(context).showSnackBar(
+                                                 SnackBar(content: Text('Misslyckades uppdatera: $e'), backgroundColor: Colors.redAccent),
+                                               );
+                                             }
+                                           } else if (value == 'analyze') {
+                                             try {
+                                               setState(() => _isLoading = true);
+                                               await widget.apiService.analyzeMediaItem(widget.mediaId);
+                                               _fetchDetails();
+                                               ScaffoldMessenger.of(context).showSnackBar(
+                                                 const SnackBar(content: Text('Mediefilen har analyserats om!'), backgroundColor: Color(0xFF8A5BFF)),
+                                               );
+                                             } catch (e) {
+                                               setState(() => _isLoading = false);
+                                               ScaffoldMessenger.of(context).showSnackBar(
+                                                 SnackBar(content: Text('Misslyckades analysera: $e'), backgroundColor: Colors.redAccent),
+                                               );
+                                             }
+                                           } else if (value == 'match') {
+                                             _showFixMatchDialog();
+                                           } else if (value == 'unmatch') {
+                                             try {
+                                               setState(() => _isLoading = true);
+                                               await widget.apiService.unmatchMediaItem(widget.mediaId);
+                                               _fetchDetails();
+                                               ScaffoldMessenger.of(context).showSnackBar(
+                                                 const SnackBar(content: Text('Matchning borttagen!'), backgroundColor: Color(0xFF8A5BFF)),
+                                               );
+                                             } catch (e) {
+                                               setState(() => _isLoading = false);
+                                               ScaffoldMessenger.of(context).showSnackBar(
+                                                 SnackBar(content: Text('Misslyckades ta bort matchning: $e'), backgroundColor: Colors.redAccent),
+                                               );
+                                             }
+                                           } else if (value == 'delete') {
+                                             // Confirm dialog
+                                             final confirm = await showDialog<bool>(
+                                               context: context,
+                                               builder: (ctx) => AlertDialog(
+                                                 backgroundColor: const Color(0xFF15102A),
+                                                 title: const Text('Ta bort media?', style: TextStyle(color: Colors.white)),
+                                                 content: const Text('Är du säker på att du vill ta bort den här filmen från biblioteket? Filen på disken kommer inte raderas.', style: TextStyle(color: Colors.white70)),
+                                                 actions: [
+                                                   TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+                                                   TextButton(
+                                                     onPressed: () => Navigator.pop(ctx, true),
+                                                     child: const Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
+                                                   ),
+                                                 ],
+                                               ),
+                                             );
+                                             if (confirm == true) {
+                                               try {
+                                                 await widget.apiService.deleteMediaItem(widget.mediaId);
+                                                 if (widget.onBack != null) {
+                                                   widget.onBack!();
+                                                 } else {
+                                                   Navigator.pop(context);
+                                                 }
+                                                 ScaffoldMessenger.of(context).showSnackBar(
+                                                   const SnackBar(content: Text('Media raderad från biblioteket.'), backgroundColor: Color(0xFF8A5BFF)),
+                                                 );
+                                               } catch (e) {
+                                                 ScaffoldMessenger.of(context).showSnackBar(
+                                                   SnackBar(content: Text('Misslyckades ta bort: $e'), backgroundColor: Colors.redAccent),
+                                                 );
+                                               }
+                                             }
+                                           } else if (value == 'statistics') {
+                                             ScaffoldMessenger.of(context).showSnackBar(
+                                               const SnackBar(
+                                                 content: Text('Statistik kommer snart!'),
+                                                 backgroundColor: Color(0xFF8A5BFF),
+                                               ),
+                                             );
+                                           }
+                                         },
+                                         itemBuilder: (context) => [
+                                           const PopupMenuItem(
+                                             value: 'playlist',
+                                             child: Text('Lägg till på spellista', style: TextStyle(color: Colors.white)),
+                                           ),
+                                           PopupMenuItem(
+                                             value: 'watch',
+                                             child: Text(_isWatched ? 'Markera som osedd' : 'Markera som visad', style: const TextStyle(color: Colors.white)),
+                                           ),
+                                           const PopupMenuItem(
+                                             value: 'refresh',
+                                             child: Text('Uppdatera metadata', style: TextStyle(color: Colors.white)),
+                                           ),
+                                           const PopupMenuItem(
+                                             value: 'analyze',
+                                             child: Text('Analysera', style: TextStyle(color: Colors.white)),
+                                           ),
+                                           const PopupMenuItem(
+                                             value: 'match',
+                                             child: Text('Fixa matchning', style: TextStyle(color: Colors.white)),
+                                           ),
+                                           const PopupMenuItem(
+                                             value: 'unmatch',
+                                             child: Text('Ta bort matchning', style: TextStyle(color: Colors.white)),
+                                           ),
+                                           const PopupMenuItem(
+                                             value: 'delete',
+                                             child: Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
+                                           ),
+                                           const PopupMenuItem(
+                                             value: 'statistics',
+                                             child: Text('Visa statistik', style: TextStyle(color: Colors.white30)),
+                                           ),
+                                         ],
+                                       ),
+                                     ),
+                                   ),
+                                 ],
+                               ],
+                             ),
                           ],
                         ),
                       ),
@@ -1347,8 +1458,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         ],
 
                         // Compact Video, Audio & Subtitles Row
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        if (!widget.mediaId.startsWith('external_'))
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                           decoration: BoxDecoration(
                             color: Colors.white.withValues(alpha: 0.03),
                             borderRadius: BorderRadius.circular(12),

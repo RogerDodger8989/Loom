@@ -26,7 +26,11 @@ async function settingsRoutes(fastify) {
                 'DEFAULT_AUDIO_LANG',
                 'WATCH_PROVIDER_REGION',
                 'TITLE_DISPLAY_STYLE',
-                'PREFER_LOCAL_NFO'
+                'PREFER_LOCAL_NFO',
+                'sync_trakt_ratings',
+                'sync_trakt_watched',
+                'sync_simkl_ratings',
+                'sync_simkl_watched'
             ];
             const placeholders = keys.map(() => '?').join(',');
             const rows = database_1.default.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...keys);
@@ -46,7 +50,11 @@ async function settingsRoutes(fastify) {
                 DEFAULT_AUDIO_LANG: 'en',
                 WATCH_PROVIDER_REGION: 'SE',
                 TITLE_DISPLAY_STYLE: 'Translated',
-                PREFER_LOCAL_NFO: 'true'
+                PREFER_LOCAL_NFO: 'true',
+                sync_trakt_ratings: 'true',
+                sync_trakt_watched: 'true',
+                sync_simkl_ratings: 'true',
+                sync_simkl_watched: 'true'
             };
             rows.forEach(r => {
                 if (r.key in settings) {
@@ -111,6 +119,10 @@ async function settingsRoutes(fastify) {
             updateSetting('WATCH_PROVIDER_REGION', body.WATCH_PROVIDER_REGION);
             updateSetting('TITLE_DISPLAY_STYLE', body.TITLE_DISPLAY_STYLE);
             updateSetting('PREFER_LOCAL_NFO', body.PREFER_LOCAL_NFO);
+            updateSetting('sync_trakt_ratings', body.sync_trakt_ratings);
+            updateSetting('sync_trakt_watched', body.sync_trakt_watched);
+            updateSetting('sync_simkl_ratings', body.sync_simkl_ratings);
+            updateSetting('sync_simkl_watched', body.sync_simkl_watched);
             return reply.send({ success: true });
         }
         catch (err) {

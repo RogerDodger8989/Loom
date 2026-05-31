@@ -23,7 +23,11 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         'DEFAULT_AUDIO_LANG',
         'WATCH_PROVIDER_REGION',
         'TITLE_DISPLAY_STYLE',
-        'PREFER_LOCAL_NFO'
+        'PREFER_LOCAL_NFO',
+        'sync_trakt_ratings',
+        'sync_trakt_watched',
+        'sync_simkl_ratings',
+        'sync_simkl_watched'
       ];
       const placeholders = keys.map(() => '?').join(',');
       const rows = db.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...keys) as { key: string, value: string }[];
@@ -44,7 +48,11 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         DEFAULT_AUDIO_LANG: 'en',
         WATCH_PROVIDER_REGION: 'SE',
         TITLE_DISPLAY_STYLE: 'Translated',
-        PREFER_LOCAL_NFO: 'true'
+        PREFER_LOCAL_NFO: 'true',
+        sync_trakt_ratings: 'true',
+        sync_trakt_watched: 'true',
+        sync_simkl_ratings: 'true',
+        sync_simkl_watched: 'true'
       };
 
       rows.forEach(r => {
@@ -103,6 +111,10 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
       WATCH_PROVIDER_REGION?: string;
       TITLE_DISPLAY_STYLE?: string;
       PREFER_LOCAL_NFO?: string;
+      sync_trakt_ratings?: string;
+      sync_trakt_watched?: string;
+      sync_simkl_ratings?: string;
+      sync_simkl_watched?: string;
     } }>, reply: FastifyReply) => {
       try {
         const body = request.body;
@@ -133,6 +145,10 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         updateSetting('WATCH_PROVIDER_REGION', body.WATCH_PROVIDER_REGION);
         updateSetting('TITLE_DISPLAY_STYLE', body.TITLE_DISPLAY_STYLE);
         updateSetting('PREFER_LOCAL_NFO', body.PREFER_LOCAL_NFO);
+        updateSetting('sync_trakt_ratings', body.sync_trakt_ratings);
+        updateSetting('sync_trakt_watched', body.sync_trakt_watched);
+        updateSetting('sync_simkl_ratings', body.sync_simkl_ratings);
+        updateSetting('sync_simkl_watched', body.sync_simkl_watched);
 
         return reply.send({ success: true });
       } catch (err) {

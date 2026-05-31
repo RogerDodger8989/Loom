@@ -301,12 +301,297 @@ async function mediaRoutes(fastify) {
             return reply.code(500).send({ error: 'Failed to save metadata', details: err.message });
         }
     });
+    // POST /api/media/items/:id/seen
+    // Toggle seen status for a given media item, update DB (media_metadata & watch_history) and sync to Trakt/Simkl
+    fastify.post('/api/media/items/:id/seen', async (request, reply) => {
+        const user = request.user;
+        const { id } = request.params;
+        const { watched, isWatched } = request.body || {};
+        const isWatchedBool = watched !== undefined ? watched : (isWatched ?? true);
+        try {
+            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
+            if (!movie)
+                return reply.code(404).send({ error: 'Media item not found' });
+            const statusStr = isWatchedBool ? 'watched' : 'unwatched';
+            // 1. Update media_metadata for watch_status
+            database_1.default.prepare(`
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          VALUES (?, ?, 'watch_status', ?)
+          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+        `).run((0, uuid_1.v4)(), movie.id, statusStr);
+            // 2. Update watch_history to prevent duplicate rows for the same user & media item
+            const existingHistory = database_1.default.prepare(`
+          SELECT id FROM watch_history 
+          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+        `).get(user.id, movie.id);
+            if (existingHistory) {
+                database_1.default.prepare(`
+            UPDATE watch_history 
+            SET is_watched = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(isWatchedBool ? 1 : 0, existingHistory.id);
+            }
+            else {
+                database_1.default.prepare(`
+            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
+            VALUES (?, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP)
+          `).run((0, uuid_1.v4)(), user.id, movie.id, isWatchedBool ? 1 : 0);
+            }
+            // 3. Sync to external APIs in background
+            (0, rating_sync_1.syncExternalWatchStatus)(movie, isWatchedBool).catch(err => {
+                console.error('[Seen Route] syncExternalWatchStatus failed:', err);
+            });
+            return reply.code(200).send({ ok: true, watch_status: statusStr });
+        }
+        catch (err) {
+            request.log.error(err);
+            return reply.code(500).send({ error: 'Failed to update seen status', details: err.message });
+        }
+    });
+    // POST /api/media/items/:id/progress
+    // Save play progress (heartbeat/scrobbling) and toggle watched state if progress is >= 90%
+    fastify.post('/api/media/items/:id/progress', async (request, reply) => {
+        const user = request.user;
+        const { id } = request.params;
+        const { position, duration, positionSeconds, durationSeconds } = request.body || {};
+        const posSec = positionSeconds !== undefined ? positionSeconds : (position ?? 0);
+        const durSec = durationSeconds !== undefined ? durationSeconds : (duration ?? 0);
+        if (durSec <= 0) {
+            return reply.code(400).send({ error: 'Duration must be greater than 0' });
+        }
+        try {
+            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
+            if (!movie)
+                return reply.code(404).send({ error: 'Media item not found' });
+            const progressPercent = posSec / durSec;
+            const autoWatch = progressPercent >= 0.90;
+            // 1. Update playback_progress and duration in media_metadata
+            database_1.default.prepare(`
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          VALUES (?, ?, 'playback_progress', ?)
+          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+        `).run((0, uuid_1.v4)(), movie.id, posSec.toString());
+            if (durSec > 0) {
+                database_1.default.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, 'duration', ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run((0, uuid_1.v4)(), movie.id, durSec.toString());
+            }
+            // 2. If >= 90%, update watch_status in media_metadata to 'watched'
+            let currentStatus = 'unwatched';
+            if (autoWatch) {
+                currentStatus = 'watched';
+                database_1.default.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, 'watch_status', 'watched')
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run((0, uuid_1.v4)(), movie.id);
+            }
+            // 3. Update watch_history
+            const existingHistory = database_1.default.prepare(`
+          SELECT id FROM watch_history 
+          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+        `).get(user.id, movie.id);
+            if (existingHistory) {
+                database_1.default.prepare(`
+            UPDATE watch_history 
+            SET last_position_seconds = ?, total_duration_seconds = ?, is_watched = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(posSec, durSec, autoWatch ? 1 : 0, existingHistory.id);
+            }
+            else {
+                database_1.default.prepare(`
+            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run((0, uuid_1.v4)(), user.id, movie.id, posSec, durSec, autoWatch ? 1 : 0);
+            }
+            // 4. Sync to Trakt/Simkl if threshold met
+            if (autoWatch) {
+                (0, rating_sync_1.syncExternalWatchStatus)(movie, true).catch(err => {
+                    console.error('[Progress Route] syncExternalWatchStatus failed:', err);
+                });
+            }
+            return reply.code(200).send({ ok: true, position: posSec, duration: durSec, watch_status: currentStatus });
+        }
+        catch (err) {
+            request.log.error(err);
+            return reply.code(500).send({ error: 'Failed to update progress', details: err.message });
+        }
+    });
     // GET /api/media/items/:id
     // Retrieves full details for a specific media item (Plex-like Media Details page)
     fastify.get('/api/media/items/:id', async (request, reply) => {
         const user = request.user;
         const { id } = request.params;
         try {
+            if (id.startsWith('external_')) {
+                const parts = id.split('_');
+                const extType = parts[1]; // 'movie' or 'show'
+                const tmdbId = parts[2];
+                const type = extType.toLowerCase() === 'show' ? 'Show' : 'Movie';
+                try {
+                    let tmdbData;
+                    if (type === 'Show') {
+                        tmdbData = await tmdb_1.tmdbService.fetchShowById(tmdbId);
+                    }
+                    else {
+                        tmdbData = await tmdb_1.tmdbService.fetchMovieById(tmdbId);
+                    }
+                    if (!tmdbData) {
+                        return reply.code(404).send({ error: 'External media not found' });
+                    }
+                    // Check if this item is in the local watchlist
+                    const watchlistRow = database_1.default.prepare(`SELECT status FROM watchlist WHERE tmdb_id = ?`).get(tmdbId);
+                    const isInWatchlist = !!watchlistRow;
+                    const watchlistStatus = watchlistRow?.status || null;
+                    // Check if we already have it in the library
+                    const localItem = database_1.default.prepare(`SELECT id FROM media_items WHERE tmdb_id = ?`).get(tmdbId);
+                    // Local metadata (if movie already exists in library)
+                    const localMetaRows = localItem
+                        ? database_1.default.prepare(`
+                  SELECT metadata_key, metadata_value
+                  FROM media_metadata
+                  WHERE media_item_id = ?
+                    AND metadata_key IN ('my_rating', 'watch_status', 'playback_progress')
+                `).all(localItem.id)
+                        : [];
+                    const localMeta = {};
+                    for (const row of localMetaRows) {
+                        localMeta[row.metadata_key] = row.metadata_value;
+                    }
+                    // Synced external metadata (for movies not in local library)
+                    const externalState = database_1.default.prepare(`
+              SELECT my_rating, watch_status
+              FROM external_media_state
+              WHERE (tmdb_id = ? AND tmdb_id IS NOT NULL)
+                 OR (imdb_id = ? AND imdb_id IS NOT NULL)
+              ORDER BY updated_at DESC
+              LIMIT 1
+            `).get(tmdbId, tmdbData.external_ids?.imdb_id || tmdbData.imdb_id || null);
+                    // Map credits
+                    const castList = (tmdbData.credits?.cast || []).map((c) => ({
+                        ...c,
+                        profile_path: c.profile_path ? tmdb_1.tmdbService.getImageUrl(c.profile_path, 'w500') : null,
+                    }));
+                    const crewList = (tmdbData.credits?.crew || []).map((c) => ({
+                        ...c,
+                        profile_path: c.profile_path ? tmdb_1.tmdbService.getImageUrl(c.profile_path, 'w500') : null,
+                    }));
+                    const directorItem = crewList.find((c) => c.job === 'Director');
+                    const genresList = (tmdbData.genres || []).map((g) => g.name);
+                    const imdbId = tmdbData.external_ids?.imdb_id || tmdbData.imdb_id || null;
+                    const simklClientId = tmdb_1.tmdbService.getSetting('SIMKL_CLIENT_ID');
+                    const traktApiKey = tmdb_1.tmdbService.getSetting('TRAKT_API_KEY');
+                    let simklRating = null;
+                    let simklVotes = null;
+                    let traktRating = null;
+                    let traktVotes = null;
+                    if (simklClientId && imdbId) {
+                        try {
+                            const simklLookupRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
+                                params: { imdb: imdbId, client_id: simklClientId }
+                            });
+                            const simklLookupData = Array.isArray(simklLookupRes.data)
+                                ? simklLookupRes.data[0]
+                                : simklLookupRes.data;
+                            const simklId = extractSimklId(simklLookupData);
+                            if (simklId) {
+                                const simklRatingsRes = await axios_1.default.get(`https://api.simkl.com/ratings`, {
+                                    params: {
+                                        simkl: simklId,
+                                        fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
+                                        client_id: simklClientId,
+                                    }
+                                });
+                                const parsedSimklRatings = extractSimklRatings(simklRatingsRes.data);
+                                simklRating = parsedSimklRatings.simklRating;
+                                simklVotes = parsedSimklRatings.simklVotes;
+                            }
+                        }
+                        catch (simklErr) {
+                            console.error('[External Media Details] Simkl ratings fetch failed:', simklErr);
+                        }
+                    }
+                    if (traktApiKey && imdbId) {
+                        try {
+                            const mediaType = type === 'Show' ? 'show' : 'movie';
+                            const parsedTraktRatings = await fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType);
+                            traktRating = parsedTraktRatings.traktRating;
+                            traktVotes = parsedTraktRatings.traktVotes;
+                        }
+                        catch (traktErr) {
+                            console.error('[External Media Details] Trakt ratings fetch failed:', traktErr);
+                        }
+                    }
+                    const mergedMyRating = localMeta.my_rating ?? externalState?.my_rating ?? '0';
+                    const mergedWatchStatus = localMeta.watch_status ?? externalState?.watch_status ?? 'unwatched';
+                    const mergedProgress = localMeta.playback_progress ?? '0';
+                    const metadata = {
+                        tagline: tmdbData.tagline || '',
+                        keywords: (tmdbData.keywords?.keywords || tmdbData.keywords?.results || []).map((k) => k.name),
+                        production_companies: (tmdbData.production_companies || []).map((c) => ({
+                            id: c.id,
+                            name: c.name,
+                            logo_path: c.logo_path ? tmdb_1.tmdbService.getImageUrl(c.logo_path, 'w500') : null,
+                            origin_country: c.origin_country || null
+                        })),
+                        production_countries: (tmdbData.production_countries || []),
+                        director: directorItem?.name || '',
+                        writer: crewList.find((c) => c.department === 'Writing')?.name || '',
+                        cast: castList,
+                        crew: crewList,
+                        logo_path: tmdbData.logo_path ? tmdb_1.tmdbService.getImageUrl(tmdbData.logo_path, 'w500') : null,
+                        trailer_url: tmdbData.trailer_url || '',
+                        ratings: {
+                            tmdb: tmdbData.vote_average ?? null,
+                            tmdb_votes: tmdbData.vote_count ?? null,
+                            simkl: simklRating,
+                            simkl_votes: simklVotes,
+                            trakt: traktRating,
+                            trakt_votes: traktVotes,
+                        },
+                        imdb_rating: tmdbData.vote_average ? tmdbData.vote_average.toFixed(1) : 'N/A',
+                        simkl_rating: simklRating ?? 'N/A',
+                        simkl_votes: simklVotes,
+                        trakt_rating: traktRating ?? 'N/A',
+                        trakt_votes: traktVotes,
+                        my_rating: mergedMyRating,
+                        watch_status: mergedWatchStatus,
+                        playback_progress: mergedProgress,
+                        'watch/providers': tmdbData['watch/providers'] || null,
+                    };
+                    return reply.send({
+                        id: id,
+                        title: tmdbData.title || tmdbData.name || 'Unknown',
+                        type: type,
+                        plot: tmdbData.overview || '',
+                        year: tmdbData.release_date
+                            ? parseInt(tmdbData.release_date.substring(0, 4), 10)
+                            : (tmdbData.first_air_date ? parseInt(tmdbData.first_air_date.substring(0, 4), 10) : null),
+                        genre: genresList.join(', ') || type,
+                        poster_path: tmdbData.poster_path ? tmdb_1.tmdbService.getImageUrl(tmdbData.poster_path, 'w500') : null,
+                        fanart_path: tmdbData.backdrop_path ? tmdb_1.tmdbService.getImageUrl(tmdbData.backdrop_path, 'original') : null,
+                        tmdb_id: tmdbId,
+                        imdb_id: imdbId,
+                        collection_name: tmdbData.belongs_to_collection?.name || null,
+                        collection_id: tmdbData.belongs_to_collection?.id?.toString() || null,
+                        director: directorItem?.name || null,
+                        original_title: tmdbData.original_title || tmdbData.original_name || null,
+                        file_path: null, // Signals not in library
+                        added_at: new Date().toISOString(),
+                        is_in_watchlist: isInWatchlist,
+                        watchlist_status: watchlistStatus,
+                        local_id: localItem?.id || null,
+                        metadata: metadata,
+                        versions: []
+                    });
+                }
+                catch (error) {
+                    request.log.error(error);
+                    return reply.code(500).send({ error: 'Failed to fetch external media details', details: error.message });
+                }
+            }
             // Fetch base media item
             const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
             if (!movie) {
@@ -540,11 +825,28 @@ async function mediaRoutes(fastify) {
                 file_path: movie.file_path,
                 added_at: movie.added_at,
                 metadata: metadata, // includes 'cast', 'ratings' etc
-                versions: [{
-                        id: movie.id,
-                        file_path: movie.file_path,
-                        resolution: metadata.resolution || '1080p'
-                    }]
+                versions: (() => {
+                    try {
+                        const sameItems = movie.tmdb_id
+                            ? database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE tmdb_id = ?`).all(movie.tmdb_id)
+                            : database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE title = ?`).all(movie.title);
+                        return sameItems.map((item) => {
+                            const resRow = database_1.default.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'resolution'`).get(item.id);
+                            return {
+                                id: item.id,
+                                file_path: item.file_path,
+                                resolution: resRow?.metadata_value || '1080p'
+                            };
+                        });
+                    }
+                    catch (e) {
+                        return [{
+                                id: movie.id,
+                                file_path: movie.file_path,
+                                resolution: metadata.resolution || '1080p'
+                            }];
+                    }
+                })()
             };
         }
         catch (error) {
@@ -617,16 +919,38 @@ async function mediaRoutes(fastify) {
                 params: { api_key: apiKeyRow.value, language: prefLang }
             });
             const person = personRes.data;
+            let biography = person.biography;
+            if ((!biography || biography.trim() === '') && prefLang !== 'en-US') {
+                try {
+                    const enPersonRes = await axios_1.default.get(`https://api.themoviedb.org/3/person/${id}`, {
+                        params: { api_key: apiKeyRow.value, language: 'en-US' }
+                    });
+                    if (enPersonRes.data && enPersonRes.data.biography) {
+                        biography = enPersonRes.data.biography;
+                    }
+                }
+                catch (e) {
+                    console.error('Failed to fetch fallback en-US biography', e);
+                }
+            }
             // 2. Fetch movie credits
             const creditsRes = await axios_1.default.get(`https://api.themoviedb.org/3/person/${id}/movie_credits`, {
                 params: { api_key: apiKeyRow.value, language: prefLang }
             });
             const castCredits = creditsRes.data.cast || [];
             const crewCredits = creditsRes.data.crew || [];
-            // Find all directed movies
-            const directedMovies = crewCredits.filter((c) => c.job === 'Director');
-            // 3. Match against local library movies!
-            const localMovies = database_1.default.prepare(`SELECT id, title, year, tmdb_id, poster_path FROM media_items WHERE type = 'Movie'`).all();
+            // 3. Match against local library movies and watchlist!
+            const localMovies = database_1.default.prepare(`
+          SELECT mi.id, mi.title, mi.year, mi.tmdb_id, mi.poster_path,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'watch_status') as watch_status,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'playback_progress') as playback_progress,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'duration') as duration,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'runtime') as runtime
+          FROM media_items mi
+          WHERE mi.type = 'Movie'
+        `).all();
+            const watchlistRows = database_1.default.prepare(`SELECT tmdb_id FROM watchlist`).all();
+            const watchlistTmdbIds = new Set(watchlistRows.map(r => r.tmdb_id.toString()));
             const matchLocal = (tmdbId, title) => {
                 return localMovies.find(m => (m.tmdb_id && tmdbId && m.tmdb_id.toString() === tmdbId.toString()) || m.title.toLowerCase() === title.toLowerCase());
             };
@@ -639,25 +963,44 @@ async function mediaRoutes(fastify) {
                     release_date: c.release_date,
                     year: c.release_date ? parseInt(c.release_date.substring(0, 4), 10) : null,
                     poster_path: c.poster_path ? `https://image.tmdb.org/t/p/w500${c.poster_path}` : null,
-                    local_id: localMatch ? localMatch.id : null
+                    popularity: c.popularity || 0.0,
+                    vote_average: c.vote_average || 0.0,
+                    vote_count: c.vote_count || 0,
+                    overview: c.overview || '',
+                    local_id: localMatch ? localMatch.id : null,
+                    watch_status: localMatch ? localMatch.watch_status : null,
+                    playback_progress: localMatch ? localMatch.playback_progress : null,
+                    duration: localMatch ? localMatch.duration : null,
+                    runtime: localMatch ? localMatch.runtime : null,
+                    is_in_watchlist: watchlistTmdbIds.has(c.id.toString()),
                 };
             }).sort((a, b) => (b.year || 0) - (a.year || 0));
-            const mappedCrew = directedMovies.map((c) => {
+            const mappedCrew = crewCredits.map((c) => {
                 const localMatch = matchLocal(c.id, c.title);
                 return {
                     id: c.id,
                     title: c.title,
                     job: c.job,
+                    department: c.department || '',
                     release_date: c.release_date,
                     year: c.release_date ? parseInt(c.release_date.substring(0, 4), 10) : null,
                     poster_path: c.poster_path ? `https://image.tmdb.org/t/p/w500${c.poster_path}` : null,
-                    local_id: localMatch ? localMatch.id : null
+                    popularity: c.popularity || 0.0,
+                    vote_average: c.vote_average || 0.0,
+                    vote_count: c.vote_count || 0,
+                    overview: c.overview || '',
+                    local_id: localMatch ? localMatch.id : null,
+                    watch_status: localMatch ? localMatch.watch_status : null,
+                    playback_progress: localMatch ? localMatch.playback_progress : null,
+                    duration: localMatch ? localMatch.duration : null,
+                    runtime: localMatch ? localMatch.runtime : null,
+                    is_in_watchlist: watchlistTmdbIds.has(c.id.toString()),
                 };
             }).sort((a, b) => (b.year || 0) - (a.year || 0));
             return reply.send({
                 id: person.id,
                 name: person.name,
-                biography: person.biography,
+                biography: biography,
                 birthday: person.birthday,
                 deathday: person.deathday,
                 place_of_birth: person.place_of_birth,
@@ -701,7 +1044,7 @@ async function mediaRoutes(fastify) {
             database_1.default.prepare(`
           DELETE FROM media_metadata 
           WHERE media_item_id = ? 
-          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress', 'duration')
         `).run(id);
             const movieItem = database_1.default.prepare(`SELECT file_path FROM media_items WHERE id = ?`).get(id);
             if (movieItem && movieItem.file_path) {
@@ -961,7 +1304,7 @@ async function mediaRoutes(fastify) {
             database_1.default.prepare(`
           DELETE FROM media_metadata 
           WHERE media_item_id = ? 
-          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress')
+          AND metadata_key NOT IN ('my_rating', 'watch_status', 'playback_progress', 'duration')
         `).run(id);
             return reply.send({ success: true });
         }
@@ -993,14 +1336,29 @@ async function mediaRoutes(fastify) {
         const { collectionId } = request.params;
         try {
             const items = database_1.default.prepare(`
-          SELECT id, title, year, poster_path, collection_name, collection_id
+          SELECT id, title, year, poster_path, collection_name, collection_id, type, file_path
           FROM media_items
           WHERE collection_id = ?
           ORDER BY COALESCE(year, 9999) ASC, title ASC
         `).all(collectionId);
+            const itemsWithMetadata = items.map(item => {
+                const metadataRows = database_1.default.prepare(`
+            SELECT metadata_key, metadata_value 
+            FROM media_metadata 
+            WHERE media_item_id = ?
+          `).all(item.id);
+                const metadata = {};
+                metadataRows.forEach(row => {
+                    metadata[row.metadata_key] = row.metadata_value;
+                });
+                return {
+                    ...item,
+                    metadata,
+                };
+            });
             return reply.send({
                 collectionId,
-                items,
+                items: itemsWithMetadata,
             });
         }
         catch (error) {
@@ -1115,6 +1473,49 @@ async function mediaRoutes(fastify) {
         }
         catch (err) {
             return reply.code(500).send({ error: 'Failed to add item to playlist', details: err.message });
+        }
+    });
+    // ─────────────────────────────────────────────────────────────
+    // Watchlist & Download Request Routes
+    // ─────────────────────────────────────────────────────────────
+    // GET /api/watchlist — Retrieve all watchlist items
+    fastify.get('/api/watchlist', async (request, reply) => {
+        try {
+            const items = database_1.default.prepare(`SELECT * FROM watchlist ORDER BY added_at DESC`).all();
+            return reply.send(items);
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to fetch watchlist', details: err.message });
+        }
+    });
+    // POST /api/watchlist — Add an item to the watchlist
+    fastify.post('/api/watchlist', async (request, reply) => {
+        const { tmdbId, title, type, year, posterPath } = request.body;
+        if (!tmdbId || !title || !type) {
+            return reply.code(400).send({ error: 'tmdbId, title, and type are required' });
+        }
+        try {
+            const id = `wl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            database_1.default.prepare(`
+          INSERT INTO watchlist (id, tmdb_id, title, type, year, poster_path, status)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending')
+          ON CONFLICT(tmdb_id) DO UPDATE SET status='pending'
+        `).run(id, tmdbId.toString(), title, type, year ?? null, posterPath ?? null);
+            return reply.status(201).send({ id, tmdb_id: tmdbId, title, type, year, poster_path: posterPath, status: 'pending' });
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to add item to watchlist', details: err.message });
+        }
+    });
+    // DELETE /api/watchlist/:tmdbId — Remove an item from the watchlist
+    fastify.delete('/api/watchlist/:tmdbId', async (request, reply) => {
+        const { tmdbId } = request.params;
+        try {
+            database_1.default.prepare(`DELETE FROM watchlist WHERE tmdb_id = ?`).run(tmdbId.toString());
+            return reply.send({ success: true, message: 'Removed from watchlist' });
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to remove from watchlist', details: err.message });
         }
     });
 }

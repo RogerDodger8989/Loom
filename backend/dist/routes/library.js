@@ -8,6 +8,7 @@ const scanner_1 = require("../services/scanner");
 const child_process_1 = require("child_process");
 const database_1 = __importDefault(require("../config/database"));
 const crypto_1 = __importDefault(require("crypto"));
+const rating_sync_1 = require("../services/rating_sync");
 let isScanning = false;
 let lastScanResult = null;
 async function libraryRoutes(fastify) {
@@ -48,6 +49,10 @@ async function libraryRoutes(fastify) {
                 itemsUpdated: result.updated
             };
             console.log(`[Library] Background scan finished successfully. Added: ${result.added}, Updated: ${result.updated}`);
+            // Trigger external sync immediately so new items can get ratings/watch statuses matched
+            (0, rating_sync_1.syncAllExternalData)().catch(e => {
+                console.error('[Library Scan Sync] Failed to run syncAllExternalData:', e);
+            });
         })
             .catch((err) => {
             isScanning = false;

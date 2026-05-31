@@ -85,6 +85,10 @@ export declare class TMDBService {
      */
     fetchMovieById(id: string): Promise<any>;
     /**
+     * Fetch full show details directly by TMDB ID
+     */
+    fetchShowById(id: string): Promise<any>;
+    /**
      * Fetch a compact awards summary from the public TMDB movie awards page.
      * The TMDB API does not return awards, but the movie page exposes a summary.
      */

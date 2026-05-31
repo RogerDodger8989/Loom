@@ -607,6 +607,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
     final year = credit['year'] != null ? '(${credit['year']})' : '';
     final role = credit['department'] == 'Director' ? (credit['job'] ?? 'Regissör') : (credit['character'] ?? '');
     final localId = credit['local_id']?.toString();
+    final tmdbId = credit['id']?.toString();
     final poster = credit['poster_path'];
 
     return Container(
@@ -619,15 +620,21 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
       child: Row(
         children: [
           // Small Poster
-          Container(
-            width: 40,
-            height: 60,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(6),
-              color: Colors.white10,
-              image: poster != null ? DecorationImage(image: NetworkImage(poster), fit: BoxFit.cover) : null,
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => _handleOnCardTap(localId, title, tmdbId),
+              child: Container(
+                width: 40,
+                height: 60,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6),
+                  color: Colors.white10,
+                  image: poster != null ? DecorationImage(image: NetworkImage(poster), fit: BoxFit.cover) : null,
+                ),
+                child: poster == null ? const Icon(Icons.movie, color: Colors.white24, size: 20) : null,
+              ),
             ),
-            child: poster == null ? const Icon(Icons.movie, color: Colors.white24, size: 20) : null,
           ),
           const SizedBox(width: 16),
 
@@ -636,11 +643,17 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '$title $year',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () => _handleOnCardTap(localId, title, tmdbId),
+                    child: Text(
+                      '$title $year',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -662,11 +675,16 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
               (credit['vote_average'] as double).toStringAsFixed(1),
               style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 14),
             ),
+            const SizedBox(width: 6),
+            const Text(
+              'TMDB',
+              style: TextStyle(color: Colors.white54, fontWeight: FontWeight.w600, fontSize: 11),
+            ),
             const SizedBox(width: 24),
           ],
 
           // Play locally button / indicator
-          _buildPlayControl(localId),
+          _buildPlayControl(localId, credit['id']?.toString(), title),
         ],
       ),
     );
@@ -954,13 +972,13 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
           const SizedBox(width: 20),
 
           // Play Locally Button
-          _buildPlayControl(localId),
+          _buildPlayControl(localId, credit['id']?.toString(), title),
         ],
       ),
     );
   }
 
-  Widget _buildPlayControl(String? localId) {
+  Widget _buildPlayControl(String? localId, String? tmdbId, String title) {
     if (localId != null) {
       return ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
@@ -988,57 +1006,32 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
         label: const Text('Spela', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
       );
     } else {
-      return OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(
-          side: const BorderSide(color: Colors.white12),
+      return ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF281E46),
+          foregroundColor: const Color(0xFFD4C7FF),
+          side: BorderSide(color: const Color(0xFF8A5BFF).withValues(alpha: 0.25)),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         ),
-        onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Bevakningslista kommer snart! Synkroniseras automatiskt mot Radarr/Sonarr.'),
-              backgroundColor: Color(0xFF8A5BFF),
-            ),
-          );
-        },
-        icon: const Icon(Icons.add, color: Colors.white30, size: 16),
-        label: const Text('Watchlist', style: TextStyle(color: Colors.white30, fontSize: 13)),
+        onPressed: () => _handleOnCardTap(localId, title, tmdbId),
+        icon: const Icon(Icons.info_outline, size: 16),
+        label: const Text('Lägg till Watchlist', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
       );
     }
   }
 
   void _handleOnCardTap(String? localId, String title, String? tmdbId) {
-    if (localId != null) {
-      if (widget.onMediaSelected != null) {
-        widget.onMediaSelected!(localId);
-      } else {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => MediaDetailsScreen(
-              mediaId: localId,
-              apiService: widget.apiService,
-            ),
-          ),
-        );
-      }
+    final String targetId = localId ?? 'external_movie_$tmdbId';
+    if (widget.onMediaSelected != null) {
+      widget.onMediaSelected!(targetId);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('"$title" finns inte i ditt bibliotek än.'),
-          backgroundColor: const Color(0xFF15102A),
-          action: SnackBarAction(
-            label: 'Watchlist',
-            textColor: const Color(0xFF8A5BFF),
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Lagt till i Watchlist!'),
-                  backgroundColor: Color(0xFF8A5BFF),
-                ),
-              );
-            },
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => MediaDetailsScreen(
+            mediaId: targetId,
+            apiService: widget.apiService,
           ),
         ),
       );

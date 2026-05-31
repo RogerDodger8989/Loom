@@ -478,6 +478,188 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       try {
+        if (id.startsWith('external_')) {
+          const parts = id.split('_');
+          const extType = parts[1]; // 'movie' or 'show'
+          const tmdbId = parts[2];
+          const type = extType.toLowerCase() === 'show' ? 'Show' : 'Movie';
+
+          try {
+            let tmdbData: any;
+            if (type === 'Show') {
+              tmdbData = await tmdbService.fetchShowById(tmdbId);
+            } else {
+              tmdbData = await tmdbService.fetchMovieById(tmdbId);
+            }
+
+            if (!tmdbData) {
+              return reply.code(404).send({ error: 'External media not found' });
+            }
+
+            // Check if this item is in the local watchlist
+            const watchlistRow = db.prepare(`SELECT status FROM watchlist WHERE tmdb_id = ?`).get(tmdbId) as any;
+            const isInWatchlist = !!watchlistRow;
+            const watchlistStatus = watchlistRow?.status || null;
+
+            // Check if we already have it in the library
+            const localItem = db.prepare(`SELECT id FROM media_items WHERE tmdb_id = ?`).get(tmdbId) as any;
+
+            // Local metadata (if movie already exists in library)
+            const localMetaRows = localItem
+              ? db.prepare(`
+                  SELECT metadata_key, metadata_value
+                  FROM media_metadata
+                  WHERE media_item_id = ?
+                    AND metadata_key IN ('my_rating', 'watch_status', 'playback_progress')
+                `).all(localItem.id) as Array<{ metadata_key: string; metadata_value: string }>
+              : [];
+            const localMeta: Record<string, string> = {};
+            for (const row of localMetaRows) {
+              localMeta[row.metadata_key] = row.metadata_value;
+            }
+
+            // Synced external metadata (for movies not in local library)
+            const externalState = db.prepare(`
+              SELECT my_rating, watch_status
+              FROM external_media_state
+              WHERE (tmdb_id = ? AND tmdb_id IS NOT NULL)
+                 OR (imdb_id = ? AND imdb_id IS NOT NULL)
+              ORDER BY updated_at DESC
+              LIMIT 1
+            `).get(
+              tmdbId,
+              tmdbData.external_ids?.imdb_id || tmdbData.imdb_id || null,
+            ) as { my_rating?: string | null; watch_status?: string | null } | undefined;
+
+            // Map credits
+            const castList = (tmdbData.credits?.cast || []).map((c: any) => ({
+              ...c,
+              profile_path: c.profile_path ? tmdbService.getImageUrl(c.profile_path, 'w500') : null,
+            }));
+            const crewList = (tmdbData.credits?.crew || []).map((c: any) => ({
+              ...c,
+              profile_path: c.profile_path ? tmdbService.getImageUrl(c.profile_path, 'w500') : null,
+            }));
+            const directorItem = crewList.find((c: any) => c.job === 'Director');
+            const genresList = (tmdbData.genres || []).map((g: any) => g.name);
+            const imdbId = tmdbData.external_ids?.imdb_id || tmdbData.imdb_id || null;
+
+            const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
+            const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
+
+            let simklRating: string | null = null;
+            let simklVotes: string | null = null;
+            let traktRating: string | null = null;
+            let traktVotes: string | null = null;
+
+            if (simklClientId && imdbId) {
+              try {
+                const simklLookupRes = await axios.get(`https://api.simkl.com/search/id`, {
+                  params: { imdb: imdbId, client_id: simklClientId }
+                });
+                const simklLookupData = Array.isArray(simklLookupRes.data)
+                  ? simklLookupRes.data[0]
+                  : simklLookupRes.data;
+                const simklId = extractSimklId(simklLookupData);
+
+                if (simklId) {
+                  const simklRatingsRes = await axios.get(`https://api.simkl.com/ratings`, {
+                    params: {
+                      simkl: simklId,
+                      fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
+                      client_id: simklClientId,
+                    }
+                  });
+                  const parsedSimklRatings = extractSimklRatings(simklRatingsRes.data);
+                  simklRating = parsedSimklRatings.simklRating;
+                  simklVotes = parsedSimklRatings.simklVotes;
+                }
+              } catch (simklErr) {
+                console.error('[External Media Details] Simkl ratings fetch failed:', simklErr);
+              }
+            }
+
+            if (traktApiKey && imdbId) {
+              try {
+                const mediaType = type === 'Show' ? 'show' : 'movie';
+                const parsedTraktRatings = await fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType);
+                traktRating = parsedTraktRatings.traktRating;
+                traktVotes = parsedTraktRatings.traktVotes;
+              } catch (traktErr) {
+                console.error('[External Media Details] Trakt ratings fetch failed:', traktErr);
+              }
+            }
+
+            const mergedMyRating = localMeta.my_rating ?? externalState?.my_rating ?? '0';
+            const mergedWatchStatus = localMeta.watch_status ?? externalState?.watch_status ?? 'unwatched';
+            const mergedProgress = localMeta.playback_progress ?? '0';
+
+            const metadata: any = {
+              tagline: tmdbData.tagline || '',
+              keywords: (tmdbData.keywords?.keywords || tmdbData.keywords?.results || []).map((k: any) => k.name),
+              production_companies: (tmdbData.production_companies || []).map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                logo_path: c.logo_path ? tmdbService.getImageUrl(c.logo_path, 'w500') : null,
+                origin_country: c.origin_country || null
+              })),
+              production_countries: (tmdbData.production_countries || []),
+              director: directorItem?.name || '',
+              writer: crewList.find((c: any) => c.department === 'Writing')?.name || '',
+              cast: castList,
+              crew: crewList,
+              logo_path: tmdbData.logo_path ? tmdbService.getImageUrl(tmdbData.logo_path, 'w500') : null,
+              trailer_url: tmdbData.trailer_url || '',
+              ratings: {
+                tmdb: tmdbData.vote_average ?? null,
+                tmdb_votes: tmdbData.vote_count ?? null,
+                simkl: simklRating,
+                simkl_votes: simklVotes,
+                trakt: traktRating,
+                trakt_votes: traktVotes,
+              },
+              imdb_rating: tmdbData.vote_average ? tmdbData.vote_average.toFixed(1) : 'N/A',
+              simkl_rating: simklRating ?? 'N/A',
+              simkl_votes: simklVotes,
+              trakt_rating: traktRating ?? 'N/A',
+              trakt_votes: traktVotes,
+              my_rating: mergedMyRating,
+              watch_status: mergedWatchStatus,
+              playback_progress: mergedProgress,
+              'watch/providers': tmdbData['watch/providers'] || null,
+            };
+
+            return reply.send({
+              id: id,
+              title: tmdbData.title || tmdbData.name || 'Unknown',
+              type: type,
+              plot: tmdbData.overview || '',
+              year: tmdbData.release_date
+                ? parseInt(tmdbData.release_date.substring(0, 4), 10)
+                : (tmdbData.first_air_date ? parseInt(tmdbData.first_air_date.substring(0, 4), 10) : null),
+              genre: genresList.join(', ') || type,
+              poster_path: tmdbData.poster_path ? tmdbService.getImageUrl(tmdbData.poster_path, 'w500') : null,
+              fanart_path: tmdbData.backdrop_path ? tmdbService.getImageUrl(tmdbData.backdrop_path, 'original') : null,
+              tmdb_id: tmdbId,
+              imdb_id: imdbId,
+              collection_name: tmdbData.belongs_to_collection?.name || null,
+              collection_id: tmdbData.belongs_to_collection?.id?.toString() || null,
+              director: directorItem?.name || null,
+              original_title: tmdbData.original_title || tmdbData.original_name || null,
+              file_path: null, // Signals not in library
+              added_at: new Date().toISOString(),
+              is_in_watchlist: isInWatchlist,
+              watchlist_status: watchlistStatus,
+              local_id: localItem?.id || null,
+              metadata: metadata,
+              versions: []
+            });
+          } catch (error: any) {
+            request.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch external media details', details: error.message });
+          }
+        }
+
         // Fetch base media item
         const movie = db.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id) as any;
         if (!movie) {
@@ -870,7 +1052,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         const castCredits = creditsRes.data.cast || [];
         const crewCredits = creditsRes.data.crew || [];
 
-        // 3. Match against local library movies!
+        // 3. Match against local library movies and watchlist!
         const localMovies = db.prepare(`
           SELECT mi.id, mi.title, mi.year, mi.tmdb_id, mi.poster_path,
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'watch_status') as watch_status,
@@ -880,6 +1062,9 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           FROM media_items mi
           WHERE mi.type = 'Movie'
         `).all() as any[];
+
+        const watchlistRows = db.prepare(`SELECT tmdb_id FROM watchlist`).all() as Array<{ tmdb_id: string }>;
+        const watchlistTmdbIds = new Set(watchlistRows.map(r => r.tmdb_id.toString()));
 
         const matchLocal = (tmdbId: any, title: string) => {
           return localMovies.find(m => (m.tmdb_id && tmdbId && m.tmdb_id.toString() === tmdbId.toString()) || m.title.toLowerCase() === title.toLowerCase());
@@ -903,6 +1088,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             playback_progress: localMatch ? localMatch.playback_progress : null,
             duration: localMatch ? localMatch.duration : null,
             runtime: localMatch ? localMatch.runtime : null,
+            is_in_watchlist: watchlistTmdbIds.has(c.id.toString()),
           };
         }).sort((a: any, b: any) => (b.year || 0) - (a.year || 0));
 
@@ -925,6 +1111,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             playback_progress: localMatch ? localMatch.playback_progress : null,
             duration: localMatch ? localMatch.duration : null,
             runtime: localMatch ? localMatch.runtime : null,
+            is_in_watchlist: watchlistTmdbIds.has(c.id.toString()),
           };
         }).sort((a: any, b: any) => (b.year || 0) - (a.year || 0));
 
@@ -1484,6 +1671,60 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         return reply.status(201).send({ id: itemId, playlist_id: id, media_item_id: mediaItemId });
       } catch (err: any) {
         return reply.code(500).send({ error: 'Failed to add item to playlist', details: err.message });
+      }
+    }
+  );
+
+  // ─────────────────────────────────────────────────────────────
+  // Watchlist & Download Request Routes
+  // ─────────────────────────────────────────────────────────────
+
+  // GET /api/watchlist — Retrieve all watchlist items
+  fastify.get(
+    '/api/watchlist',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const items = db.prepare(`SELECT * FROM watchlist ORDER BY added_at DESC`).all() as any[];
+        return reply.send(items);
+      } catch (err: any) {
+        return reply.code(500).send({ error: 'Failed to fetch watchlist', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/watchlist — Add an item to the watchlist
+  fastify.post(
+    '/api/watchlist',
+    async (request: FastifyRequest<{ Body: { tmdbId: string; title: string; type: string; year?: number; posterPath?: string } }>, reply: FastifyReply) => {
+      const { tmdbId, title, type, year, posterPath } = request.body;
+      if (!tmdbId || !title || !type) {
+        return reply.code(400).send({ error: 'tmdbId, title, and type are required' });
+      }
+      try {
+        const id = `wl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        db.prepare(`
+          INSERT INTO watchlist (id, tmdb_id, title, type, year, poster_path, status)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending')
+          ON CONFLICT(tmdb_id) DO UPDATE SET status='pending'
+        `).run(id, tmdbId.toString(), title, type, year ?? null, posterPath ?? null);
+        
+        return reply.status(201).send({ id, tmdb_id: tmdbId, title, type, year, poster_path: posterPath, status: 'pending' });
+      } catch (err: any) {
+        return reply.code(500).send({ error: 'Failed to add item to watchlist', details: err.message });
+      }
+    }
+  );
+
+  // DELETE /api/watchlist/:tmdbId — Remove an item from the watchlist
+  fastify.delete(
+    '/api/watchlist/:tmdbId',
+    async (request: FastifyRequest<{ Params: { tmdbId: string } }>, reply: FastifyReply) => {
+      const { tmdbId } = request.params;
+      try {
+        db.prepare(`DELETE FROM watchlist WHERE tmdb_id = ?`).run(tmdbId.toString());
+        return reply.send({ success: true, message: 'Removed from watchlist' });
+      } catch (err: any) {
+        return reply.code(500).send({ error: 'Failed to remove from watchlist', details: err.message });
       }
     }
   );

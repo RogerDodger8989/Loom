@@ -42,6 +42,44 @@ function hasExternalId(media: MediaLike): boolean {
   return Boolean(media.imdb_id || media.tmdb_id);
 }
 
+function upsertExternalState(args: {
+  tmdbId?: string | null;
+  imdbId?: string | null;
+  myRating?: string | null;
+  watchStatus?: 'watched' | 'unwatched' | null;
+  source: string;
+}) {
+  const tmdbId = args.tmdbId?.toString().trim() || '';
+  const imdbId = args.imdbId?.toString().trim() || '';
+  if (!tmdbId && !imdbId) return;
+
+  const existing = db.prepare(`
+    SELECT tmdb_id FROM external_media_state
+    WHERE (tmdb_id = ? AND tmdb_id IS NOT NULL)
+       OR (imdb_id = ? AND imdb_id IS NOT NULL)
+    LIMIT 1
+  `).get(tmdbId || null, imdbId || null) as { tmdb_id?: string } | undefined;
+
+  const resolvedTmdbId = existing?.tmdb_id || tmdbId || imdbId;
+
+  db.prepare(`
+    INSERT INTO external_media_state (tmdb_id, imdb_id, my_rating, watch_status, source, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(tmdb_id) DO UPDATE SET
+      imdb_id = COALESCE(excluded.imdb_id, external_media_state.imdb_id),
+      my_rating = COALESCE(excluded.my_rating, external_media_state.my_rating),
+      watch_status = COALESCE(excluded.watch_status, external_media_state.watch_status),
+      source = excluded.source,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    resolvedTmdbId,
+    imdbId || null,
+    args.myRating ?? null,
+    args.watchStatus ?? null,
+    args.source
+  );
+}
+
 async function syncTrakt(media: MediaLike, rating: number) {
   if (tmdbService.getSetting('sync_trakt_ratings') === 'false') {
     console.log('[Sync] Trakt ratings sync disabled by user settings.');
@@ -270,6 +308,13 @@ export async function importRatingsFromTrakt(): Promise<number> {
 
       if (!imdbId && !tmdbId) continue;
 
+      upsertExternalState({
+        tmdbId,
+        imdbId,
+        myRating: ratingValue.toString(),
+        source: 'trakt',
+      });
+
       // Find matched film in Loom SQLite
       const movie = db.prepare(`
         SELECT id FROM media_items 
@@ -335,6 +380,13 @@ export async function importRatingsFromSimkl(): Promise<number> {
 
       if (!imdbId && !tmdbId) continue;
 
+      upsertExternalState({
+        tmdbId: tmdbId?.toString() ?? null,
+        imdbId,
+        myRating: ratingValue.toString(),
+        source: 'simkl',
+      });
+
       // Find matched film in Loom SQLite
       const movie = db.prepare(`
         SELECT id FROM media_items 
@@ -398,6 +450,13 @@ export async function importWatchHistoryFromTrakt(): Promise<number> {
       const tmdbId = entry.movie?.ids?.tmdb?.toString();
 
       if (!imdbId && !tmdbId) continue;
+
+      upsertExternalState({
+        tmdbId,
+        imdbId,
+        watchStatus: 'watched',
+        source: 'trakt',
+      });
 
       const movie = db.prepare(`
         SELECT id FROM media_items 
@@ -486,6 +545,13 @@ export async function importWatchHistoryFromSimkl(): Promise<number> {
       const tmdbId = entry.movie?.ids?.tmdb;
 
       if (!imdbId && !tmdbId) continue;
+
+      upsertExternalState({
+        tmdbId: tmdbId?.toString() ?? null,
+        imdbId,
+        watchStatus: 'watched',
+        source: 'simkl',
+      });
 
       const movie = db.prepare(`
         SELECT id FROM media_items 

@@ -20,9 +20,15 @@ class TMDBService {
     getSetting(key) {
         try {
             const row = database_1.default.prepare("SELECT value FROM system_settings WHERE key = ?").get(key);
-            return row ? row.value : '';
+            if (row)
+                return row.value;
+            if (key.startsWith('sync_'))
+                return 'true';
+            return '';
         }
         catch (e) {
+            if (key.startsWith('sync_'))
+                return 'true';
             return '';
         }
     }
@@ -282,6 +288,89 @@ class TMDBService {
         }
         catch (e) {
             console.error(`[TMDB] Failed to fetch movie by ID ${id}:`, e);
+            return null;
+        }
+    }
+    /**
+     * Fetch full show details directly by TMDB ID
+     */
+    async fetchShowById(id) {
+        const apiKey = this.getApiKey();
+        if (!apiKey)
+            return null;
+        const prefLang = this.getSetting('METADATA_LANGUAGE') || 'sv-SE';
+        const fallbackLang = this.getSetting('METADATA_FALLBACK_LANGUAGE') || 'en-US';
+        try {
+            const detailResponse = await axios_1.default.get(`${TMDB_BASE_URL}/tv/${id}`, {
+                params: {
+                    api_key: apiKey,
+                    language: prefLang,
+                    append_to_response: 'credits,watch/providers,videos,keywords,similar,external_ids,images',
+                    include_image_language: 'sv,en,null'
+                }
+            });
+            let showData = detailResponse.data;
+            // Extract logo_path for ClearLOGO support from images.logos
+            if (showData.images && showData.images.logos && showData.images.logos.length > 0) {
+                const preferredLogo = showData.images.logos.find((l) => l.iso_639_1 === 'sv' || l.iso_639_1 === 'en') || showData.images.logos[0];
+                if (preferredLogo) {
+                    showData.logo_path = preferredLogo.file_path;
+                }
+            }
+            // Extract official YouTube trailer URL
+            if (showData.videos && showData.videos.results && showData.videos.results.length > 0) {
+                const officialTrailer = showData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+                    || showData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+                    || showData.videos.results.find((v) => v.site === 'YouTube');
+                if (officialTrailer) {
+                    showData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
+                }
+            }
+            // Fallback trailer_url
+            if (!showData.trailer_url && prefLang !== 'en-US') {
+                try {
+                    const videoRes = await axios_1.default.get(`${TMDB_BASE_URL}/tv/${id}/videos`, {
+                        params: { api_key: apiKey, language: 'en-US' }
+                    });
+                    if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
+                        const enTrailer = videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+                            || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+                            || videoRes.data.results.find((v) => v.site === 'YouTube');
+                        if (enTrailer) {
+                            showData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
+                        }
+                    }
+                }
+                catch { }
+            }
+            if ((!showData.overview || showData.overview.trim() === '') && prefLang !== fallbackLang) {
+                try {
+                    const fallbackResponse = await axios_1.default.get(`${TMDB_BASE_URL}/tv/${id}`, {
+                        params: {
+                            api_key: apiKey,
+                            language: fallbackLang,
+                            append_to_response: 'credits,watch/providers,keywords,similar,external_ids,images'
+                        }
+                    });
+                    if (fallbackResponse.data && fallbackResponse.data.overview) {
+                        showData.overview = fallbackResponse.data.overview;
+                        if ((!showData.tagline || showData.tagline.trim() === '') && fallbackResponse.data.tagline) {
+                            showData.tagline = fallbackResponse.data.tagline;
+                        }
+                        if ((!showData.credits || !showData.credits.cast || showData.credits.cast.length === 0) && fallbackResponse.data.credits) {
+                            showData.credits = fallbackResponse.data.credits;
+                        }
+                        if ((!showData.keywords || !showData.keywords.results || showData.keywords.results.length === 0) && fallbackResponse.data.keywords) {
+                            showData.keywords = fallbackResponse.data.keywords;
+                        }
+                    }
+                }
+                catch { }
+            }
+            return showData;
+        }
+        catch (e) {
+            console.error(`[TMDB] Failed to fetch show by ID ${id}:`, e);
             return null;
         }
     }

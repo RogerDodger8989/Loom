@@ -753,5 +753,65 @@ class ApiService {
       throw Exception('Failed to fetch sync status: ${response.body}');
     }
   }
+
+  /// Authenticated: Fetch all watchlist items
+  Future<List<dynamic>> fetchWatchlist() async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/watchlist'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to fetch watchlist: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Add item to watchlist
+  Future<Map<String, dynamic>> addToWatchlist({
+    required String tmdbId,
+    required String title,
+    required String type,
+    int? year,
+    String? posterPath,
+  }) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/watchlist'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'tmdbId': tmdbId,
+        'title': title,
+        'type': type,
+        'year': year,
+        'posterPath': posterPath,
+      }),
+    );
+    if (response.statusCode == 201) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to add to watchlist: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Remove item from watchlist
+  Future<void> removeFromWatchlist(String tmdbId) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/watchlist/$tmdbId'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to remove from watchlist: ${response.body}');
+    }
+  }
 }
 

@@ -146,8 +146,9 @@ async function oauthRoutes(fastify) {
             }
             const data = await response.json();
             saveSetting('TRAKT_ACCESS_TOKEN', data.access_token);
-            // Trigger automatic background rating import immediately
+            // Trigger automatic background rating and watch history import immediately
             (0, rating_sync_1.importRatingsFromTrakt)();
+            (0, rating_sync_1.importWatchHistoryFromTrakt)();
             reply.type('text/html');
             return reply.send(renderResponsePage('Trakt ansluten!', 'Loom har nu kopplats till ditt Trakt.tv-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
         }
@@ -218,8 +219,9 @@ async function oauthRoutes(fastify) {
             }
             const data = await response.json();
             saveSetting('SIMKL_ACCESS_TOKEN', data.access_token);
-            // Trigger automatic background rating import immediately
+            // Trigger automatic background rating and watch history import immediately
             (0, rating_sync_1.importRatingsFromSimkl)();
+            (0, rating_sync_1.importWatchHistoryFromSimkl)();
             reply.type('text/html');
             return reply.send(renderResponsePage('Simkl ansluten!', 'Loom har nu kopplats till ditt Simkl-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
         }

@@ -93,6 +93,19 @@ const start = async () => {
     syncAllExternalData().catch(e => {
       console.error('[Startup Sync] Failed to run syncAllExternalData:', e);
     });
+
+    const syncIntervalMinutes = Number.parseInt(process.env.EXTERNAL_SYNC_INTERVAL_MINUTES || '45', 10);
+    const safeIntervalMinutes = Number.isFinite(syncIntervalMinutes) && syncIntervalMinutes > 0
+      ? syncIntervalMinutes
+      : 45;
+
+    setInterval(() => {
+      syncAllExternalData().catch(e => {
+        console.error('[Scheduled Sync] Failed to run syncAllExternalData:', e);
+      });
+    }, safeIntervalMinutes * 60 * 1000);
+
+    console.log(`[Sync] Scheduled external sync every ${safeIntervalMinutes} minutes.`);
   } catch (err) {
     app.log.error(err);
     process.exit(1);

@@ -45,6 +45,8 @@ const library_1 = __importDefault(require("./routes/library"));
 const media_1 = __importDefault(require("./routes/media"));
 const settings_1 = __importDefault(require("./routes/settings"));
 const oauth_1 = __importDefault(require("./routes/oauth"));
+const sync_1 = __importDefault(require("./routes/sync"));
+const rating_sync_1 = require("./services/rating_sync");
 // Load environment variables
 dotenv.config();
 const app = (0, fastify_1.default)({
@@ -86,6 +88,7 @@ app.register(library_1.default);
 app.register(media_1.default);
 app.register(settings_1.default);
 app.register(oauth_1.default);
+app.register(sync_1.default);
 // Global Error Handler
 app.setErrorHandler((error, request, reply) => {
     app.log.error(error);
@@ -112,6 +115,20 @@ const start = async () => {
     Headless Media Server is now online!
     👉 Server listening on http://${HOST}:${PORT}
     `);
+        // Run external ratings and watched history sync in background
+        (0, rating_sync_1.syncAllExternalData)().catch(e => {
+            console.error('[Startup Sync] Failed to run syncAllExternalData:', e);
+        });
+        const syncIntervalMinutes = Number.parseInt(process.env.EXTERNAL_SYNC_INTERVAL_MINUTES || '45', 10);
+        const safeIntervalMinutes = Number.isFinite(syncIntervalMinutes) && syncIntervalMinutes > 0
+            ? syncIntervalMinutes
+            : 45;
+        setInterval(() => {
+            (0, rating_sync_1.syncAllExternalData)().catch(e => {
+                console.error('[Scheduled Sync] Failed to run syncAllExternalData:', e);
+            });
+        }, safeIntervalMinutes * 60 * 1000);
+        console.log(`[Sync] Scheduled external sync every ${safeIntervalMinutes} minutes.`);
     }
     catch (err) {
         app.log.error(err);

@@ -164,6 +164,30 @@ db.exec(`
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
   );
+
+  -- Watchlist för nedladdningar och bevakning
+  CREATE TABLE IF NOT EXISTS watchlist (
+      id TEXT PRIMARY KEY,
+      tmdb_id TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      type TEXT CHECK(type IN ('Movie', 'Show')) NOT NULL,
+      year INTEGER,
+      poster_path TEXT,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      status TEXT CHECK(status IN ('pending', 'requested', 'downloading', 'completed')) DEFAULT 'pending'
+  );
+
+  -- Synkad användarstatus för externa titlar (ej lokalt bibliotek)
+  CREATE TABLE IF NOT EXISTS external_media_state (
+      tmdb_id TEXT PRIMARY KEY,
+      imdb_id TEXT,
+      my_rating TEXT,
+      watch_status TEXT CHECK(watch_status IN ('watched', 'unwatched')),
+      source TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_external_media_state_imdb_id ON external_media_state (imdb_id);
 `);
 console.log('[Database] Database tables initialized successfully.');
 // Seed a default admin user if the table is empty
