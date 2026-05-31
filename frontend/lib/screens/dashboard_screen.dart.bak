@@ -354,139 +354,69 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   void _openHomeLayoutEditor() {
     final editableSections = _cloneHomeSections(_homeSections.isEmpty ? _defaultHomeSections() : _homeSections);
+        try {
+          StreamSubscription<html.ClipboardEvent>? clipboardPasteSubscription;
 
-    showDialog(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, dialogSetState) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF11151D),
-              title: const Text('Redigera hemsektioner', style: TextStyle(color: Colors.white)),
-              content: SizedBox(
-                width: 760,
-                height: 580,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Dra rubrikerna för att ändra ordning och slå av/på synlighet per rubrik.',
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.60), fontSize: 13),
-                    ),
-                    const SizedBox(height: 16),
-                    Expanded(
-                      child: ReorderableListView.builder(
-                        buildDefaultDragHandles: false,
-                        itemCount: editableSections.length,
-                        onReorder: (oldIndex, newIndex) {
-                          dialogSetState(() {
-                            if (newIndex > oldIndex) newIndex -= 1;
-                            final item = editableSections.removeAt(oldIndex);
-                            editableSections.insert(newIndex, item);
-                          });
-                        },
-                        itemBuilder: (context, index) {
-                          final section = editableSections[index];
-                          final isContinueWatching = section['id'] == 'continue_watching';
-                          final isComingSoon = section['comingSoon'] == true;
-                          final daysValue = section['days'] as int?;
+          try {
+            await showDialog<void>(
+              context: context,
+              barrierDismissible: false,
+              builder: (dialogContext) {
+                final dialogId = DateTime.now().microsecondsSinceEpoch;
+                final dropZoneViewTypes = <String, String>{};
+                TextEditingController? activeImageController;
+                String? activeImageKey;
 
-                          return Container(
-                            key: ValueKey(section['id']),
-                            margin: const EdgeInsets.only(bottom: 10),
-                            padding: const EdgeInsets.all(14),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF171C26),
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-                            ),
-                            child: Row(
-                              children: [
-                                ReorderableDragStartListener(
-                                  index: index,
-                                  child: const Padding(
-                                    padding: EdgeInsets.only(right: 10),
-                                    child: Icon(Icons.drag_indicator, color: Colors.white38),
-                                  ),
-                                ),
-                                Checkbox(
-                                  value: section['visible'] != false,
-                                  activeColor: const Color(0xFF8A5BFF),
-                                  onChanged: (value) {
-                                    dialogSetState(() {
-                                      section['visible'] = value == true;
-                                    });
-                                  },
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        section['title']?.toString() ?? '',
-                                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
-                                      ),
-                                      if (isComingSoon)
-                                        Text(
-                                          'Kommer senare',
-                                          style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                                if (isContinueWatching) ...[
-                                  const SizedBox(width: 12),
-                                  DropdownButton<int?>(
-                                    value: daysValue,
-                                    dropdownColor: const Color(0xFF11151D),
-                                    underline: const SizedBox.shrink(),
-                                    iconEnabledColor: Colors.white54,
-                                    items: const [
-                                      DropdownMenuItem<int?>(value: 30, child: Text('30 dagar')),
-                                      DropdownMenuItem<int?>(value: 60, child: Text('60 dagar')),
-                                      DropdownMenuItem<int?>(value: 180, child: Text('180 dagar')),
-                                      DropdownMenuItem<int?>(value: 365, child: Text('365 dagar')),
-                                      DropdownMenuItem<int?>(value: null, child: Text('Ingen begränsning')),
-                                    ],
-                                    onChanged: (value) {
-                                      dialogSetState(() {
-                                        section['days'] = value;
-                                      });
-                                    },
-                                  ),
-                                ],
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Avbryt', style: TextStyle(color: Colors.white70)),
-                ),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF)),
-                  onPressed: () async {
-                    setState(() {
-                      _homeSections = editableSections;
-                    });
-                    await _saveSettings();
-                    if (mounted) {
-                      Navigator.of(dialogContext).pop();
+                return StatefulBuilder(
+                  builder: (context, dialogSetState) {
+                    if (clipboardPasteSubscription == null) {
+                      clipboardPasteSubscription = html.document.onPaste.listen((event) async {
+                        final files = event.clipboardData.files;
+                        final imageFile = files.isEmpty ? null : files.firstWhere(
+                          (file) => file.type.startsWith('image/'),
+                          orElse: () => files.first,
+                        );
+
+                        if (imageFile == null || !imageFile.type.startsWith('image/')) {
+                          return;
+                        }
+
+                        final controller = activeImageController;
+                        final key = activeImageKey;
+                        if (controller == null || key == null || lockState[key] == true) {
+                          return;
+                        }
+
+                        event.preventDefault();
+
+                        final reader = html.FileReader();
+                        reader.readAsDataUrl(imageFile);
+                        await reader.onLoadEnd.first;
+                        final dataUrl = reader.result as String?;
+                        if (dataUrl == null || dataUrl.isEmpty) {
+                          return;
+                        }
+
+                        dialogSetState(() {
+                          controller.text = dataUrl;
+                        });
+                      });
                     }
+                    Widget imageActionButton(IconData icon, String tooltip, VoidCallback? onPressed) {
+                      return IconButton(
+                        tooltip: tooltip,
+                        icon: Icon(icon, color: Colors.white54),
+                        onPressed: onPressed,
+                      );
+                    }
+                    // Additional code continues...
                   },
-                  child: const Text('Spara'),
-                ),
-              ],
+                );
+              },
             );
-          },
-        );
+          } finally {
+            await clipboardPasteSubscription?.cancel();
+          }
       },
     );
   }
@@ -522,11 +452,47 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       final shows = await widget.apiService.fetchShows();
 
       setState(() {
-        _movies = movies;
-        _shows = shows;
+                final TextEditingController? activeImageController = TextEditingController();
+                final String? activeImageKey = null;
         _loadingMedia = false;
       });
     } catch (e) {
+                    if (clipboardPasteSubscription == null) {
+                      clipboardPasteSubscription = html.document.onPaste.listen((event) async {
+                        final files = event.clipboardData.files;
+                        final imageFile = files.isEmpty
+                            ? null
+                            : files.firstWhere(
+                                (file) => file.type.startsWith('image/'),
+                                orElse: () => files.first,
+                              );
+
+                        if (imageFile == null || !imageFile.type.startsWith('image/')) {
+                          return;
+                        }
+
+                        final controller = activeImageController;
+                        final key = activeImageKey;
+                        if (controller == null || key == null || lockState[key] == true) {
+                          return;
+                        }
+
+                        event.preventDefault();
+
+                        final reader = html.FileReader();
+                        reader.readAsDataUrl(imageFile);
+                        await reader.onLoadEnd.first;
+                        final dataUrl = reader.result as String?;
+                        if (dataUrl == null || dataUrl.isEmpty) {
+                          return;
+                        }
+
+                        dialogSetState(() {
+                          controller.text = dataUrl;
+                        });
+                      });
+                    }
+
       setState(() {
         _mediaError = e.toString();
         _loadingMedia = false;
@@ -1812,122 +1778,106 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     }
 
     StreamSubscription<html.ClipboardEvent>? clipboardPasteSubscription;
-    TextEditingController? activeImageController;
-    String? activeImageKey;
 
     try {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
         builder: (dialogContext) {
-          final dialogId = DateTime.now().microsecondsSinceEpoch;
-          final dropZoneViewTypes = <String, String>{};
+        final dialogId = DateTime.now().microsecondsSinceEpoch;
+        final dropZoneViewTypes = <String, String>{};
 
-          return StatefulBuilder(
-            builder: (context, dialogSetState) {
-              if (clipboardPasteSubscription == null) {
-                clipboardPasteSubscription = html.document.onPaste.listen((event) async {
-                  final files = event.clipboardData?.files;
-                  final imageFile = (files == null || files.isEmpty) ? null : files.firstWhere(
-                    (file) => file.type.startsWith('image/'),
-                    orElse: () => files.first,
-                  );
+        return StatefulBuilder(
+          builder: (context, dialogSetState) {
+            Widget imageActionButton(IconData icon, String tooltip, VoidCallback? onPressed) {
+              return IconButton(
+                tooltip: tooltip,
+                icon: Icon(icon, color: Colors.white54),
+                onPressed: onPressed,
+              );
+            }
 
-                  if (imageFile == null || !imageFile.type.startsWith('image/')) return;
+            void pickImageFromDisk(TextEditingController controller) {
+              final input = html.FileUploadInputElement()..accept = 'image/*';
+              input.onChange.listen((_) async {
+                final file = input.files?.firstOrNull;
+                if (file == null) {
+                  return;
+                }
 
-                  final controller = activeImageController;
-                  final key = activeImageKey;
-                  if (controller == null || key == null || lockState[key] == true) return;
+                final reader = html.FileReader();
+                reader.readAsDataUrl(file);
+                await reader.onLoadEnd.first;
+                final dataUrl = reader.result as String?;
+                if (dataUrl == null || dataUrl.isEmpty) {
+                  return;
+                }
 
-                  event.preventDefault();
-                  final reader = html.FileReader();
-                  reader.readAsDataUrl(imageFile);
-                  await reader.onLoadEnd.first;
-                  final dataUrl = reader.result as String?;
-                  if (dataUrl != null && dataUrl.isNotEmpty) {
-                    dialogSetState(() {
-                      controller.text = dataUrl;
-                    });
-                  }
+                dialogSetState(() {
+                  controller.text = dataUrl;
                 });
-              }
+              });
+              input.click();
+            }
 
-              Widget imageActionButton(IconData icon, String tooltip, VoidCallback? onPressed) {
-                return IconButton(
-                  tooltip: tooltip,
-                  icon: Icon(icon, color: Colors.white54),
-                  onPressed: onPressed,
-                );
-              }
+            String imageDropZoneViewType(String key, TextEditingController controller) {
+              return dropZoneViewTypes.putIfAbsent(key, () {
+                final viewType = 'loom-image-drop-$dialogId-$key';
+                ui_web.platformViewRegistry.registerViewFactory(viewType, (int viewId) {
+                  final dropZone = html.DivElement()
+                    ..style.display = 'flex'
+                    ..style.alignItems = 'center'
+                    ..style.justifyContent = 'center'
+                    ..style.minHeight = '104px'
+                    ..style.padding = '16px'
+                    ..style.borderRadius = '12px'
+                    ..style.border = '1px dashed rgba(255, 255, 255, 0.20)'
+                    ..style.backgroundColor = '#171C26'
+                    ..style.color = 'rgba(255, 255, 255, 0.70)'
+                    ..style.fontFamily = 'inherit'
+                    ..style.fontSize = '13px'
+                    ..style.textAlign = 'center'
+                    ..style.cursor = 'copy'
+                    ..text = 'Dra en bildfil hit eller välj fil knappen nedan';
 
-              void pickImageFromDisk(TextEditingController controller) {
-                final input = html.FileUploadInputElement()..accept = 'image/*';
-                input.onChange.listen((_) async {
-                  final file = input.files?.firstOrNull;
-                  if (file == null) return;
-
-                  final reader = html.FileReader();
-                  reader.readAsDataUrl(file);
-                  await reader.onLoadEnd.first;
-                  final dataUrl = reader.result as String?;
-                  if (dataUrl != null && dataUrl.isNotEmpty) {
-                    dialogSetState(() {
-                      controller.text = dataUrl;
-                    });
-                  }
-                });
-                input.click();
-              }
-
-              String imageDropZoneViewType(String key, TextEditingController controller) {
-                return dropZoneViewTypes.putIfAbsent(key, () {
-                  final viewType = 'loom-image-drop-$dialogId-$key';
-                  ui_web.platformViewRegistry.registerViewFactory(viewType, (int viewId) {
-                    final dropZone = html.DivElement()
-                      ..style.display = 'flex'
-                      ..style.alignItems = 'center'
-                      ..style.justifyContent = 'center'
-                      ..style.minHeight = '104px'
-                      ..style.padding = '16px'
-                      ..style.borderRadius = '12px'
-                      ..style.border = '1px dashed rgba(255, 255, 255, 0.20)'
-                      ..style.backgroundColor = '#171C26'
-                      ..style.color = 'rgba(255, 255, 255, 0.70)'
-                      ..style.fontFamily = 'inherit'
-                      ..style.fontSize = '13px'
-                      ..style.textAlign = 'center'
-                      ..style.cursor = 'copy'
-                      ..text = 'Dra en bildfil hit eller välj fil knappen nedan';
-
-                    dropZone.onDragOver.listen((event) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    });
-
-                    dropZone.onDrop.listen((event) async {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      if (lockState[key] == true) return;
-                      
-                      final files = event.dataTransfer.files;
-                      final file = files == null || files.isEmpty ? null : files.first;
-                      if (file == null || !file.type.startsWith('image/')) return;
-                      
-                      final reader = html.FileReader();
-                      reader.readAsDataUrl(file);
-                      await reader.onLoadEnd.first;
-                      final dataUrl = reader.result as String?;
-                      if (dataUrl != null && dataUrl.isNotEmpty) {
-                        dialogSetState(() {
-                          controller.text = dataUrl;
-                        });
-                      }
-                    });
-                    return dropZone;
+                  dropZone.onDragOver.listen((event) {
+                    event.preventDefault();
+                    event.stopPropagation();
                   });
-                  return viewType;
+
+                  dropZone.onDrop.listen((event) async {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    if (lockState[key] == true) {
+                      return;
+                    }
+
+                    final files = event.dataTransfer.files;
+                    final file = files == null || files.isEmpty ? null : files.first;
+                    if (file == null || !file.type.startsWith('image/')) {
+                      return;
+                    }
+
+                    final reader = html.FileReader();
+                    reader.readAsDataUrl(file);
+                    await reader.onLoadEnd.first;
+                    final dataUrl = reader.result as String?;
+                    if (dataUrl == null || dataUrl.isEmpty) {
+                      return;
+                    }
+
+                    dialogSetState(() {
+                      controller.text = dataUrl;
+                    });
+                  });
+
+                  return dropZone;
                 });
-              }
+                return viewType;
+              });
+            }
+
             Widget field(String key, TextEditingController controller, {int maxLines = 1, String? hint}) {
               final isLocked = lockState[key] == true;
               return Row(
@@ -1942,10 +1892,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                       controller: controller,
                       maxLines: maxLines,
                       onChanged: (_) => dialogSetState(() {}),
-                      onTap: () {
-                        activeImageController = controller;
-                        activeImageKey = key;
-                      },
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
                         hintText: hint,
@@ -1960,10 +1906,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   imageActionButton(
                     Icons.content_paste,
                     'Klistra in från urklipp',
-                    isLocked ? null : () async {
-                      final clipboardData = await html.window.navigator.clipboard?.readText();
-                      final pastedText = clipboardData?.trim();
-                      if (pastedText == null || pastedText.isEmpty) return;
+                    isLocked
+                        ? null
+                        : () async {
+                      final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+                      final pastedText = clipboardData?.text?.trim();
+                      if (pastedText == null || pastedText.isEmpty) {
+                        return;
+                      }
+
                       dialogSetState(() {
                         controller.text = pastedText;
                       });
@@ -1972,136 +1923,138 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   imageActionButton(
                     Icons.clear,
                     'Rensa fält',
-                    isLocked || controller.text.isEmpty ? null : () {
-                      dialogSetState(() {
-                        controller.clear();
-                      });
-                    },
+                    isLocked || controller.text.isEmpty
+                        ? null
+                        : () {
+                            dialogSetState(() {
+                              controller.clear();
+                            });
+                          },
                   ),
                 ],
               );
             }
 
-            Widget imageField(String key, TextEditingController controller, String hint, {String? previewLabel}) {
-              final isLocked = lockState[key] == true;
-              final value = controller.text.trim();
-              final hasPreview = value.isNotEmpty && (value.startsWith('http') || value.startsWith('data:image/'));
-              final dropZoneViewType = imageDropZoneViewType(key, controller);
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  field(key, controller, hint: hint),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 104,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: AbsorbPointer(
-                        absorbing: isLocked,
-                        child: HtmlElementView(viewType: dropZoneViewType),
+              Widget imageField(String key, TextEditingController controller, String hint, {String? previewLabel}) {
+                final isLocked = lockState[key] == true;
+                final value = controller.text.trim();
+                final hasPreview = value.isNotEmpty && (value.startsWith('http') || value.startsWith('data:image/'));
+                final dropZoneViewType = imageDropZoneViewType(key, controller);
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    field(key, controller, hint: hint),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 104,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: AbsorbPointer(
+                          absorbing: isLocked,
+                          child: HtmlElementView(viewType: dropZoneViewType),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      TextButton.icon(
-                        onPressed: isLocked ? null : () => pickImageFromDisk(controller),
-                        icon: const Icon(Icons.upload_file),
-                        label: const Text('Välj bildfil'),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Lokal fil sparas som data-URL i metadata.',
-                        style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
-                      ),
-                    ],
-                  ),
-                  if (hasPreview) ...[
-                    const SizedBox(height: 12),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF171C26),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(previewLabel ?? 'Förhandsvisning', style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  value,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: isLocked ? null : () => pickImageFromDisk(controller),
+                          icon: const Icon(Icons.upload_file),
+                          label: const Text('Välj bildfil'),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Lokal fil sparas som data-URL i metadata.',
+                          style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
+                        ),
+                      ],
+                    ),
+                    if (hasPreview) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF171C26),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(previewLabel ?? 'Förhandsvisning', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    value,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              TextButton(
-                                onPressed: () => html.window.open(value, '_blank'),
-                                child: const Text('Öppna'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: AspectRatio(
-                              aspectRatio: 16 / 9,
-                              child: value.startsWith('data:image/')
-                                  ? Builder(
-                                      builder: (context) {
-                                        try {
-                                          final uriData = UriData.parse(value);
-                                          return Image.memory(
-                                            uriData.contentAsBytes(),
-                                            fit: BoxFit.cover,
-                                            errorBuilder: (context, error, stackTrace) {
-                                              return Container(
-                                                color: const Color(0xFF10151E),
-                                                alignment: Alignment.center,
-                                                padding: const EdgeInsets.all(16),
-                                                child: const Text('Förhandsvisning kunde inte laddas', style: TextStyle(color: Colors.white54)),
-                                              );
-                                            },
-                                          );
-                                        } catch (_) {
+                                const SizedBox(width: 8),
+                                TextButton(
+                                  onPressed: () => html.window.open(value, '_blank'),
+                                  child: const Text('Öppna'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: AspectRatio(
+                                aspectRatio: 16 / 9,
+                                child: value.startsWith('data:image/')
+                                    ? Builder(
+                                        builder: (context) {
+                                          try {
+                                            final uriData = UriData.parse(value);
+                                            return Image.memory(
+                                              uriData.contentAsBytes(),
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (context, error, stackTrace) {
+                                                return Container(
+                                                  color: const Color(0xFF10151E),
+                                                  alignment: Alignment.center,
+                                                  padding: const EdgeInsets.all(16),
+                                                  child: const Text('Förhandsvisning kunde inte laddas', style: TextStyle(color: Colors.white54)),
+                                                );
+                                              },
+                                            );
+                                          } catch (_) {
+                                            return Container(
+                                              color: const Color(0xFF10151E),
+                                              alignment: Alignment.center,
+                                              padding: const EdgeInsets.all(16),
+                                              child: const Text('Förhandsvisning kunde inte laddas', style: TextStyle(color: Colors.white54)),
+                                            );
+                                          }
+                                        },
+                                      )
+                                    : Image.network(
+                                        value,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, error, stackTrace) {
                                           return Container(
                                             color: const Color(0xFF10151E),
                                             alignment: Alignment.center,
                                             padding: const EdgeInsets.all(16),
                                             child: const Text('Förhandsvisning kunde inte laddas', style: TextStyle(color: Colors.white54)),
                                           );
-                                        }
-                                      },
-                                    )
-                                  : Image.network(
-                                      value,
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (context, error, stackTrace) {
-                                        return Container(
-                                          color: const Color(0xFF10151E),
-                                          alignment: Alignment.center,
-                                          padding: const EdgeInsets.all(16),
-                                          child: const Text('Förhandsvisning kunde inte laddas', style: TextStyle(color: Colors.white54)),
-                                        );
-                                      },
-                                    ),
+                                        },
+                                      ),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
+                    ],
                   ],
-                ],
-              );
-            }
+                );
+              }
 
             return Dialog(
               backgroundColor: const Color(0xFF0F131A),
@@ -2198,8 +2151,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
                                           imageField('poster_path', posterController, 'Affisch URL', previewLabel: 'Affischförhandsvisning'),
-                                          const SizedBox(height: 12),
-                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
                                         ],
                                       );
                                     }
@@ -2209,8 +2160,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
                                           imageField('fanart_path', fanartController, 'Bakgrund URL', previewLabel: 'Bakgrundförhandsvisning'),
-                                          const SizedBox(height: 12),
-                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
                                         ],
                                       );
                                     }
@@ -2220,8 +2169,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
                                           imageField('logo_path', logoController, 'Logo URL', previewLabel: 'Logoförhandsvisning'),
-                                          const SizedBox(height: 12),
-                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
                                         ],
                                       );
                                     }
@@ -2231,8 +2178,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
                                           imageField('square_art', squareArtController, 'Square Art URL', previewLabel: 'Square Art-förhandsvisning'),
-                                          const SizedBox(height: 12),
-                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
                                         ],
                                       );
                                     }
@@ -2289,9 +2234,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         );
       },
     );
-    } finally {
-      await clipboardPasteSubscription?.cancel();
-    }
 
     titleController.dispose();
     sortTitleController.dispose();
@@ -2325,7 +2267,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           child: Icon(icon, color: Colors.white, size: 18),
         ),
       ),
-    );
+      );
+    } finally {
+      await clipboardPasteSubscription?.cancel();
+    }
   }
 
   Future<void> _handlePosterTap(dynamic item, {required bool isHomeCard}) async {

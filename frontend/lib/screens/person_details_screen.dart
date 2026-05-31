@@ -684,7 +684,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
           ],
 
           // Play locally button / indicator
-          _buildPlayControl(localId, credit['id']?.toString(), title),
+          _buildPlayControl(credit, localId, credit['id']?.toString(), title),
         ],
       ),
     );
@@ -972,13 +972,13 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
           const SizedBox(width: 20),
 
           // Play Locally Button
-          _buildPlayControl(localId, credit['id']?.toString(), title),
+          _buildPlayControl(credit, localId, credit['id']?.toString(), title),
         ],
       ),
     );
   }
 
-  Widget _buildPlayControl(String? localId, String? tmdbId, String title) {
+  Widget _buildPlayControl(Map<String, dynamic> credit, String? localId, String? tmdbId, String title) {
     if (localId != null) {
       return ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
@@ -1006,17 +1006,43 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
         label: const Text('Spela', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
       );
     } else {
+      final bool inWatchlist = credit['is_in_watchlist'] == true;
       return ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFF281E46),
-          foregroundColor: const Color(0xFFD4C7FF),
-          side: BorderSide(color: const Color(0xFF8A5BFF).withValues(alpha: 0.25)),
+          backgroundColor: inWatchlist ? const Color(0xFF171C26) : const Color(0xFF281E46),
+          foregroundColor: inWatchlist ? Colors.white54 : const Color(0xFFD4C7FF),
+          side: BorderSide(color: inWatchlist ? Colors.white.withValues(alpha: 0.1) : const Color(0xFF8A5BFF).withValues(alpha: 0.25)),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         ),
-        onPressed: () => _handleOnCardTap(localId, title, tmdbId),
-        icon: const Icon(Icons.info_outline, size: 16),
-        label: const Text('Lägg till Watchlist', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        onPressed: tmdbId == null ? null : () async {
+          try {
+            if (inWatchlist) {
+              await widget.apiService.removeFromWatchlist(tmdbId);
+              setState(() {
+                credit['is_in_watchlist'] = false;
+              });
+            } else {
+              final type = credit['media_type']?.toString() ?? (credit['title'] != null ? 'movie' : 'tv');
+              final year = int.tryParse(credit['year']?.toString() ?? '');
+              final posterPath = credit['poster_path']?.toString();
+              await widget.apiService.addToWatchlist(
+                tmdbId: tmdbId,
+                title: title,
+                type: type,
+                year: year,
+                posterPath: posterPath,
+              );
+              setState(() {
+                credit['is_in_watchlist'] = true;
+              });
+            }
+          } catch (e) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Misslyckades: $e')));
+          }
+        },
+        icon: Icon(inWatchlist ? Icons.check : Icons.add, size: 16),
+        label: Text(inWatchlist ? 'I Watchlist' : 'Lägg till Watchlist', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
       );
     }
   }
