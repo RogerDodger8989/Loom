@@ -1157,6 +1157,35 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // GET /api/media/search-tmdb
+  // Generic TMDB movie search used by Home quick search (no local item id required)
+  fastify.get(
+    '/api/media/search-tmdb',
+    async (request: FastifyRequest<{ Querystring: { query: string; year?: string } }>, reply: FastifyReply) => {
+      const { query, year } = request.query;
+      const parsedYear = year ? parseInt(year, 10) : undefined;
+
+      if (!query || query.trim().length < 1) {
+        return reply.send([]);
+      }
+
+      try {
+        const results = await tmdbService.searchMovieCandidates(query.trim(), parsedYear);
+        return results.map((m: any) => ({
+          id: m.id,
+          title: m.title,
+          original_title: m.original_title,
+          release_date: m.release_date,
+          year: m.release_date ? parseInt(m.release_date.substring(0, 4), 10) : null,
+          poster_path: m.poster_path ? tmdbService.getImageUrl(m.poster_path, 'w500') : null
+        }));
+      } catch (err: any) {
+        console.error(err);
+        return reply.code(500).send({ error: 'Failed to search TMDB', details: err.message });
+      }
+    }
+  );
+
   // POST /api/media/items/:id/match
   fastify.post(
     '/api/media/items/:id/match',

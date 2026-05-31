@@ -612,6 +612,28 @@ class ApiService {
     }
   }
 
+  /// Authenticated: Search TMDB movies (generic endpoint, no local media id needed)
+  Future<List<dynamic>> searchTmdbMovies(String query, {String? year}) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final uri = Uri.parse('$baseUrl/api/media/search-tmdb').replace(
+      queryParameters: {
+        'query': query,
+        if (year != null && year.isNotEmpty) 'year': year,
+      },
+    );
+    final response = await http.get(
+      uri,
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to search TMDB movies: ${response.body}');
+    }
+  }
+
   /// Authenticated: Manually pair a movie to a specific TMDB ID
   Future<Map<String, dynamic>> fixMatch(String id, String tmdbId) async {
     if (_token == null) throw Exception('Unauthorized');

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:async';
@@ -246,6 +247,20 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   String? _genreFilter;
   String? _keywordFilter;
+  String _moviesSearchQuery = '';
+
+  final TextEditingController _homeSearchController = TextEditingController();
+  Timer? _homeSearchDebounce;
+  int _homeSearchRequestNonce = 0;
+  bool _homeSearchLoadingTmdb = false;
+  bool _homeSearchIsOpen = false;
+  bool _homeSearchIgnoreChange = false;
+  List<dynamic> _homeSearchLocalResults = [];
+  List<dynamic> _homeSearchTmdbResults = [];
+  String _homeSearchLastQuery = '';
+  List<dynamic> _homeSearchLastLocalResults = [];
+  List<dynamic> _homeSearchLastTmdbResults = [];
+  int _homeSearchSelectedIndex = -1;
 
   @override
   void initState() {
@@ -267,8 +282,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   @override
   void dispose() {
     _manualSyncTimer?.cancel();
+    _homeSearchDebounce?.cancel();
     _tabController.dispose();
     _pathController.dispose();
+    _homeSearchController.dispose();
     _tmdbKeyController.dispose();
     _omdbKeyController.dispose();
     _simklKeyController.dispose();
@@ -956,40 +973,44 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildHeader() {
+    final isHome = _tabController.index == 0;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              _tabController.index == 0
-                  ? 'Hem'
-                  : _tabController.index == 1
-                      ? 'Movies'
-                      : _tabController.index == 2
-                          ? 'TV Shows'
-                          : _tabController.index == 3
-                              ? 'Library Scanner'
-                              : 'Settings',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 32,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 0.5,
+            if (!_tabController.indexIsChanging && !isHome)
+              Text(
+                _tabController.index == 1
+                    ? 'Movies'
+                    : _tabController.index == 2
+                        ? 'TV Shows'
+                        : _tabController.index == 3
+                            ? 'Library Scanner'
+                            : 'Settings',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 32,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.5,
+                ),
               ),
-            ),
             const SizedBox(height: 6),
-            Text(
-              _tabController.index == 0
-                  ? 'Din mediesamling och aktivitet'
-                  : _tabController.index == 3
-                      ? 'Manage media scan routes and server settings'
-                      : _tabController.index == 4
-                          ? 'Manage trusted devices and server preferences'
-                          : 'Manage and stream your media collection',
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
-            ),
+            if (isHome)
+              SizedBox(
+                width: 680,
+                child: _buildHomeSearchBox(),
+              )
+            else
+              Text(
+                _tabController.index == 3
+                    ? 'Manage media scan routes and server settings'
+                    : _tabController.index == 4
+                        ? 'Manage trusted devices and server preferences'
+                        : 'Manage and stream your media collection',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
+              ),
           ],
         ),
         
@@ -1034,6 +1055,488 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+  void _handleHomeSearchChanged(String rawValue) {
+    if (_homeSearchIgnoreChange) return;
+
+    final query = rawValue.trim();
+
+    _homeSearchDebounce?.cancel();
+
+    if (query.isEmpty) {
+      setState(() {
+        _homeSearchIsOpen = false;
+        _homeSearchLocalResults = [];
+        _homeSearchTmdbResults = [];
+        _homeSearchLoadingTmdb = false;
+        _homeSearchSelectedIndex = -1;
+      });
+      return;
+    }
+
+    final localMatches = _findLocalHomeMatches(query);
+    final localTop = localMatches.take(10).toList();
+    _snapshotHomeSearch(query: query, localResults: localTop, tmdbResults: []);
+    setState(() {
+      _homeSearchIsOpen = true;
+      _homeSearchLocalResults = localTop;
+      _homeSearchTmdbResults = [];
+      _homeSearchLoadingTmdb = query.length >= 3;
+      _homeSearchSelectedIndex = localTop.isNotEmpty ? 0 : -1;
+    });
+
+    if (query.length < 3) {
+      return;
+    }
+
+    _homeSearchDebounce = Timer(const Duration(milliseconds: 300), () async {
+      final currentNonce = ++_homeSearchRequestNonce;
+      try {
+        final tmdbResults = await widget.apiService.searchTmdbMovies(query);
+        if (!mounted || currentNonce != _homeSearchRequestNonce) return;
+
+        final localTmdbIds = _homeSearchLocalResults
+            .map((m) => m['tmdb_id']?.toString())
+            .whereType<String>()
+            .toSet();
+
+        final filteredTmdb = tmdbResults.where((result) {
+          final tmdbId = result['id']?.toString();
+          if (tmdbId == null) return false;
+          return !localTmdbIds.contains(tmdbId);
+        }).take(10).toList();
+
+        _snapshotHomeSearch(query: query, localResults: _homeSearchLocalResults, tmdbResults: filteredTmdb);
+        setState(() {
+          _homeSearchTmdbResults = filteredTmdb;
+          _homeSearchLoadingTmdb = false;
+          final total = _homeSearchLocalResults.length + filteredTmdb.length;
+          if (total == 0) {
+            _homeSearchSelectedIndex = -1;
+          } else if (_homeSearchSelectedIndex < 0 || _homeSearchSelectedIndex >= total) {
+            _homeSearchSelectedIndex = 0;
+          }
+        });
+      } catch (_) {
+        if (!mounted || currentNonce != _homeSearchRequestNonce) return;
+        _snapshotHomeSearch(query: query, localResults: _homeSearchLocalResults, tmdbResults: []);
+        setState(() {
+          _homeSearchTmdbResults = [];
+          _homeSearchLoadingTmdb = false;
+          _homeSearchSelectedIndex = _homeSearchLocalResults.isNotEmpty ? 0 : -1;
+        });
+      }
+    });
+  }
+
+  void _snapshotHomeSearch({
+    required String query,
+    List<dynamic>? localResults,
+    List<dynamic>? tmdbResults,
+  }) {
+    if (query.isEmpty) return;
+    _homeSearchLastQuery = query;
+    _homeSearchLastLocalResults = List<dynamic>.from(localResults ?? _homeSearchLocalResults);
+    _homeSearchLastTmdbResults = List<dynamic>.from(tmdbResults ?? _homeSearchTmdbResults);
+  }
+
+  void _resetHomeSearchBox({bool preserveSnapshot = true}) {
+    _homeSearchDebounce?.cancel();
+    _homeSearchRequestNonce++;
+
+    final currentQuery = _homeSearchController.text.trim();
+    if (preserveSnapshot && currentQuery.isNotEmpty) {
+      _snapshotHomeSearch(query: currentQuery);
+    }
+
+    _homeSearchIgnoreChange = true;
+    _homeSearchController.clear();
+    _homeSearchIgnoreChange = false;
+
+    setState(() {
+      _homeSearchIsOpen = false;
+      _homeSearchLoadingTmdb = false;
+      _homeSearchLocalResults = [];
+      _homeSearchTmdbResults = [];
+      _homeSearchSelectedIndex = -1;
+    });
+  }
+
+  void _restoreHomeSearchBoxFromSnapshot() {
+    if (_homeSearchLastQuery.isEmpty) return;
+
+    _homeSearchIgnoreChange = true;
+    _homeSearchController.value = TextEditingValue(
+      text: _homeSearchLastQuery,
+      selection: TextSelection(baseOffset: 0, extentOffset: _homeSearchLastQuery.length),
+    );
+    _homeSearchIgnoreChange = false;
+
+    setState(() {
+      _homeSearchIsOpen = true;
+      _homeSearchLoadingTmdb = false;
+      _homeSearchLocalResults = List<dynamic>.from(_homeSearchLastLocalResults);
+      _homeSearchTmdbResults = List<dynamic>.from(_homeSearchLastTmdbResults);
+      final total = _homeSearchLocalResults.length + _homeSearchTmdbResults.length;
+      _homeSearchSelectedIndex = total > 0 ? 0 : -1;
+    });
+  }
+
+  List<Map<String, dynamic>> _homeSearchSelectableItems() {
+    final items = <Map<String, dynamic>>[];
+    for (final movie in _homeSearchLocalResults) {
+      items.add({'type': 'local', 'item': movie});
+    }
+    for (final movie in _homeSearchTmdbResults) {
+      items.add({'type': 'tmdb', 'item': movie});
+    }
+    return items;
+  }
+
+  void _moveHomeSearchSelection(int delta) {
+    final items = _homeSearchSelectableItems();
+    if (items.isEmpty) return;
+
+    setState(() {
+      if (_homeSearchSelectedIndex == -1) {
+        _homeSearchSelectedIndex = delta > 0 ? 0 : items.length - 1;
+        return;
+      }
+
+      final nextIndex = (_homeSearchSelectedIndex + delta) % items.length;
+      _homeSearchSelectedIndex = nextIndex < 0 ? items.length - 1 : nextIndex;
+    });
+  }
+
+  void _openHomeSearchLocal(dynamic movie) {
+    final id = movie['id']?.toString();
+    if (id == null) return;
+    _navigateTo('media', id);
+    _resetHomeSearchBox();
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  void _openHomeSearchTmdb(dynamic movie) {
+    final tmdbId = movie['id']?.toString();
+    if (tmdbId == null) return;
+    _navigateTo('media', 'external_movie_$tmdbId');
+    _resetHomeSearchBox();
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  void _activateHomeSearchSelectionOrSubmit() {
+    final items = _homeSearchSelectableItems();
+
+    if (_homeSearchSelectedIndex >= 0 && _homeSearchSelectedIndex < items.length) {
+      final selected = items[_homeSearchSelectedIndex];
+      if (selected['type'] == 'local') {
+        _openHomeSearchLocal(selected['item']);
+      } else {
+        _openHomeSearchTmdb(selected['item']);
+      }
+      return;
+    }
+
+    _submitHomeSearchToMoviesTab();
+  }
+
+  List<dynamic> _findLocalHomeMatches(String query) {
+    final q = query.toLowerCase();
+    final candidates = _movies.where((m) {
+      final title = (m['title'] ?? '').toString().toLowerCase();
+      final originalTitle = (m['original_title'] ?? '').toString().toLowerCase();
+      final year = (m['year'] ?? '').toString().toLowerCase();
+      return title.contains(q) || originalTitle.contains(q) || year.contains(q);
+    }).toList();
+
+    int score(dynamic m) {
+      final title = (m['title'] ?? '').toString().toLowerCase();
+      final originalTitle = (m['original_title'] ?? '').toString().toLowerCase();
+      final year = (m['year'] ?? '').toString().toLowerCase();
+      if (title == q || originalTitle == q) return 0;
+      if (title.startsWith(q) || originalTitle.startsWith(q)) return 1;
+      if (year == q) return 2;
+      return 3;
+    }
+
+    candidates.sort((a, b) {
+      final scoreCmp = score(a).compareTo(score(b));
+      if (scoreCmp != 0) return scoreCmp;
+      final ay = int.tryParse((a['year'] ?? '0').toString()) ?? 0;
+      final by = int.tryParse((b['year'] ?? '0').toString()) ?? 0;
+      return by.compareTo(ay);
+    });
+
+    return candidates;
+  }
+
+  void _submitHomeSearchToMoviesTab() {
+    final query = _homeSearchController.text.trim();
+    if (query.isEmpty) return;
+    _snapshotHomeSearch(query: query);
+    setState(() {
+      _moviesSearchQuery = query;
+      _genreFilter = null;
+      _keywordFilter = null;
+    });
+    _tabController.animateTo(1);
+    _resetHomeSearchBox(preserveSnapshot: false);
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  Widget _buildHomeSearchBox() {
+    final hasQuery = _homeSearchController.text.trim().isNotEmpty;
+    final hasResults = _homeSearchLocalResults.isNotEmpty || _homeSearchTmdbResults.isNotEmpty || _homeSearchLoadingTmdb;
+
+    return TextFieldTapRegion(
+      child: Focus(
+        onKeyEvent: (_, event) {
+          if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+          if (event.logicalKey == LogicalKeyboardKey.escape) {
+            _resetHomeSearchBox();
+            FocusManager.instance.primaryFocus?.unfocus();
+            return KeyEventResult.handled;
+          }
+
+          if (!hasQuery || !_homeSearchIsOpen) return KeyEventResult.ignored;
+
+          if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+            _moveHomeSearchSelection(1);
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+            _moveHomeSearchSelection(-1);
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+            _activateHomeSearchSelectionOrSubmit();
+            return KeyEventResult.handled;
+          }
+
+          return KeyEventResult.ignored;
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+              ),
+              child: TextField(
+                controller: _homeSearchController,
+                style: const TextStyle(color: Colors.white, fontSize: 15),
+                onChanged: _handleHomeSearchChanged,
+                onSubmitted: (_) => _activateHomeSearchSelectionOrSubmit(),
+                onTap: () {
+                  if (_homeSearchController.text.trim().isEmpty && _homeSearchLastQuery.isNotEmpty) {
+                    _restoreHomeSearchBoxFromSnapshot();
+                    return;
+                  }
+
+                  final current = _homeSearchController.text;
+                  if (current.isNotEmpty) {
+                    _homeSearchController.selection = TextSelection(baseOffset: 0, extentOffset: current.length);
+                  }
+
+                  setState(() {
+                    _homeSearchIsOpen = current.trim().isNotEmpty;
+                    if (_homeSearchIsOpen && _homeSearchLocalResults.isEmpty && _homeSearchTmdbResults.isEmpty && _homeSearchLastQuery == current.trim()) {
+                      _homeSearchLocalResults = List<dynamic>.from(_homeSearchLastLocalResults);
+                      _homeSearchTmdbResults = List<dynamic>.from(_homeSearchLastTmdbResults);
+                    }
+                  });
+                },
+                onTapOutside: (_) {
+                  _resetHomeSearchBox();
+                  FocusManager.instance.primaryFocus?.unfocus();
+                },
+                decoration: InputDecoration(
+                  hintText: 'Sök filmer lokalt och i TMDB...',
+                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.45)),
+                  prefixIcon: const Icon(Icons.search, color: Colors.white60, size: 20),
+                  suffixIcon: hasQuery
+                      ? IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                          onPressed: () {
+                            _resetHomeSearchBox(preserveSnapshot: false);
+                          },
+                        )
+                      : null,
+                  border: InputBorder.none,
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+                ),
+              ),
+            ),
+            if (_homeSearchIsOpen && hasQuery) const SizedBox(height: 10),
+            if (_homeSearchIsOpen && hasQuery)
+              Container(
+                constraints: const BoxConstraints(maxHeight: 340),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141820),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+                ),
+                child: hasResults
+                    ? ListView(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        shrinkWrap: true,
+                        children: [
+                          ...List.generate(_homeSearchLocalResults.length, (index) {
+                            final movie = _homeSearchLocalResults[index];
+                            return _buildHomeSearchLocalRow(movie, isSelected: _homeSearchSelectedIndex == index);
+                          }),
+                          if (_homeSearchLocalResults.isNotEmpty && (_homeSearchTmdbResults.isNotEmpty || _homeSearchLoadingTmdb))
+                            _buildHomeSearchSeparator('Från TMDB'),
+                          ...List.generate(_homeSearchTmdbResults.length, (index) {
+                            final movie = _homeSearchTmdbResults[index];
+                            final selectedIndex = _homeSearchLocalResults.length + index;
+                            return _buildHomeSearchTmdbRow(movie, isSelected: _homeSearchSelectedIndex == selectedIndex);
+                          }),
+                          if (_homeSearchLoadingTmdb)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: Center(
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8A5BFF)),
+                                ),
+                              ),
+                            ),
+                        ],
+                      )
+                    : const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+                        child: Text('Inga träffar', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                      ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHomeSearchSeparator(String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          Expanded(child: Container(height: 1, color: Colors.white.withValues(alpha: 0.10))),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Text(
+              label,
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+          ),
+          Expanded(child: Container(height: 1, color: Colors.white.withValues(alpha: 0.10))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomeSearchLocalRow(dynamic movie, {bool isSelected = false}) {
+    final title = (movie['title'] ?? 'Okänd titel').toString();
+    final yearRaw = movie['year']?.toString();
+    final year = (yearRaw != null && yearRaw.isNotEmpty) ? ' ($yearRaw)' : '';
+    final poster = movie['poster_path']?.toString();
+    final metadata = movie['metadata'];
+    String resolutionText = '';
+    if (metadata is Map) {
+      final resolutionValue = metadata['resolution'] ?? metadata['video_resolution'] ?? metadata['quality'];
+      if (resolutionValue != null) {
+        resolutionText = resolutionValue.toString().trim();
+      }
+    }
+
+    return InkWell(
+      onTap: () => _openHomeSearchLocal(movie),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF8A5BFF).withValues(alpha: 0.20) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            _buildHomeSearchPoster(poster),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$title$year',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+            if (resolutionText.isNotEmpty) ...[
+              const SizedBox(width: 10),
+              Text(
+                resolutionText,
+                style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHomeSearchTmdbRow(dynamic movie, {bool isSelected = false}) {
+    final title = (movie['title'] ?? 'Okänd titel').toString();
+    final yearRaw = movie['year']?.toString();
+    final year = (yearRaw != null && yearRaw.isNotEmpty && yearRaw != 'null') ? ' ($yearRaw)' : '';
+    final poster = movie['poster_path']?.toString();
+
+    return InkWell(
+      onTap: () => _openHomeSearchTmdb(movie),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF8A5BFF).withValues(alpha: 0.20) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            _buildHomeSearchPoster(poster),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$title$year',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHomeSearchPoster(String? url) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        width: 36,
+        height: 52,
+        color: Colors.white12,
+        child: (url != null && url.isNotEmpty)
+            ? Image.network(
+                url,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white30, size: 16),
+              )
+            : const Icon(Icons.movie, color: Colors.white30, size: 16),
+      ),
+    );
+  }
+
   Widget _buildGenreFilterBadge() {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
@@ -1069,38 +1572,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Welcome Banner
-          Container(
-            padding: const EdgeInsets.all(32),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  const Color(0xFF8A5BFF).withValues(alpha: 0.15),
-                  Colors.transparent,
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.12)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.play_circle_fill, color: Color(0xFF8A5BFF), size: 48),
-                const SizedBox(width: 20),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Välkommen till Loom', style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
-                      SizedBox(height: 6),
-                      Text('Välj ett innehåll och börja se.', style: TextStyle(color: Colors.white54, fontSize: 15)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 36),
+          // Welcome banner removed per user request
 
           // Continue Watching Section
           if (inProgress.isNotEmpty) ...[
@@ -1319,13 +1791,47 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       }).toList();
     }
 
+    if (_moviesSearchQuery.trim().isNotEmpty) {
+      final q = _moviesSearchQuery.toLowerCase();
+      filteredMovies = filteredMovies.where((m) {
+        final title = (m['title'] ?? '').toString().toLowerCase();
+        final originalTitle = (m['original_title'] ?? '').toString().toLowerCase();
+        final year = (m['year'] ?? '').toString().toLowerCase();
+        return title.contains(q) || originalTitle.contains(q) || year.contains(q);
+      }).toList();
+    }
+
     if (filteredMovies.isEmpty) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildGenreFilterBadge(),
+          if (_genreFilter != null || _keywordFilter != null) _buildGenreFilterBadge(),
+          if (_moviesSearchQuery.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Sökresultat för "$_moviesSearchQuery"',
+                      style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _moviesSearchQuery = '';
+                      });
+                    },
+                    child: const Text('Rensa', style: TextStyle(color: Color(0xFFB593FF))),
+                  ),
+                ],
+              ),
+            ),
           Expanded(child: _buildEmptyState(
-            _keywordFilter != null ? 'Inga filmer matchar keyword "$_keywordFilter"' : 'Inga filmer matchar genren "$_genreFilter"',
+            _moviesSearchQuery.isNotEmpty
+                ? 'Inga filmer matchar "$_moviesSearchQuery"'
+                : (_keywordFilter != null ? 'Inga filmer matchar keyword "$_keywordFilter"' : 'Inga filmer matchar genren "$_genreFilter"'),
             'Ta bort filtret för att se alla filmer.'
           )),
         ],
@@ -1337,6 +1843,28 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       children: [
         if (_genreFilter != null) _buildGenreFilterBadge(),
         if (_keywordFilter != null) _buildGenreFilterBadge(),
+        if (_moviesSearchQuery.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Sökresultat för "$_moviesSearchQuery"',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _moviesSearchQuery = '';
+                    });
+                  },
+                  child: const Text('Rensa', style: TextStyle(color: Color(0xFFB593FF))),
+                ),
+              ],
+            ),
+          ),
         Expanded(
           child: GridView.builder(
             padding: const EdgeInsets.only(top: 10, bottom: 30),
