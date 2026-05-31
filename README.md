@@ -56,7 +56,7 @@ flutter run -d <android-device-id>
 | **Backend** | Node.js + TypeScript + Fastify |
 | **Databas** | SQLite (WAL-mode), fil: `config/loom.db` i workspace-roten |
 | **Frontend** | Flutter (Web + Android TV, gemensam kodbas) |
-| **Metadata** | TMDB API + OMDb API + TMDB awards-sidan som fallback |
+| **Metadata** | TMDB API + OMDb API + TMDB awards-sidan som fallback (Svenska streamingtjänster hämtas automatiskt via region: SE) |
 | **Synkning** | Äkta tvåvägs ratings-synk via OAuth (Trakt & Simkl) i realtid |
 | **Streaming** | FFmpeg (direct play + HLS transkodning) |
 | **Autentisering** | JWT + PIN-parningssystem |

@@ -751,35 +751,41 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               ),
                             ] else if (_isWatched) ...[
                               const SizedBox(height: 12),
-                              Container(
-                                width: 220,
-                                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.55),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: const Color(0xFF00E676).withValues(alpha: 0.4), width: 1.2), // neon green glowing border
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: const Color(0xFF00E676).withValues(alpha: 0.1),
-                                      blurRadius: 4,
-                                    )
-                                  ],
-                                ),
-                                child: const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.check_circle_outline, color: Color(0xFF00E676), size: 16),
-                                    SizedBox(width: 6),
-                                    Text(
-                                      'Sedd',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13,
-                                        letterSpacing: 0.5,
-                                      ),
+                              MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  onTap: _toggleWatchStatus,
+                                  child: Container(
+                                    width: 220,
+                                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withValues(alpha: 0.55),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: const Color(0xFF00E676).withValues(alpha: 0.4), width: 1.2), // neon green glowing border
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: const Color(0xFF00E676).withValues(alpha: 0.1),
+                                          blurRadius: 4,
+                                        )
+                                      ],
                                     ),
-                                  ],
+                                    child: const Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.check_circle_outline, color: Color(0xFF00E676), size: 16),
+                                        SizedBox(width: 6),
+                                        Text(
+                                          'Sedd',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
@@ -1050,7 +1056,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               const SizedBox(height: 12),
                             ],
 
-                            // Clickable Genre Badges
+                             // Clickable Genre Badges
                             Wrap(
                               spacing: 8,
                               children: genresList.map((g) {
@@ -1069,23 +1075,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 );
                               }).toList(),
                             ),
-
-                            // Collapsible slate/purple keywords/tags wrap with expanding pane
-                            if (keywords.isNotEmpty) ...[
-                              const SizedBox(height: 12),
-                              _KeywordsExpandableContainer(
-                                keywords: keywords,
-                                onKeywordSelected: (label) {
-                                  if (widget.onKeywordSelected != null) {
-                                    widget.onKeywordSelected!(label);
-                                  } else if (widget.onGenreSelected != null) {
-                                    widget.onGenreSelected!(label);
-                                  } else {
-                                    Navigator.pop(context, label);
-                                  }
-                                },
-                              ),
-                            ],
 
                             // Awards / Priser placed directly under Genre
                             _buildAwardsRow(awardsString),
@@ -1336,6 +1325,23 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 child: Tooltip(message: name ?? ''),
                               );
                             }).toList(),
+                          ),
+                          const SizedBox(height: 20),
+                        ],
+
+                        // Keywords section placed within left column
+                        if (keywords.isNotEmpty) ...[
+                          _KeywordsExpandableContainer(
+                            keywords: keywords,
+                            onKeywordSelected: (label) {
+                              if (widget.onKeywordSelected != null) {
+                                widget.onKeywordSelected!(label);
+                              } else if (widget.onGenreSelected != null) {
+                                widget.onGenreSelected!(label);
+                              } else {
+                                Navigator.pop(context, label);
+                              }
+                            },
                           ),
                           const SizedBox(height: 20),
                         ],
@@ -1634,29 +1640,95 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 children: [
                                   Container(
                                     height: 160,
+                                    clipBehavior: Clip.antiAlias,
                                     decoration: BoxDecoration(
                                       color: Colors.white10,
                                       borderRadius: BorderRadius.circular(12),
                                       border: Border.all(
-                                        color: isCurrent ? const Color(0xFF8A5BFF) : Colors.white.withValues(alpha: 0.04),
-                                        width: isCurrent ? 3 : 1,
+                                        color: Colors.white.withValues(alpha: 0.06),
+                                        width: 1.0,
                                       ),
-                                      image: poster != null 
-                                        ? DecorationImage(
-                                            image: NetworkImage(poster.toString()), 
-                                            fit: BoxFit.cover
-                                          )
-                                        : null,
                                     ),
-                                    child: poster == null 
-                                        ? const Center(child: Icon(Icons.movie, size: 50, color: Colors.white24)) 
-                                        : null,
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        if (poster != null)
+                                          Image.network(
+                                            poster.toString(),
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (context, error, stackTrace) {
+                                              return const Center(child: Icon(Icons.movie, size: 50, color: Colors.white24));
+                                            },
+                                          )
+                                        else
+                                          const Center(child: Icon(Icons.movie, size: 50, color: Colors.white24)),
+
+                                        // Top-left watched checkmark badge
+                                        Positioned(
+                                          top: 8,
+                                          left: 8,
+                                          child: Builder(builder: (context) {
+                                            final itemMeta = item['metadata'] ?? {};
+                                            if (itemMeta['watch_status'] == 'watched') {
+                                              return Container(
+                                                padding: const EdgeInsets.all(3),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black.withValues(alpha: 0.6),
+                                                  shape: BoxShape.circle,
+                                                  border: Border.all(color: const Color(0xFF00E676), width: 1.5),
+                                                  boxShadow: [
+                                                    BoxShadow(
+                                                      color: const Color(0xFF00E676).withValues(alpha: 0.3),
+                                                      blurRadius: 4,
+                                                    )
+                                                  ],
+                                                ),
+                                                child: const Icon(Icons.check, color: Color(0xFF00E676), size: 10),
+                                              );
+                                            }
+                                            return const SizedBox.shrink();
+                                          }),
+                                        ),
+
+                                        // Thumbnail progress bar for in-progress items
+                                        Builder(builder: (context) {
+                                          final itemMeta = item['metadata'] ?? {};
+                                          final progress = int.tryParse((itemMeta['playback_progress']?.toString() ?? '0')) ?? 0;
+                                          if (progress > 0) {
+                                            int duration = int.tryParse((itemMeta['duration']?.toString() ?? '0')) ?? 0;
+                                            if (duration == 0) {
+                                              final runtimeMinutes = int.tryParse((itemMeta['runtime']?.toString() ?? '0')) ?? 0;
+                                              duration = runtimeMinutes * 60;
+                                            }
+                                            if (duration == 0) {
+                                              duration = 7200; // 120 min default fallback
+                                            }
+                                            final ratio = (progress / duration).clamp(0.0, 1.0);
+                                            return Positioned(
+                                              left: 0,
+                                              right: 0,
+                                              bottom: 0,
+                                              child: Container(
+                                                height: 4,
+                                                color: Colors.white12,
+                                                child: LinearProgressIndicator(
+                                                  value: ratio,
+                                                  color: const Color(0xFF8A5BFF),
+                                                  backgroundColor: Colors.transparent,
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                          return const SizedBox.shrink();
+                                        }),
+                                      ],
+                                    ),
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
                                     '$title$year', 
-                                    style: TextStyle(
-                                      color: isCurrent ? const Color(0xFF8A5BFF) : Colors.white, 
+                                    style: const TextStyle(
+                                      color: Colors.white, 
                                       fontWeight: FontWeight.bold, 
                                       fontSize: 14
                                     ), 
@@ -2974,53 +3046,61 @@ class _KeywordsExpandableContainerState extends State<_KeywordsExpandableContain
     final displayList = _expanded ? widget.keywords : widget.keywords.take(6).toList();
     final hasMore = widget.keywords.length > 6;
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C1335).withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.15)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.tag, size: 16, color: const Color(0xFFB593FF).withValues(alpha: 0.8)),
-                  const SizedBox(width: 6),
-                  const Text(
-                    'Nyckelord / Taggningar',
-                    style: TextStyle(
-                      color: Color(0xFFB593FF),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-              if (hasMore)
-                MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    onTap: () => setState(() => _expanded = !_expanded),
-                    child: Text(
-                      _expanded ? 'Visa färre' : 'Visa alla (${widget.keywords.length})',
-                      style: const TextStyle(
-                        color: Color(0xFF8A5BFF),
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (hasMore) ...[
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AnimatedRotation(
+                        turns: _expanded ? 0.25 : 0.0,
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeOutBack,
+                        child: const Icon(
+                          Icons.keyboard_arrow_right,
+                          color: Color(0xFF8A5BFF),
+                          size: 20,
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '(${widget.keywords.length})',
+                        style: const TextStyle(
+                          color: Color(0xFFB593FF),
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                   ),
                 ),
+              ),
             ],
-          ),
-          const SizedBox(height: 10),
-          Wrap(
+            const Text(
+              'Keywords',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+          alignment: Alignment.topLeft,
+          child: Wrap(
             spacing: 8,
             runSpacing: 8,
             children: displayList.map((keyword) {
@@ -3032,14 +3112,14 @@ class _KeywordsExpandableContainerState extends State<_KeywordsExpandableContain
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                 label: Text(
                   keywordLabel, 
-                  style: const TextStyle(color: Color(0xFFD4C7FF), fontSize: 11, fontWeight: FontWeight.w500)
+                  style: const TextStyle(color: Color(0xFFD4C7FF), fontSize: 12, fontWeight: FontWeight.w500)
                 ),
                 onPressed: () => widget.onKeywordSelected(keywordLabel),
               );
             }).toList(),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

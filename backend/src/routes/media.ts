@@ -848,6 +848,20 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         });
         const person = personRes.data;
 
+        let biography = person.biography;
+        if ((!biography || biography.trim() === '') && prefLang !== 'en-US') {
+          try {
+            const enPersonRes = await axios.get(`https://api.themoviedb.org/3/person/${id}`, {
+              params: { api_key: apiKeyRow.value, language: 'en-US' }
+            });
+            if (enPersonRes.data && enPersonRes.data.biography) {
+              biography = enPersonRes.data.biography;
+            }
+          } catch (e) {
+            console.error('Failed to fetch fallback en-US biography', e);
+          }
+        }
+
         // 2. Fetch movie credits
         const creditsRes = await axios.get(`https://api.themoviedb.org/3/person/${id}/movie_credits`, {
           params: { api_key: apiKeyRow.value, language: prefLang }
@@ -856,11 +870,16 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         const castCredits = creditsRes.data.cast || [];
         const crewCredits = creditsRes.data.crew || [];
 
-        // Find all directed movies
-        const directedMovies = crewCredits.filter((c: any) => c.job === 'Director');
-
         // 3. Match against local library movies!
-        const localMovies = db.prepare(`SELECT id, title, year, tmdb_id, poster_path FROM media_items WHERE type = 'Movie'`).all() as any[];
+        const localMovies = db.prepare(`
+          SELECT mi.id, mi.title, mi.year, mi.tmdb_id, mi.poster_path,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'watch_status') as watch_status,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'playback_progress') as playback_progress,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'duration') as duration,
+                 (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'runtime') as runtime
+          FROM media_items mi
+          WHERE mi.type = 'Movie'
+        `).all() as any[];
 
         const matchLocal = (tmdbId: any, title: string) => {
           return localMovies.find(m => (m.tmdb_id && tmdbId && m.tmdb_id.toString() === tmdbId.toString()) || m.title.toLowerCase() === title.toLowerCase());
@@ -875,27 +894,44 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             release_date: c.release_date,
             year: c.release_date ? parseInt(c.release_date.substring(0, 4), 10) : null,
             poster_path: c.poster_path ? `https://image.tmdb.org/t/p/w500${c.poster_path}` : null,
-            local_id: localMatch ? localMatch.id : null
+            popularity: c.popularity || 0.0,
+            vote_average: c.vote_average || 0.0,
+            vote_count: c.vote_count || 0,
+            overview: c.overview || '',
+            local_id: localMatch ? localMatch.id : null,
+            watch_status: localMatch ? localMatch.watch_status : null,
+            playback_progress: localMatch ? localMatch.playback_progress : null,
+            duration: localMatch ? localMatch.duration : null,
+            runtime: localMatch ? localMatch.runtime : null,
           };
         }).sort((a: any, b: any) => (b.year || 0) - (a.year || 0));
 
-        const mappedCrew = directedMovies.map((c: any) => {
+        const mappedCrew = crewCredits.map((c: any) => {
           const localMatch = matchLocal(c.id, c.title);
           return {
             id: c.id,
             title: c.title,
             job: c.job,
+            department: c.department || '',
             release_date: c.release_date,
             year: c.release_date ? parseInt(c.release_date.substring(0, 4), 10) : null,
             poster_path: c.poster_path ? `https://image.tmdb.org/t/p/w500${c.poster_path}` : null,
-            local_id: localMatch ? localMatch.id : null
+            popularity: c.popularity || 0.0,
+            vote_average: c.vote_average || 0.0,
+            vote_count: c.vote_count || 0,
+            overview: c.overview || '',
+            local_id: localMatch ? localMatch.id : null,
+            watch_status: localMatch ? localMatch.watch_status : null,
+            playback_progress: localMatch ? localMatch.playback_progress : null,
+            duration: localMatch ? localMatch.duration : null,
+            runtime: localMatch ? localMatch.runtime : null,
           };
         }).sort((a: any, b: any) => (b.year || 0) - (a.year || 0));
 
         return reply.send({
           id: person.id,
           name: person.name,
-          biography: person.biography,
+          biography: biography,
           birthday: person.birthday,
           deathday: person.deathday,
           place_of_birth: person.place_of_birth,
@@ -1286,22 +1322,33 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
       try {
         const items = db.prepare(`
-          SELECT id, title, year, poster_path, collection_name, collection_id
+          SELECT id, title, year, poster_path, collection_name, collection_id, type, file_path
           FROM media_items
           WHERE collection_id = ?
           ORDER BY COALESCE(year, 9999) ASC, title ASC
-        `).all(collectionId) as Array<{
-          id: string;
-          title: string;
-          year: number | null;
-          poster_path: string | null;
-          collection_name: string | null;
-          collection_id: string | null;
-        }>;
+        `).all(collectionId) as any[];
+
+        const itemsWithMetadata = items.map(item => {
+          const metadataRows = db.prepare(`
+            SELECT metadata_key, metadata_value 
+            FROM media_metadata 
+            WHERE media_item_id = ?
+          `).all(item.id) as Array<{ metadata_key: string; metadata_value: string }>;
+
+          const metadata: Record<string, string> = {};
+          metadataRows.forEach(row => {
+            metadata[row.metadata_key] = row.metadata_value;
+          });
+
+          return {
+            ...item,
+            metadata,
+          };
+        });
 
         return reply.send({
           collectionId,
-          items,
+          items: itemsWithMetadata,
         });
       } catch (error: any) {
         request.log.error(error);
