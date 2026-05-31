@@ -28,9 +28,16 @@ flutter run -d web-server --web-port=50645
 
 ## Senaste status
 
-Loom har nu fullt stöd för **premium OAuth-anslutning av Trakt.tv och Simkl**! Användaren parar sina konton med ett enda klick direkt under respektive tjänst i inställningarna (som dessutom städats upp och grupperats för optimal användarvänlighet). 
+Loom har nu fullt stöd för **premium OAuth-anslutning av Trakt.tv och Simkl** samt **äkta tvåvägs watched-status (sedd-status) synk**! 
 
-Vid lyckad OAuth-koppling startar backend omedelbart ett bakgrundsjobb som hämtar och importerar **hela användarens historiska betygshistorik** från Trakt/Simkl direkt in i Loom. Nya betyg som sätts i Loom synkas ut i realtid till Trakt, Simkl och TMDB automatiskt!
+### Watched-status Synkronisering (Trakt & Simkl)
+När dina konton har parats via inställningarna synkas din "sedd"-historik automatiskt:
+* **Befintligt bibliotek:** Varje gång servern startar hämtas historiken i bakgrunden och uppdaterar databasen. Likaså när du precis har parat ett nytt konto via OAuth.
+* **Nytt media:** Så fort ny film eller media läggs till och skannas in av biblioteksskannern, görs en direktkontroll mot dina externa konton så att historiken matchas på en gång.
+* **Tvåvägssynk:** När du tittar klart på en film i Loom synkas detta omedelbart upp till Trakt och Simkl.
+* **Visualisering i UI:** I hemskärmen och filmvyn visas en snygg, lysande neongrön bock i övre vänstra hörnet på postern. I detaljvyn visas en premium grön `"Sedd"`-badge under cover-bilden (vilken dynamiskt ersätts med den lila progress-baren om du börjar se om filmen).
+
+Vid lyckad OAuth-koppling startar även ett bakgrundsjobb som hämtar och importerar **hela användarens historiska betygshistorik** från Trakt/Simkl direkt in i Loom. Nya betyg som sätts i Loom synkas ut i realtid till Trakt, Simkl och TMDB automatiskt!
 
 Om du tar över arbetet, börja i [HANDOFF.md](HANDOFF.md) för full status.
 

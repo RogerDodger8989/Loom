@@ -54,6 +54,10 @@ Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fu
 ## 7. Lokal Scrobbling, Spårning & Import/Export
 - **Lokal Scrobbling:** Vid uppspelning skickas hjärtslag (`POST /api/playback/progress`) var 10:e sekund till backend. Framstegen sparas i tabellen `WATCH_HISTORY`. Vid 90 % av speltiden flaggas mediet automatiskt som "Sedd".
 - **Visuellt framsteg (Continue Watching):** På hemskärmen ritas en visuell linje (progress bar) ut baserat på procentuell framgång `((last_position / total_duration) * 100)`.
+- **Automatisk Watched-status Synkronisering:** Fullt integrerad tvåvägssynk av sedd-status mot externa tjänster (Trakt & Simkl):
+  * **Hämtning (Pull):** Historik synkas automatiskt till SQLite vid serverstart, efter lyckad OAuth-koppling, samt direkt efter avslutad biblioteksskanning för nyligen inskannad media.
+  * **Sändning (Push):** När en film markeras som sedd lokalt i Loom (eller uppnår 90 % uppspelning) pushas statusen omedelbart till Trakt och Simkl.
+  * **Grafiskt Gränssnitt:** Sedda objekt pryds med en neongrön bock i övre vänstra hörnet på postern, samt en premium grön "Sedd"-badge under omslaget i detaljvyn (vilken ersätts med den lila progress-baren om användaren börjar se om filmen).
 - **Offgrid Import/Export:**
   - **Import:** Möjlighet att ladda upp en CSV/JSON-fil exporterad från IMDb, Trakt eller Simkl. Backend matchar IMDb-id och sätter rätt historisk status.
   - **Export:** Dumpa hela din lokala visningshistorik, betyg och watchlist till en JSON/CSV-fil.
@@ -69,7 +73,8 @@ Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fu
 - **Bildmodul (Fotoalbum):** Mappbaserad struktur lagrad i databasen. Backend genererar automatiskt on-the-fly nerskalade miniatyrer (via Sharp) i cache för snabb laddning. Originalen förblir orörda.
 
 ## 10. Aktuell verklighet i kodbasen
-* **Premium OAuth & Betygssynk**: OAuth är helt integrerat och klart för Trakt.tv och Simkl. Användaren ansluter med ett klick via inställningarna. Loom startar automatiskt ett bakgrundsjobb som hämtar och importerar alla användarens historiska betyg till Loom SQLite-databasen direkt vid anslutning. Nya betyg som sätts i Loom synkas ut i realtid till Trakt, Simkl och TMDB.
+* **Premium OAuth, Betygssynk & Watched-status**: OAuth är helt integrerat och klart för Trakt.tv och Simkl. Användaren ansluter med ett klick via inställningarna. Loom startar automatiskt bakgrundsjobb som hämtar och importerar alla användarens historiska betyg samt sedda filmer (watched status) direkt till Loom SQLite-databasen vid anslutning. Denna synk körs även vid varje serverstart och efter avslutad biblioteksskanning. Nya betyg och sedd-markeringar synkas ut i realtid till Trakt, Simkl och TMDB.
+* **Poster- och Omslagsvisualisering**: Gridkort visar en neongrön bock uppe till vänster för sedda filmer, och i detaljvyn visas en premium grön "Sedd"-ruta under omslagsbilden (såvida inte en pågående omläsning/rewatch med aktiv progress finns, då progress-baren visas i stället).
 * **UX & Design**: Inställningssidan är helt omstrukturerad för att gruppera inmatningsfält, snabblänkar för registrering, Redirect URI-instruktioner och OAuth-knappar bredvid varandra för optimal användarvänlighet.
 * **Miljö**: SQLite-databasen under utveckling lagras i `/config/loom.db` i rotnivå. Både backend och frontend snurrar i hot reload utan kompileringsfel.
 

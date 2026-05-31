@@ -73,8 +73,11 @@ export class TMDBService {
   public getSetting(key: string): string {
     try {
       const row = db.prepare("SELECT value FROM system_settings WHERE key = ?").get(key) as { value: string } | undefined;
-      return row ? row.value : '';
+      if (row) return row.value;
+      if (key.startsWith('sync_')) return 'true';
+      return '';
     } catch (e) {
+      if (key.startsWith('sync_')) return 'true';
       return '';
     }
   }

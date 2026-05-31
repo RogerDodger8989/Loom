@@ -31,7 +31,7 @@ Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren h
 *   **Premium OAuth-integration för Trakt & Simkl**: 
     *   Helt färdigt OAuth-flöde där användaren klickar på "Anslut nu" under inställningarna, omdirigeras till Trakt/Simkl, godkänner och automatiskt paras ihop utan manuell token-inmatning.
     *   **Smart Polling**: Frontend pollar inställningarna i bakgrunden varannan sekund efter att popup-fönstret öppnats och uppdaterar omedelbart till **Ansluten ✅** så fort token sparats.
-    *   **Automatisk betygssynk vid anslutning (Bakgrundsimport)**: Så fort en koppling görs, startar backend ett bakgrundsjobb som laddar ner **alla dina historiska betyg** från Trakt/Simkl och synkar in dem i din lokala Loom-databas automatiskt!
+    *   **Automatisk betygssynk & Watched-status-import vid anslutning**: Så fort en koppling görs, startar backend bakgrundsjobb som laddar ner **alla historiska betyg och sedda filmer (watched history)** från Trakt/Simkl och synkar in dem i Loom SQLite-databasen automatiskt!
     *   **Kompakt och samlat inställnings-UI**: Alla API-fält, client secrets, Redirect URI-instruktioner, snabblänkar för registrering, och OAuth-knappar är nu logiskt grupperade bredvid varandra i stället för att vara splittrade.
 
 ---
@@ -45,14 +45,15 @@ Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren h
 - [x] JWT-baserad autentisering för alla skyddade endpoints.
 - [x] **Trakt OAuth**: `GET /api/oauth/trakt/authorize` och `GET /api/oauth/trakt/callback` för säkert token-utbyte i bakgrunden.
 - [x] **Simkl OAuth**: `GET /api/oauth/simkl/authorize` och `GET /api/oauth/simkl/callback` för Simkl.
-- [x] **Automatisk bakgrundsimport av betyg** från Trakt/Simkl till Loom-databasen vid lyckat OAuth-utbyte (`rating_sync.ts`).
+- [x] **Automatisk bakgrundsimport av betyg och watched-status** från Trakt/Simkl till Loom-databasen vid lyckat OAuth-utbyte (`rating_sync.ts`).
 
 #### Media & Ratings (`routes/media.ts`, `services/rating_sync.ts`)
-- [x] `GET /api/media/items` — lista alla mediafiler (med metadata).
+- [x] `GET /api/media/items` — lista alla mediafiler (med metadata och watched-status).
 - [x] `GET /api/media/items/:id` — hämta en films fullständiga data + all metadata.
-- [x] `POST /api/media/items/:id/seen` — markera som sedd/osedd.
+- [x] `POST /api/media/items/:id/seen` — markera som sedd/osedd lokalt och synka upp till externa plattformar direkt.
 - [x] `POST /api/media/items/:id/metadata` — spara betyg (0–10).
-- [x] **Realtids betygssynk**: När du betygsätter en film i Loom synkas betyget direkt till Trakt, Simkl och TMDB i realtid!
+- [x] **Realtids betyg- & watched-synk**: När du sätter betyg eller markerar som sedd i Loom synkas detta omedelbart till Trakt, Simkl och TMDB i realtid!
+- [x] **Automatisk schemalagd/startup synk**: `syncAllExternalData()` körs vid serverns start och vid avslutad biblioteksskanning för att hålla sedd-status ständigt uppdaterad.
 - [x] `POST /api/media/items/:id/match` — manuell TMDB-omlänkning.
 
 #### Inställningar & Scanner (`routes/settings.ts`, `services/scanner.ts`, `services/tmdb.ts`)

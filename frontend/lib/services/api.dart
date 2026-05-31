@@ -720,5 +720,38 @@ class ApiService {
       throw Exception('Failed to analyze media item: ${response.body}');
     }
   }
+
+  /// Authenticated: Trigger a manual background synchronization of Trakt and Simkl ratings and watched history
+  Future<Map<String, dynamic>> triggerSync() async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/sync/trigger'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+    );
+    if (response.statusCode == 202) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to trigger sync: ${response.body}');
+    }
+  }
+
+  /// Authenticated: Fetch current sync status and progress
+  Future<Map<String, dynamic>> getSyncStatus() async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/sync/status'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      throw Exception('Failed to fetch sync status: ${response.body}');
+    }
+  }
 }
 

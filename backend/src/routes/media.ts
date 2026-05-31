@@ -730,11 +730,28 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           file_path: movie.file_path,
           added_at: movie.added_at,
           metadata: metadata, // includes 'cast', 'ratings' etc
-          versions: [{
-            id: movie.id,
-            file_path: movie.file_path,
-            resolution: metadata.resolution || '1080p'
-          }]
+          versions: (() => {
+            try {
+              const sameItems = movie.tmdb_id
+                ? db.prepare(`SELECT id, file_path FROM media_items WHERE tmdb_id = ?`).all(movie.tmdb_id) as any[]
+                : db.prepare(`SELECT id, file_path FROM media_items WHERE title = ?`).all(movie.title) as any[];
+
+              return sameItems.map((item: any) => {
+                const resRow = db.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'resolution'`).get(item.id) as any;
+                return {
+                  id: item.id,
+                  file_path: item.file_path,
+                  resolution: resRow?.metadata_value || '1080p'
+                };
+              });
+            } catch (e) {
+              return [{
+                id: movie.id,
+                file_path: movie.file_path,
+                resolution: metadata.resolution || '1080p'
+              }];
+            }
+          })()
         };
 
       } catch (error: any) {

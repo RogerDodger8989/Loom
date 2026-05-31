@@ -749,6 +749,39 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   );
                                 }),
                               ),
+                            ] else if (_isWatched) ...[
+                              const SizedBox(height: 12),
+                              Container(
+                                width: 220,
+                                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.55),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: const Color(0xFF00E676).withValues(alpha: 0.4), width: 1.2), // neon green glowing border
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(0xFF00E676).withValues(alpha: 0.1),
+                                      blurRadius: 4,
+                                    )
+                                  ],
+                                ),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.check_circle_outline, color: Color(0xFF00E676), size: 16),
+                                    SizedBox(width: 6),
+                                    Text(
+                                      'Sedd',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ],
                           ],
                         ),
@@ -848,12 +881,54 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               },
                             ),
                             
-                            // Premium Quality Badges Row under the Title
-                            _buildQualityBadgesRow(
-                              media['file_path'] as String?, 
-                              media['versions']?[0]?['resolution'] as String? ?? media['resolution'] as String?,
-                              metadata: metadata
-                            ),
+                            if (directorName != null) ...[
+                              const SizedBox(height: 8),
+                              MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  onTap: () {
+                                    if (directorId != null) {
+                                      if (widget.onPersonSelected != null) {
+                                        widget.onPersonSelected!(directorId);
+                                      } else {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => PersonDetailsScreen(
+                                              personId: directorId,
+                                              apiService: widget.apiService,
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                                  child: Stack(
+                                    children: [
+                                      Text(
+                                        'Regi: $directorName',
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.normal,
+                                          foreground: Paint()
+                                            ..style = PaintingStyle.stroke
+                                            ..strokeWidth = 1.8
+                                            ..color = Colors.black,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Regi: $directorName',
+                                        style: TextStyle(
+                                          color: Colors.white.withValues(alpha: 0.70), // elegant white70
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.normal,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                             const SizedBox(height: 12),
 
                             // Subtitle Metadata details with highly legible high-contrast outlines
@@ -920,50 +995,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   const SizedBox(width: 16),
                                 ],
 
-                                // Director as keyword-style chip with premium high-contrast outline
-                                if (directorName != null) ...[
-                                  MouseRegion(
-                                    cursor: SystemMouseCursors.click,
-                                    child: GestureDetector(
-                                      onTap: () {
-                                        if (directorId != null) {
-                                          if (widget.onPersonSelected != null) {
-                                            widget.onPersonSelected!(directorId);
-                                          } else {
-                                            Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (context) => PersonDetailsScreen(
-                                                  personId: directorId,
-                                                  apiService: widget.apiService,
-                                                ),
-                                              ),
-                                            );
-                                          }
-                                        }
-                                      },
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withValues(alpha: 0.65),
-                                          borderRadius: BorderRadius.circular(20),
-                                          border: Border.all(color: Colors.black, width: 2),
-                                          boxShadow: [
-                                            BoxShadow(color: Colors.black.withValues(alpha: 0.4), blurRadius: 4, offset: const Offset(0, 2)),
-                                          ],
-                                        ),
-                                        child: Text(
-                                          'Regi: $directorName',
-                                          style: const TextStyle(
-                                            color: Colors.white, 
-                                            fontSize: 12, 
-                                            fontWeight: FontWeight.bold
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
+
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -1308,7 +1340,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           const SizedBox(height: 20),
                         ],
 
-                        // Compact Audio & Subtitles Row
+                        // Compact Video, Audio & Subtitles Row
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                           decoration: BoxDecoration(
@@ -1318,6 +1350,64 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           ),
                           child: Row(
                             children: [
+                              // Video Format Selector (Disable and gray out if only 1 version exists)
+                              Builder(builder: (context) {
+                                final List<dynamic> versions = _mediaData?['versions'] as List<dynamic>? ?? [];
+                                final displayVersions = versions.isNotEmpty ? versions : [{
+                                  'id': widget.mediaId,
+                                  'resolution': _mediaData?['resolution'] ?? '1080p',
+                                }];
+                                final isMultiple = displayVersions.length > 1;
+                                
+                                return Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.hd_outlined, color: isMultiple ? Colors.white38 : Colors.white24, size: 18),
+                                    const SizedBox(width: 10),
+                                    DropdownButtonHideUnderline(
+                                      child: DropdownButton<String>(
+                                        isDense: true,
+                                        value: widget.mediaId,
+                                        dropdownColor: const Color(0xFF15102A),
+                                        icon: Icon(Icons.keyboard_arrow_down, color: isMultiple ? Colors.white38 : Colors.transparent, size: 16),
+                                        style: TextStyle(color: isMultiple ? Colors.white70 : Colors.white24, fontSize: 14),
+                                        items: displayVersions.map<DropdownMenuItem<String>>((v) {
+                                          final res = v['resolution']?.toString().toUpperCase() ?? '1080P';
+                                          return DropdownMenuItem<String>(
+                                            value: v['id']?.toString(),
+                                            child: Text(res),
+                                          );
+                                        }).toList(),
+                                        onChanged: isMultiple ? (newId) {
+                                          if (newId != null && newId != widget.mediaId) {
+                                            if (widget.onMediaSelected != null) {
+                                              widget.onMediaSelected!(newId);
+                                            } else {
+                                              Navigator.pushReplacement(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) => MediaDetailsScreen(
+                                                    mediaId: newId,
+                                                    apiService: widget.apiService,
+                                                    onBack: widget.onBack,
+                                                    onGenreSelected: widget.onGenreSelected,
+                                                    onKeywordSelected: widget.onKeywordSelected,
+                                                    onMediaSelected: widget.onMediaSelected,
+                                                    onPersonSelected: widget.onPersonSelected,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        } : null,
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              }),
+                              Container(width: 1, height: 24, color: Colors.white10, margin: const EdgeInsets.symmetric(horizontal: 12)),
+                              
+                              // Audio Selector
                               const Icon(Icons.volume_up_outlined, color: Colors.white38, size: 18),
                               const SizedBox(width: 10),
                               Expanded(
@@ -1337,6 +1427,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 ),
                               ),
                               Container(width: 1, height: 24, color: Colors.white10, margin: const EdgeInsets.symmetric(horizontal: 12)),
+                              
+                              // Subtitle Selector
                               const Icon(Icons.subtitles_outlined, color: Colors.white38, size: 18),
                               const SizedBox(width: 10),
                               Expanded(

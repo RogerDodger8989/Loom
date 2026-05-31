@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import db from '../config/database';
-import { importRatingsFromTrakt, importRatingsFromSimkl } from '../services/rating_sync';
+import { importRatingsFromTrakt, importRatingsFromSimkl, importWatchHistoryFromTrakt, importWatchHistoryFromSimkl } from '../services/rating_sync';
 
 export default async function oauthRoutes(fastify: FastifyInstance) {
   
@@ -167,8 +167,9 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
       const data = await response.json() as { access_token: string };
       saveSetting('TRAKT_ACCESS_TOKEN', data.access_token);
 
-      // Trigger automatic background rating import immediately
+      // Trigger automatic background rating and watch history import immediately
       importRatingsFromTrakt();
+      importWatchHistoryFromTrakt();
 
       reply.type('text/html');
       return reply.send(renderResponsePage('Trakt ansluten!', 'Loom har nu kopplats till ditt Trakt.tv-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
@@ -261,8 +262,9 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
       const data = await response.json() as { access_token: string };
       saveSetting('SIMKL_ACCESS_TOKEN', data.access_token);
 
-      // Trigger automatic background rating import immediately
+      // Trigger automatic background rating and watch history import immediately
       importRatingsFromSimkl();
+      importWatchHistoryFromSimkl();
 
       reply.type('text/html');
       return reply.send(renderResponsePage('Simkl ansluten!', 'Loom har nu kopplats till ditt Simkl-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));

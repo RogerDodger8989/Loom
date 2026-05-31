@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:async';
+import 'dart:ui' as ui;
 import '../services/api.dart';
 import 'pairing_screen.dart';
 import 'media_details_screen.dart';
@@ -231,6 +232,18 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String _watchProviderRegion = 'SE';
   String _titleDisplayStyle = 'Translated';
 
+  // Granular Sync Platform Options
+  bool _syncTraktRatings = true;
+  bool _syncTraktWatched = true;
+  bool _syncSimklRatings = true;
+  bool _syncSimklWatched = true;
+
+  // Manual Sync progress tracking
+  bool _isManualSyncing = false;
+  double _manualSyncProgress = 0.0;
+  String _manualSyncStep = '';
+  Timer? _manualSyncTimer;
+
   String? _genreFilter;
   String? _keywordFilter;
 
@@ -253,6 +266,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   @override
   void dispose() {
+    _manualSyncTimer?.cancel();
     _tabController.dispose();
     _pathController.dispose();
     _tmdbKeyController.dispose();
@@ -1197,6 +1211,33 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           },
                         ),
                       
+                      // Top-left watched checkmark badge
+                      Positioned(
+                        top: 10,
+                        left: 10,
+                        child: Builder(builder: (context) {
+                          final metadata = movie['metadata'] ?? {};
+                          if (metadata['watch_status'] == 'watched') {
+                            return Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.6),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: const Color(0xFF00E676), width: 1.5), // neon green outline
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF00E676).withValues(alpha: 0.3),
+                                    blurRadius: 6,
+                                  )
+                                ],
+                              ),
+                              child: const Icon(Icons.check, color: Color(0xFF00E676), size: 14),
+                            );
+                          }
+                          return const SizedBox.shrink();
+                        }),
+                      ),
+                      
                       // Bottom progress bar if playback_progress > 0
                       Builder(builder: (context) {
                         final metadata = movie['metadata'] ?? {};
@@ -1462,6 +1503,32 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             size: 48,
                           ),
                         ),
+                      
+                      // Top-left watched checkmark badge
+                      Positioned(
+                        top: 12,
+                        left: 12,
+                        child: Builder(builder: (context) {
+                          if (metadata['watch_status'] == 'watched') {
+                            return Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.6),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: const Color(0xFF00E676), width: 1.5), // neon green outline
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF00E676).withValues(alpha: 0.3),
+                                    blurRadius: 6,
+                                  )
+                                ],
+                              ),
+                              child: const Icon(Icons.check, color: Color(0xFF00E676), size: 14),
+                            );
+                          }
+                          return const SizedBox.shrink();
+                        }),
+                      ),
                       
                       // Resolution Badge
                       if (type == 'Movie')
@@ -2066,6 +2133,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _watchProviderRegion = settings['WATCH_PROVIDER_REGION'] ?? 'SE';
         _titleDisplayStyle = settings['TITLE_DISPLAY_STYLE'] ?? 'Translated';
         _preferLocalNfo = settings['PREFER_LOCAL_NFO'] != 'false';
+        _syncTraktRatings = settings['sync_trakt_ratings'] != 'false';
+        _syncTraktWatched = settings['sync_trakt_watched'] != 'false';
+        _syncSimklRatings = settings['sync_simkl_ratings'] != 'false';
+        _syncSimklWatched = settings['sync_simkl_watched'] != 'false';
         _isLoadingSettings = false;
       });
     } catch (e) {
@@ -2095,6 +2166,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         'WATCH_PROVIDER_REGION': _watchProviderRegion,
         'TITLE_DISPLAY_STYLE': _titleDisplayStyle,
         'PREFER_LOCAL_NFO': _preferLocalNfo ? 'true' : 'false',
+        'sync_trakt_ratings': _syncTraktRatings ? 'true' : 'false',
+        'sync_trakt_watched': _syncTraktWatched ? 'true' : 'false',
+        'sync_simkl_ratings': _syncSimklRatings ? 'true' : 'false',
+        'sync_simkl_watched': _syncSimklWatched ? 'true' : 'false',
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Inställningar sparade!'), backgroundColor: Color(0xFF8A5BFF)),
@@ -2204,6 +2279,100 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     }
   }
 
+  void _startManualSync() async {
+    if (_isManualSyncing) return;
+
+    setState(() {
+      _isManualSyncing = true;
+      _manualSyncProgress = 0.0;
+      _manualSyncStep = 'Initierar synkronisering...';
+    });
+
+    try {
+      await widget.apiService.triggerSync();
+      _pollManualSyncStatus();
+    } catch (e) {
+      setState(() {
+        _isManualSyncing = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Kunde inte starta synkronisering: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  void _pollManualSyncStatus() {
+    _manualSyncTimer?.cancel();
+    _manualSyncTimer = Timer.periodic(const Duration(milliseconds: 1500), (timer) async {
+      try {
+        final status = await widget.apiService.getSyncStatus();
+        final bool syncing = status['isSyncing'] == true;
+        final int progressVal = status['progress'] ?? 0;
+        final String stepText = status['currentStep'] ?? '';
+        final lastResult = status['lastSyncResult'];
+
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+
+        setState(() {
+          _manualSyncProgress = progressVal / 100.0;
+          _manualSyncStep = stepText;
+        });
+
+        if (!syncing) {
+          timer.cancel();
+          setState(() {
+            _isManualSyncing = false;
+          });
+
+          // Show Toast notification!
+          if (lastResult != null && lastResult['success'] == true) {
+            final traktRatings = lastResult['trakt']?['ratings'] ?? 0;
+            final traktWatched = lastResult['trakt']?['watched'] ?? 0;
+            final simklRatings = lastResult['simkl']?['ratings'] ?? 0;
+            final simklWatched = lastResult['simkl']?['watched'] ?? 0;
+
+            _showPremiumToast(
+              'Synkronisering slutförd!',
+              'Trakt: $traktRatings betyg & $traktWatched sedda. Simkl: $simklRatings betyg & $simklWatched sedda.',
+              isSuccess: true,
+            );
+            _loadAllMedia(); // Refresh list to reflect watch markers!
+          } else {
+            final errorText = lastResult?['error'] ?? 'Okänt fel';
+            _showPremiumToast(
+              'Synkronisering misslyckades',
+              errorText,
+              isSuccess: false,
+            );
+          }
+        }
+      } catch (e) {
+        debugPrint('Error polling sync status: $e');
+      }
+    });
+  }
+
+  void _showPremiumToast(String title, String message, {required bool isSuccess}) {
+    final overlay = Overlay.of(context);
+    late OverlayEntry entry;
+
+    entry = OverlayEntry(
+      builder: (context) => _PremiumToastWidget(
+        title: title,
+        message: message,
+        isSuccess: isSuccess,
+        onDismiss: () {
+          entry.remove();
+        },
+      ),
+    );
+
+    overlay.insert(entry);
+  }
+
   Widget _buildSettingsView() {
     return SingleChildScrollView(
       child: Column(
@@ -2214,16 +2383,68 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('Inställningar', style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF8A5BFF),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                ),
-                onPressed: _saveSettings,
-                icon: const Icon(Icons.save),
-                label: const Text('Spara Inställningar', style: TextStyle(fontWeight: FontWeight.bold)),
+              Row(
+                children: [
+                  if (_isManualSyncing) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8A5BFF).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00E676)),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '${(_manualSyncProgress * 100).toInt()}% - $_manualSyncStep',
+                            style: const TextStyle(color: Colors.white70, fontSize: 12.5, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 15),
+                  ] else ...[
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white.withValues(alpha: 0.04),
+                        foregroundColor: const Color(0xFF00E676),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30),
+                          side: BorderSide(color: const Color(0xFF00E676).withValues(alpha: 0.4), width: 1.5),
+                        ),
+                      ),
+                      onPressed: _startManualSync,
+                      icon: const Icon(Icons.sync, color: Color(0xFF00E676)),
+                      label: const Text(
+                        'Synkronisera Nu',
+                        style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                    ),
+                    const SizedBox(width: 15),
+                  ],
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF8A5BFF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                    ),
+                    onPressed: _saveSettings,
+                    icon: const Icon(Icons.save),
+                    label: const Text('Spara Inställningar', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ],
               ),
             ],
           ),
@@ -2314,6 +2535,45 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               ),
               const SizedBox(height: 20),
               _buildSettingField('Simkl Access Token', _simklTokenController, obscure: true),
+              if (_simklTokenController.text.isNotEmpty) ...[
+                const SizedBox(height: 15),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Simkl Synkroniseringsval:',
+                        style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 10),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Synkronisera Betyg (Ratings)', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        value: _syncSimklRatings,
+                        activeColor: Colors.green,
+                        onChanged: (val) {
+                          setState(() => _syncSimklRatings = val);
+                        },
+                      ),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Synkronisera Sedda (Watched Status)', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        value: _syncSimklWatched,
+                        activeColor: Colors.green,
+                        onChanged: (val) {
+                          setState(() => _syncSimklWatched = val);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 30),
 
               Row(
@@ -2373,6 +2633,45 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               ),
               const SizedBox(height: 20),
               _buildSettingField('Trakt Access Token', _traktTokenController, obscure: true),
+              if (_traktTokenController.text.isNotEmpty) ...[
+                const SizedBox(height: 15),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Trakt.tv Synkroniseringsval:',
+                        style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 10),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Synkronisera Betyg (Ratings)', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        value: _syncTraktRatings,
+                        activeColor: Colors.redAccent,
+                        onChanged: (val) {
+                          setState(() => _syncTraktRatings = val);
+                        },
+                      ),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Synkronisera Sedda (Watched Status)', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        value: _syncTraktWatched,
+                        activeColor: Colors.redAccent,
+                        onChanged: (val) {
+                          setState(() => _syncTraktWatched = val);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 25),
               _buildSettingField('TMDB User Auth', _tmdbAuthController, obscure: true),
               const SizedBox(height: 20),
@@ -2707,6 +3006,165 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           ),
         ),
       ],
+    );
+  }
+}
+
+class _PremiumToastWidget extends StatefulWidget {
+  final String title;
+  final String message;
+  final bool isSuccess;
+  final VoidCallback onDismiss;
+
+  const _PremiumToastWidget({
+    required this.title,
+    required this.message,
+    required this.isSuccess,
+    required this.onDismiss,
+  });
+
+  @override
+  State<_PremiumToastWidget> createState() => _PremiumToastWidgetState();
+}
+
+class _PremiumToastWidgetState extends State<_PremiumToastWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _animController;
+  late Animation<double> _fadeAnim;
+  late Animation<double> _slideAnim;
+  Timer? _dismissTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+
+    _fadeAnim = CurvedAnimation(parent: _animController, curve: Curves.easeOut);
+    _slideAnim = Tween<double>(begin: -80, end: 0).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeOutBack),
+    );
+
+    _animController.forward();
+
+    _dismissTimer = Timer(const Duration(seconds: 4), () {
+      _dismiss();
+    });
+  }
+
+  void _dismiss() {
+    _animController.reverse().then((_) {
+      widget.onDismiss();
+    });
+  }
+
+  @override
+  void dispose() {
+    _dismissTimer?.cancel();
+    _animController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 40,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: AnimatedBuilder(
+          animation: _animController,
+          builder: (context, child) {
+            return Opacity(
+              opacity: _fadeAnim.value,
+              child: Transform.translate(
+                offset: Offset(0, _slideAnim.value),
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: 480,
+                    margin: const EdgeInsets.symmetric(horizontal: 20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF130E26).withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: widget.isSuccess 
+                            ? const Color(0xFF00E676).withValues(alpha: 0.4) 
+                            : Colors.redAccent.withValues(alpha: 0.4),
+                        width: 1.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: (widget.isSuccess ? const Color(0xFF00E676) : Colors.redAccent).withValues(alpha: 0.15),
+                          blurRadius: 16,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: BackdropFilter(
+                        filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: (widget.isSuccess ? const Color(0xFF00E676) : Colors.redAccent).withValues(alpha: 0.12),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  widget.isSuccess ? Icons.check_circle_outline : Icons.error_outline,
+                                  color: widget.isSuccess ? const Color(0xFF00E676) : Colors.redAccent,
+                                  size: 24,
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      widget.title,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      widget.message,
+                                      style: TextStyle(
+                                        color: Colors.white.withValues(alpha: 0.6),
+                                        fontSize: 12.5,
+                                        height: 1.3,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                                onPressed: _dismiss,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }

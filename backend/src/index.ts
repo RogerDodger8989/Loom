@@ -7,7 +7,9 @@ import libraryRoutes from './routes/library';
 import mediaRoutes from './routes/media';
 import settingsRoutes from './routes/settings';
 import oauthRoutes from './routes/oauth';
+import syncRoutes from './routes/sync';
 import db from './config/database'; // Import ensures database gets initialized and seeded on boot
+import { syncAllExternalData } from './services/rating_sync';
 
 // Load environment variables
 dotenv.config();
@@ -55,6 +57,7 @@ app.register(libraryRoutes);
 app.register(mediaRoutes);
 app.register(settingsRoutes);
 app.register(oauthRoutes);
+app.register(syncRoutes);
 
 // Global Error Handler
 app.setErrorHandler((error, request, reply) => {
@@ -85,6 +88,11 @@ const start = async () => {
     Headless Media Server is now online!
     👉 Server listening on http://${HOST}:${PORT}
     `);
+
+    // Run external ratings and watched history sync in background
+    syncAllExternalData().catch(e => {
+      console.error('[Startup Sync] Failed to run syncAllExternalData:', e);
+    });
   } catch (err) {
     app.log.error(err);
     process.exit(1);

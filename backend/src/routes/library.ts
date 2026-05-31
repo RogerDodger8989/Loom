@@ -3,6 +3,7 @@ import { mediaScanner } from '../services/scanner';
 import { exec } from 'child_process';
 import db from '../config/database';
 import crypto from 'crypto';
+import { syncAllExternalData } from '../services/rating_sync';
 
 interface ScanBody {
   path?: string;
@@ -61,6 +62,11 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
             itemsUpdated: result.updated
           };
           console.log(`[Library] Background scan finished successfully. Added: ${result.added}, Updated: ${result.updated}`);
+          
+          // Trigger external sync immediately so new items can get ratings/watch statuses matched
+          syncAllExternalData().catch(e => {
+            console.error('[Library Scan Sync] Failed to run syncAllExternalData:', e);
+          });
         })
         .catch((err) => {
           isScanning = false;
