@@ -9,7 +9,7 @@
 
 ## Vad är Loom?
 
-Loom är en **lokal, Plex-inspirerad mediaserver** med premium-UI. Användaren hostar den på sin egen server (Unraid/NAS) och når den via webb eller Android TV-app. Ingen molntjänst krävs.
+Loom är en **lokal, Loom-inspirerad mediaserver** med premium-UI. Användaren hostar den på sin egen server (Unraid/NAS) och når den via webb eller Android TV-app. Ingen molntjänst krävs.
 
 **Arkitektur:** Fastify (Node/TS) backend + Flutter frontend (Web + Android TV). SQLite som databas.
 

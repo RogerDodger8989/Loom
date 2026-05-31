@@ -235,6 +235,50 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> fetchMediaMetadataState(String id) async {
+    if (_token == null) throw Exception('Not authenticated');
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/items/$id/metadata-state'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Failed to fetch metadata state: ${response.body}');
+  }
+
+  Future<void> setMediaMetadataLock(String id, String key, bool isLocked) async {
+    if (_token == null) throw Exception('Not authenticated');
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/media/items/$id/metadata-lock'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'key': key, 'isLocked': isLocked}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update metadata lock: ${response.body}');
+    }
+  }
+
+  Future<void> updateMediaItemFields(String id, Map<String, dynamic> fields) async {
+    if (_token == null) throw Exception('Not authenticated');
+    final response = await http.patch(
+      Uri.parse('$baseUrl/api/media/items/$id'),
+      headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(fields),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update media item: ${response.body}');
+    }
+  }
+
   /// Convenience: Save user's personal rating for a media item
   Future<void> saveRating(String id, double rating) async {
     await saveMediaMetadata(id, 'my_rating', rating.round().toString());

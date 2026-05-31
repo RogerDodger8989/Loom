@@ -1,6 +1,6 @@
 # Loom 🎬
 
-**En Plex-inspirerad, lokalt hostad mediaserver med premium UI.** Hanterar film, TV-serier, musik och foton — helt offgrid, inget moln behövs.
+**En Loom-inspirerad, lokalt hostad mediaserver med premium UI.** Hanterar film, TV-serier, musik och foton — helt offgrid, inget moln behövs.
 
 ---
 

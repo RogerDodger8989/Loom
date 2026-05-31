@@ -12,7 +12,7 @@ Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fu
 - **Mediehantering:** Inbäddad FFmpeg-binär i Docker-containern för strömning och transkodning.
 - **Klienter (Frontend):** En gemensam kodbas i Flutter som kompilerar till en Android-TV-app (med fullt stöd för D-pad/fjärrkontroll) och en skrivbordsapp för dator (PC).
 
-## 2. Autentisering & Enhetsparning (Plex-liknande PIN)
+## 2. Autentisering & Enhetsparning (Loom-liknande PIN)
 **Offgrid-first:** Ingen extern molntjänst krävs för inloggning.
 
 **PIN-parningsflöde:**

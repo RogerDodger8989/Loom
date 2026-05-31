@@ -333,6 +333,123 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // GET /api/media/items/:id/metadata-state
+  // Returns metadata values together with lock flags for editor UIs.
+  fastify.get(
+    '/api/media/items/:id/metadata-state',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+
+      try {
+        const item = db.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) return reply.code(404).send({ error: 'Media item not found' });
+
+        const rows = db.prepare(`
+          SELECT metadata_key, metadata_value, is_locked
+          FROM media_metadata
+          WHERE media_item_id = ?
+        `).all(id) as Array<{ metadata_key: string; metadata_value: string; is_locked: number }>;
+
+        const metadata: Record<string, { value: any; is_locked: boolean }> = {};
+        rows.forEach(row => {
+          try {
+            metadata[row.metadata_key] = { value: JSON.parse(row.metadata_value), is_locked: row.is_locked === 1 };
+          } catch {
+            metadata[row.metadata_key] = { value: row.metadata_value, is_locked: row.is_locked === 1 };
+          }
+        });
+
+        return reply.send({ id, metadata });
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to fetch metadata state', details: err.message });
+      }
+    }
+  );
+
+  // PUT /api/media/items/:id/metadata-lock
+  // Toggle lock state for a single metadata key.
+  fastify.put(
+    '/api/media/items/:id/metadata-lock',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: { key?: string; isLocked?: boolean } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      const { key, isLocked } = request.body || {};
+
+      if (!key) {
+        return reply.code(400).send({ error: 'metadata key is required' });
+      }
+
+      try {
+        const item = db.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) return reply.code(404).send({ error: 'Media item not found' });
+
+        const existing = db.prepare(`
+          SELECT id FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?
+        `).get(id, key) as { id: string } | undefined;
+
+        if (!existing) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value, is_locked)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(uuidv4(), id, key, '', isLocked ? 1 : 0);
+        } else {
+          db.prepare(`
+            UPDATE media_metadata
+            SET is_locked = ?
+            WHERE media_item_id = ? AND metadata_key = ?
+          `).run(isLocked ? 1 : 0, id, key);
+        }
+
+        return reply.send({ ok: true });
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to update metadata lock', details: err.message });
+      }
+    }
+  );
+
+  // PATCH /api/media/items/:id
+  // Update core media_items fields used by the editor modal.
+  fastify.patch(
+    '/api/media/items/:id',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: Record<string, any> }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      const body = request.body || {};
+
+      try {
+        const item = db.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id) as any;
+        if (!item) return reply.code(404).send({ error: 'Media item not found' });
+
+        const allowed = ['title', 'original_title', 'plot', 'genre', 'year', 'poster_path', 'fanart_path', 'director', 'collection_name', 'collection_id', 'imdb_id', 'tmdb_id'];
+        const updates: string[] = [];
+        const params: any[] = [];
+
+        for (const key of allowed) {
+          if (body[key] !== undefined) {
+            updates.push(`${key} = ?`);
+            if (key === 'year') {
+              params.push(body[key] === '' || body[key] === null ? null : Number(body[key]));
+            } else {
+              params.push(body[key]);
+            }
+          }
+        }
+
+        if (updates.length === 0) {
+          return reply.send({ ok: true, updated: 0 });
+        }
+
+        params.push(id);
+        db.prepare(`UPDATE media_items SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+        return reply.send({ ok: true, updated: updates.length });
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to update media item', details: err.message });
+      }
+    }
+  );
+
   // POST /api/media/items/:id/seen
   // Toggle seen status for a given media item, update DB (media_metadata & watch_history) and sync to Trakt/Simkl
   fastify.post(
@@ -473,7 +590,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
 
   // GET /api/media/items/:id
-  // Retrieves full details for a specific media item (Plex-like Media Details page)
+  // Retrieves full details for a specific media item (Loom Media Details page)
   fastify.get(
     '/api/media/items/:id',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {

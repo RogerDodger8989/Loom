@@ -8,6 +8,7 @@ import '../services/api.dart';
 import 'pairing_screen.dart';
 import 'media_details_screen.dart';
 import 'person_details_screen.dart';
+import 'resume_playback_modal.dart';
 
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
@@ -262,6 +263,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   List<dynamic> _homeSearchLastLocalResults = [];
   List<dynamic> _homeSearchLastTmdbResults = [];
   int _homeSearchSelectedIndex = -1;
+  String? _hoveredPosterKey;
+  final Set<String> _selectedMediaIds = {};
+  int? _lastSelectedMediaIndex;
 
   @override
   void initState() {
@@ -1237,6 +1241,29 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         // Quick Actions
         Row(
           children: [
+            if (_selectedMediaIds.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(right: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF8A5BFF).withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.25)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.checklist, color: Color(0xFFB593FF), size: 16),
+                    const SizedBox(width: 8),
+                    Text('${_selectedMediaIds.length} valda', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: _clearMediaSelection,
+                      child: const Icon(Icons.close, color: Colors.white54, size: 16),
+                    ),
+                  ],
+                ),
+              ),
             if (_isScanning)
               Container(
                 margin: const EdgeInsets.only(right: 15),
@@ -1520,6 +1547,547 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     _navigateTo('media', 'external_movie_$tmdbId');
     _resetHomeSearchBox();
     FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  bool _hasModifier(LogicalKeyboardKey key) {
+    return HardwareKeyboard.instance.logicalKeysPressed.contains(key);
+  }
+
+  void _toggleMediaSelection(dynamic item, int index) {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
+
+    final hasShift = _hasModifier(LogicalKeyboardKey.shiftLeft) || _hasModifier(LogicalKeyboardKey.shiftRight);
+    final hasCtrl = _hasModifier(LogicalKeyboardKey.controlLeft) || _hasModifier(LogicalKeyboardKey.controlRight) || _hasModifier(LogicalKeyboardKey.metaLeft) || _hasModifier(LogicalKeyboardKey.metaRight);
+
+    setState(() {
+      if (hasShift && _lastSelectedMediaIndex != null) {
+        final start = _lastSelectedMediaIndex! < index ? _lastSelectedMediaIndex! : index;
+        final end = _lastSelectedMediaIndex! < index ? index : _lastSelectedMediaIndex!;
+        final gridItems = _currentMediaGridItemsSnapshot;
+        for (var i = start; i <= end; i++) {
+          final id = gridItems[i]['id']?.toString();
+          if (id != null) _selectedMediaIds.add(id);
+        }
+      } else if (hasCtrl) {
+        if (_selectedMediaIds.contains(itemId)) {
+          _selectedMediaIds.remove(itemId);
+        } else {
+          _selectedMediaIds.add(itemId);
+        }
+        _lastSelectedMediaIndex = index;
+      } else {
+        _selectedMediaIds
+          ..clear()
+          ..add(itemId);
+        _lastSelectedMediaIndex = index;
+      }
+    });
+  }
+
+  List<dynamic> _currentMediaGridItemsSnapshot = [];
+
+  void _clearMediaSelection() {
+    setState(() {
+      _selectedMediaIds.clear();
+      _lastSelectedMediaIndex = null;
+    });
+  }
+
+  String _posterKeyFor(dynamic item, String prefix) {
+    return '$prefix:${item['id']?.toString() ?? item['tmdb_id']?.toString() ?? item.hashCode.toString()}';
+  }
+
+  Future<void> _showInfoMessage(String message) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<bool> _confirmAction(String title, String message) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF11151D),
+          title: Text(title, style: const TextStyle(color: Colors.white)),
+          content: Text(message, style: const TextStyle(color: Colors.white70)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Avbryt')),
+            ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Ja')),
+          ],
+        );
+      },
+    );
+    return result ?? false;
+  }
+
+  Future<String?> _promptText(String title, String hint) async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF11151D),
+          title: Text(title, style: const TextStyle(color: Colors.white)),
+          content: TextField(
+            controller: controller,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: const TextStyle(color: Colors.white38),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Avbryt')),
+            ElevatedButton(onPressed: () => Navigator.pop(dialogContext, controller.text), child: const Text('OK')),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    return value;
+  }
+
+  Future<void> _openPosterActionsMenu(dynamic item, {required bool isHomeCard}) async {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
+
+    final metadata = (item['metadata'] is Map ? Map<String, dynamic>.from(item['metadata'] as Map) : <String, dynamic>{});
+    final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
+    final watched = metadata['watch_status']?.toString() == 'watched';
+
+    final selected = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF11151D),
+      position: const RelativeRect.fromLTRB(100, 100, 0, 0),
+      items: [
+        if (progress > 0)
+          const PopupMenuItem(value: 'clear_continue', child: Text('Ta bort från fortsätt titta')),
+        const PopupMenuItem(value: 'playlist', child: Text('Lägg till på spellista')),
+        PopupMenuItem(value: watched ? 'mark_unwatched' : 'mark_watched', child: Text('Markera som visad/osedd')),
+        const PopupMenuItem(value: 'refresh', child: Text('Uppdatera metadata')),
+        const PopupMenuItem(value: 'analyze', child: Text('Analysera')),
+        const PopupMenuItem(value: 'fix_match', child: Text('Fixa matchning')),
+        const PopupMenuItem(value: 'unmatch', child: Text('Ta bort matchning')),
+        const PopupMenuItem(value: 'delete', child: Text('Ta bort')),
+        const PopupMenuItem(value: 'stats', child: Text('Visa statistik')),
+      ],
+    );
+
+    if (selected == null) return;
+
+    try {
+      switch (selected) {
+        case 'clear_continue':
+          await widget.apiService.saveMediaMetadata(itemId, 'playback_progress', '0');
+          await widget.apiService.toggleSeenStatus(itemId, false);
+          break;
+        case 'playlist':
+          final playlistName = await _promptText('Lägg till på spellista', 'Spellistnamn');
+          if (playlistName != null && playlistName.trim().isNotEmpty) {
+            await widget.apiService.createPlaylistAndAddItem(playlistName.trim(), itemId);
+          }
+          break;
+        case 'mark_watched':
+          await widget.apiService.toggleSeenStatus(itemId, true);
+          break;
+        case 'mark_unwatched':
+          await widget.apiService.toggleSeenStatus(itemId, false);
+          break;
+        case 'refresh':
+          await widget.apiService.refreshMediaMetadata(itemId);
+          break;
+        case 'analyze':
+          await widget.apiService.analyzeMediaItem(itemId);
+          break;
+        case 'fix_match':
+          final tmdbId = await _promptText('Fixa matchning', 'TMDB ID');
+          if (tmdbId != null && tmdbId.trim().isNotEmpty) {
+            await widget.apiService.fixMatch(itemId, tmdbId.trim());
+          }
+          break;
+        case 'unmatch':
+          await widget.apiService.unmatchMediaItem(itemId);
+          break;
+        case 'delete':
+          if (await _confirmAction('Ta bort titel?', 'Detta tar bort posten från biblioteket.') ) {
+            await widget.apiService.deleteMediaItem(itemId);
+          }
+          break;
+        case 'stats':
+          await _showInfoMessage('Statistik kommer senare.');
+          break;
+      }
+
+      await _loadAllMedia();
+    } catch (e) {
+      await _showInfoMessage('Kunde inte utföra åtgärden: $e');
+    }
+  }
+
+  Future<void> _openMediaEditor(dynamic item) async {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
+
+    Map<String, dynamic> details = item is Map<String, dynamic> ? Map<String, dynamic>.from(item) : <String, dynamic>{};
+    Map<String, dynamic> metadataState = {};
+
+    try {
+      details = Map<String, dynamic>.from(await widget.apiService.fetchMediaDetails(itemId));
+      final state = await widget.apiService.fetchMediaMetadataState(itemId);
+      final raw = state['metadata'];
+      if (raw is Map) {
+        metadataState = Map<String, dynamic>.from(raw);
+      }
+    } catch (_) {
+      if (details['metadata'] is Map) {
+        metadataState = Map<String, dynamic>.from(details['metadata'] as Map);
+      }
+    }
+
+    final titleController = TextEditingController(text: details['title']?.toString() ?? '');
+    final sortTitleController = TextEditingController(text: metadataState['sort_title']?['value']?.toString() ?? '');
+    final originalTitleController = TextEditingController(text: details['original_title']?.toString() ?? '');
+    final editionController = TextEditingController(text: metadataState['edition']?['value']?.toString() ?? '');
+    final releaseController = TextEditingController(text: details['year']?.toString() ?? '');
+    final contentRatingController = TextEditingController(text: metadataState['content_rating']?['value']?.toString() ?? '');
+    final ratingController = TextEditingController(text: metadataState['my_rating']?['value']?.toString() ?? '');
+    final sloganController = TextEditingController(text: metadataState['tagline']?['value']?.toString() ?? '');
+    final summaryController = TextEditingController(text: details['plot']?.toString() ?? metadataState['summary']?['value']?.toString() ?? '');
+    final directorController = TextEditingController(text: details['director']?.toString() ?? '');
+    final writersController = TextEditingController(text: metadataState['writers']?['value']?.toString() ?? '');
+    final producersController = TextEditingController(text: metadataState['producers']?['value']?.toString() ?? '');
+    final collectionsController = TextEditingController(text: details['collection_name']?.toString() ?? '');
+    final labelsController = TextEditingController(text: metadataState['labels']?['value']?.toString() ?? '');
+    final posterController = TextEditingController(text: details['poster_path']?.toString() ?? '');
+    final fanartController = TextEditingController(text: details['fanart_path']?.toString() ?? '');
+    final logoController = TextEditingController(text: metadataState['logo_path']?['value']?.toString() ?? '');
+    final squareArtController = TextEditingController(text: metadataState['square_art']?['value']?.toString() ?? '');
+
+    final lockState = <String, bool>{};
+    for (final entry in metadataState.entries) {
+      final value = entry.value;
+      if (value is Map && value['is_locked'] != null) {
+        lockState[entry.key] = value['is_locked'] == true;
+      }
+    }
+
+    String activeTab = 'allmant';
+
+    Future<void> saveEditor() async {
+      await widget.apiService.updateMediaItemFields(itemId, {
+        'title': titleController.text.trim(),
+        'original_title': originalTitleController.text.trim(),
+        'plot': summaryController.text.trim(),
+        'year': int.tryParse(releaseController.text.trim()),
+        'poster_path': posterController.text.trim(),
+        'fanart_path': fanartController.text.trim(),
+        'director': directorController.text.trim(),
+        'collection_name': collectionsController.text.trim(),
+      });
+
+      final metadataUpdates = <String, dynamic>{
+        'sort_title': sortTitleController.text.trim(),
+        'edition': editionController.text.trim(),
+        'content_rating': contentRatingController.text.trim(),
+        'my_rating': ratingController.text.trim(),
+        'tagline': sloganController.text.trim(),
+        'summary': summaryController.text.trim(),
+        'writers': writersController.text.trim(),
+        'producers': producersController.text.trim(),
+        'collections': collectionsController.text.trim(),
+        'labels': labelsController.text.trim(),
+        'logo_path': logoController.text.trim(),
+        'square_art': squareArtController.text.trim(),
+      };
+
+      for (final entry in metadataUpdates.entries) {
+        await widget.apiService.saveMediaMetadata(itemId, entry.key, entry.value);
+      }
+
+      for (final entry in lockState.entries) {
+        await widget.apiService.setMediaMetadataLock(itemId, entry.key, entry.value);
+      }
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, dialogSetState) {
+            Widget field(String key, TextEditingController controller, {int maxLines = 1, String? hint}) {
+              final isLocked = lockState[key] == true;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  IconButton(
+                    icon: Icon(isLocked ? Icons.lock : Icons.lock_open, color: isLocked ? const Color(0xFF8A5BFF) : Colors.white54),
+                    onPressed: () => dialogSetState(() => lockState[key] = !isLocked),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: controller,
+                      maxLines: maxLines,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: hint,
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: const Color(0xFF171C26),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }
+
+            return Dialog(
+              backgroundColor: const Color(0xFF0F131A),
+              insetPadding: const EdgeInsets.all(20),
+              child: SizedBox(
+                width: 1100,
+                height: 760,
+                child: Row(
+                  children: [
+                    Container(
+                      width: 220,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF11151D),
+                        border: Border(right: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Redigera metadata', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 16),
+                          for (final tab in const [
+                            ('allmant', 'Allmänt'),
+                            ('etiketter', 'Etiketter'),
+                            ('affisch', 'Affisch'),
+                            ('bakgrund', 'Bakgrund'),
+                            ('logo', 'Logo'),
+                            ('square', 'Square Art'),
+                            ('info', 'Info'),
+                          ])
+                            ListTile(
+                              dense: true,
+                              selected: activeTab == tab.$1,
+                              selectedTileColor: const Color(0xFF8A5BFF).withValues(alpha: 0.16),
+                              title: Text(tab.$2, style: const TextStyle(color: Colors.white)),
+                              onTap: () => dialogSetState(() => activeTab = tab.$1),
+                            ),
+                          const Spacer(),
+                          Text('Lås ikon hindrar scanner från att skriva över fältet.', style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          children: [
+                            Expanded(
+                              child: SingleChildScrollView(
+                                child: Builder(
+                                  builder: (context) {
+                                    if (activeTab == 'allmant') {
+                                      return Column(
+                                        children: [
+                                          field('title', titleController, hint: 'Titel'),
+                                          const SizedBox(height: 12),
+                                          field('sort_title', sortTitleController, hint: 'Sortera titel'),
+                                          const SizedBox(height: 12),
+                                          field('original_title', originalTitleController, hint: 'Originaltitel'),
+                                          const SizedBox(height: 12),
+                                          field('edition', editionController, hint: 'Edition'),
+                                          const SizedBox(height: 12),
+                                          field('originally_available', releaseController, hint: 'Ursprungligen tillgänglig / år'),
+                                          const SizedBox(height: 12),
+                                          field('content_rating', contentRatingController, hint: 'Innehållsklassificering'),
+                                          const SizedBox(height: 12),
+                                          field('my_rating', ratingController, hint: 'Mitt betyg'),
+                                          const SizedBox(height: 12),
+                                          field('tagline', sloganController, hint: 'Slogan'),
+                                          const SizedBox(height: 12),
+                                          field('summary', summaryController, maxLines: 5, hint: 'Sammanfattning'),
+                                        ],
+                                      );
+                                    }
+
+                                    if (activeTab == 'etiketter') {
+                                      return Column(
+                                        children: [
+                                          field('director', directorController, hint: 'Regissörer ; separerade'),
+                                          const SizedBox(height: 12),
+                                          field('writers', writersController, hint: 'Författare ; separerade'),
+                                          const SizedBox(height: 12),
+                                          field('producers', producersController, hint: 'Producent ; separerade'),
+                                          const SizedBox(height: 12),
+                                          field('collections', collectionsController, hint: 'Samlingar ; separerade'),
+                                          const SizedBox(height: 12),
+                                          field('labels', labelsController, hint: 'Etiketter ; separerade'),
+                                        ],
+                                      );
+                                    }
+
+                                    if (activeTab == 'affisch') {
+                                      return Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          field('poster_path', posterController, hint: 'Affisch URL'),
+                                          const SizedBox(height: 12),
+                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
+                                        ],
+                                      );
+                                    }
+
+                                    if (activeTab == 'bakgrund') {
+                                      return Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          field('fanart_path', fanartController, hint: 'Bakgrund URL'),
+                                          const SizedBox(height: 12),
+                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
+                                        ],
+                                      );
+                                    }
+
+                                    if (activeTab == 'logo') {
+                                      return Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          field('logo_path', logoController, hint: 'Logo URL'),
+                                          const SizedBox(height: 12),
+                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
+                                        ],
+                                      );
+                                    }
+
+                                    if (activeTab == 'square') {
+                                      return Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          field('square_art', squareArtController, hint: 'Square Art URL'),
+                                          const SizedBox(height: 12),
+                                          const Text('Drag & drop / clipboard upload kommer i nästa steg.', style: TextStyle(color: Colors.white54)),
+                                        ],
+                                      );
+                                    }
+
+                                    return Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text('Path: ${details['file_path'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
+                                        const SizedBox(height: 8),
+                                        Text('Filnamn: ${details['title'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
+                                      ],
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(dialogContext),
+                                  child: const Text('Avbryt', style: TextStyle(color: Colors.white70)),
+                                ),
+                                const SizedBox(width: 12),
+                                ElevatedButton(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF)),
+                                  onPressed: () async {
+                                    try {
+                                      await saveEditor();
+                                      if (context.mounted) {
+                                        Navigator.pop(dialogContext);
+                                        await _loadAllMedia();
+                                      }
+                                    } catch (e) {
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kunde inte spara: $e')));
+                                      }
+                                    }
+                                  },
+                                  child: const Text('Spara'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    titleController.dispose();
+    sortTitleController.dispose();
+    originalTitleController.dispose();
+    editionController.dispose();
+    releaseController.dispose();
+    contentRatingController.dispose();
+    ratingController.dispose();
+    sloganController.dispose();
+    summaryController.dispose();
+    directorController.dispose();
+    writersController.dispose();
+    producersController.dispose();
+    collectionsController.dispose();
+    labelsController.dispose();
+    posterController.dispose();
+    fanartController.dispose();
+    logoController.dispose();
+    squareArtController.dispose();
+  }
+
+  Widget _buildPosterActionButton({required IconData icon, required VoidCallback onPressed}) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.45),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, color: Colors.white, size: 18),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handlePosterTap(dynamic item, {required bool isHomeCard}) async {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
+
+    final metadata = item['metadata'] is Map ? item['metadata'] as Map : <String, dynamic>{};
+    final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
+
+    if (progress > 0) {
+      final resume = await showDialog<int?>(
+        context: context,
+        builder: (dialogContext) {
+          return ResumePlaybackModal(
+            savedPositionSeconds: progress,
+            onResume: () => Navigator.pop(dialogContext, progress),
+            onStartOver: () => Navigator.pop(dialogContext, 0),
+          );
+        },
+      );
+
+      if (resume == null) return;
+    }
+
+    _navigateTo('media', itemId);
   }
 
   void _activateHomeSearchSelectionOrSubmit() {
@@ -1949,16 +2517,19 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     final posterPath = movie['poster_path'];
     final title = movie['title'] ?? '';
     final year = movie['year']?.toString() ?? '';
+    final posterKey = _posterKeyFor(movie, 'home');
+    final isHovered = _hoveredPosterKey == posterKey;
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hoveredPosterKey = posterKey),
+      onExit: (_) {
+        if (_hoveredPosterKey == posterKey) {
+          setState(() => _hoveredPosterKey = null);
+        }
+      },
       child: GestureDetector(
-        onTap: () {
-          final mId = movie['id']?.toString();
-          if (mId != null) {
-            _navigateTo('media', mId);
-          }
-        },
+        onTap: () => _handlePosterTap(movie, isHomeCard: true),
         child: Container(
           width: 130,
           margin: const EdgeInsets.only(right: 14),
@@ -2006,6 +2577,45 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             );
                           },
                         ),
+
+                      Positioned.fill(
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: isHovered ? 1 : 0,
+                          child: Container(
+                            color: Colors.black.withValues(alpha: 0.22),
+                            child: const Center(
+                              child: Icon(Icons.play_circle_fill, color: Colors.white, size: 54),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      Positioned(
+                        left: 8,
+                        bottom: 8,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: isHovered ? 1 : 0.65,
+                          child: _buildPosterActionButton(
+                            icon: Icons.more_horiz,
+                            onPressed: () => _openPosterActionsMenu(movie, isHomeCard: true),
+                          ),
+                        ),
+                      ),
+
+                      Positioned(
+                        right: 8,
+                        bottom: 8,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: isHovered ? 1 : 0.65,
+                          child: _buildPosterActionButton(
+                            icon: Icons.edit,
+                            onPressed: () => _openMediaEditor(movie),
+                          ),
+                        ),
+                      ),
                       
                       // Top-left watched checkmark badge
                       Positioned(
@@ -2162,6 +2772,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       );
     }
 
+      _currentMediaGridItemsSnapshot = filteredMovies;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2191,6 +2803,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           ),
         Expanded(
           child: GridView.builder(
+            // Keep the current filtered list available for shift-range selection.
+            key: ValueKey(filteredMovies.length),
             padding: const EdgeInsets.only(top: 10, bottom: 30),
             gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
               maxCrossAxisExtent: 220,
@@ -2201,7 +2815,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             itemCount: filteredMovies.length,
             itemBuilder: (context, index) {
               final movie = filteredMovies[index];
-              return _buildMediaCard(movie);
+              return _buildMediaCard(movie, index: index);
             },
           ),
         ),
@@ -2256,12 +2870,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       );
     }
 
+      _currentMediaGridItemsSnapshot = filteredShows;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (_genreFilter != null) _buildGenreFilterBadge(),
         Expanded(
           child: GridView.builder(
+            key: ValueKey(filteredShows.length),
             padding: const EdgeInsets.only(top: 10, bottom: 30),
             gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
               maxCrossAxisExtent: 220,
@@ -2272,7 +2889,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             itemCount: filteredShows.length,
             itemBuilder: (context, index) {
               final show = filteredShows[index];
-              return _buildMediaCard(show);
+              return _buildMediaCard(show, index: index);
             },
           ),
         ),
@@ -2280,7 +2897,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
-  Widget _buildMediaCard(dynamic item) {
+  Widget _buildMediaCard(dynamic item, {required int index}) {
     final title = (_titleDisplayStyle == 'Original' && item['original_title'] != null && (item['original_title'] as String).isNotEmpty)
         ? item['original_title']
         : (item['title'] ?? 'Unknown');
@@ -2293,16 +2910,21 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     // Check if it's TV show to show episodes count
     final episodesCount = item['episodes'] != null ? (item['episodes'] as List).length : 0;
     final posterPath = item['poster_path'];
+    final posterKey = _posterKeyFor(item, 'media');
+    final isHovered = _hoveredPosterKey == posterKey;
+    final itemId = item['id']?.toString();
+    final isSelected = itemId != null && _selectedMediaIds.contains(itemId);
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hoveredPosterKey = posterKey),
+      onExit: (_) {
+        if (_hoveredPosterKey == posterKey) {
+          setState(() => _hoveredPosterKey = null);
+        }
+      },
       child: GestureDetector(
-        onTap: () {
-          final mId = item['id']?.toString();
-          if (mId != null) {
-            _navigateTo('media', mId);
-          }
-        },
+        onTap: () => _handlePosterTap(item, isHomeCard: false),
         child: Container(
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.03),
@@ -2355,6 +2977,63 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             size: 48,
                           ),
                         ),
+
+                      Positioned.fill(
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: isHovered ? 1 : 0,
+                          child: Container(
+                            color: Colors.black.withValues(alpha: 0.22),
+                            child: const Center(
+                              child: Icon(Icons.play_circle_fill, color: Colors.white, size: 58),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: GestureDetector(
+                          onTap: () => _toggleMediaSelection(item, index),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: isSelected ? const Color(0xFF8A5BFF) : Colors.black.withValues(alpha: 0.35),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: isSelected ? Colors.white : Colors.white24, width: 1),
+                            ),
+                            child: Icon(isSelected ? Icons.check : Icons.circle_outlined, color: Colors.white, size: 16),
+                          ),
+                        ),
+                      ),
+
+                      Positioned(
+                        left: 10,
+                        bottom: 10,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: isHovered ? 1 : 0.72,
+                          child: _buildPosterActionButton(
+                            icon: Icons.more_horiz,
+                            onPressed: () => _openPosterActionsMenu(item, isHomeCard: false),
+                          ),
+                        ),
+                      ),
+
+                      Positioned(
+                        right: 10,
+                        bottom: 10,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: isHovered ? 1 : 0.72,
+                          child: _buildPosterActionButton(
+                            icon: Icons.edit,
+                            onPressed: () => _openMediaEditor(item),
+                          ),
+                        ),
+                      ),
                       
                       // Top-left watched checkmark badge
                       Positioned(
