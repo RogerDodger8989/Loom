@@ -1,15 +1,23 @@
+﻿import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
-import 'dart:html' as html;
+import 'package:universal_html/html.dart' as html;
 import 'dart:async';
 import 'dart:ui' as ui;
-import 'dart:ui_web' as ui_web;
+import 'package:window_manager/window_manager.dart';
+import '../utils/platform_view_registry.dart' as ui_web;
 import '../services/api.dart';
-import 'pairing_screen.dart';
 import 'media_details_screen.dart';
+import 'media_info_dialog.dart';
 import 'person_details_screen.dart';
 import 'resume_playback_modal.dart';
+import 'trash_screen.dart';
+import 'video_player_screen.dart';
+import 'settings_screen.dart';
+import 'user_picker_overlay.dart';
+import 'calendar_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
@@ -25,13 +33,57 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   
   String? _selectedMediaId;
   String? _selectedPersonId;
+  int? _autoPlaySecondsInNextOpen;
+  DateTime? _calendarSelectedDay;
   bool _isSidebarExpanded = true;
+  bool _isFullscreen = false;
+  int _posterSizeStep = 1;
+  String _serverName = '';
+  bool _showClock = false;
+  String? _avatarUrl;
+  Timer? _clockTimer;
+  DateTime _now = DateTime.now();
+
+  static const List<double> _posterScaleSteps = [
+    0.75, 0.87, 0.97, 1.08, 1.20, 1.32, 1.44, 1.56, 1.68, 1.80,
+  ];
 
   final List<Map<String, String>> _navHistory = [];
   final List<Map<String, String>> _forwardHistory = [];
 
-  void _navigateTo(String type, String id) {
+  double get _posterScale => _posterScaleSteps[_posterSizeStep.clamp(0, _posterScaleSteps.length - 1)];
+
+  String _currentUsername() {
+    final token = widget.apiService.token;
+    if (token == null || token.isEmpty) return 'User';
+
+    try {
+      final parts = token.split('.');
+      if (parts.length < 2) return 'User';
+      final payload = jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
+      if (payload is Map && payload['username'] != null) {
+        return payload['username'].toString();
+      }
+    } catch (_) {
+      // Fall back to a neutral label when the JWT cannot be decoded.
+    }
+
+    return 'User';
+  }
+
+  String _currentUserInitials() {
+    final username = _currentUsername().trim();
+    if (username.isEmpty) return 'U';
+    final parts = username.split(RegExp(r'\s+'));
+    if (parts.length == 1) {
+      return parts.first.isNotEmpty ? parts.first[0].toUpperCase() : 'U';
+    }
+    return parts.take(2).map((part) => part.isNotEmpty ? part[0].toUpperCase() : '').join();
+  }
+
+  void _navigateTo(String type, String id, {int? autoPlaySeconds}) {
     setState(() {
+      _autoPlaySecondsInNextOpen = autoPlaySeconds;
       String? currentType;
       String? currentId;
       if (_selectedPersonId != null) {
@@ -56,6 +108,28 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       
       _forwardHistory.clear();
     });
+    // Clear the pending autoplay flag after the navigation frame so child receives it once.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_autoPlaySecondsInNextOpen != null) {
+        setState(() {
+          _autoPlaySecondsInNextOpen = null;
+        });
+      }
+    });
+  }
+
+  void _navigateHome() {
+    setState(() {
+      // Push current detail page into navHistory so the Back button can return to it
+      if (_selectedMediaId != null) {
+        _navHistory.add({'type': 'media', 'id': _selectedMediaId!});
+        _selectedMediaId = null;
+      } else if (_selectedPersonId != null) {
+        _navHistory.add({'type': 'person', 'id': _selectedPersonId!});
+        _selectedPersonId = null;
+      }
+      _tabController.animateTo(0);
+    });
   }
 
   void _goBack() {
@@ -68,6 +142,32 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           _forwardHistory.add({'type': 'media', 'id': _selectedMediaId!});
           _selectedMediaId = null;
         }
+      });
+      return;
+    }
+
+    final prev = _navHistory.last;
+
+    if (prev['type'] == 'settings_statistics') {
+      _navHistory.removeLast();
+      setState(() {
+        if (_selectedMediaId != null) {
+          _forwardHistory.add({'type': 'media', 'id': _selectedMediaId!});
+          _selectedMediaId = null;
+        } else if (_selectedPersonId != null) {
+          _forwardHistory.add({'type': 'person', 'id': _selectedPersonId!});
+          _selectedPersonId = null;
+        }
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        openSettings(context, widget.apiService,
+          initialCategory: 7,
+          initialStatsTab: int.tryParse(prev['statsTab'] ?? '0') ?? 0,
+          onNavigateHome: _navigateHome,
+          onLibraryChanged: () { setState(() {}); _loadAllMedia(); },
+          onNavigateToMedia: _onNavigateToMediaFromStats)
+        .then((_) => _loadSettings());
       });
       return;
     }
@@ -87,15 +187,21 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _forwardHistory.add({'type': currentType, 'id': currentId});
       }
 
-      final prev = _navHistory.removeLast();
-      if (prev['type'] == 'media') {
-        _selectedMediaId = prev['id'];
+      final p = _navHistory.removeLast();
+      if (p['type'] == 'media') {
+        _selectedMediaId = p['id'];
         _selectedPersonId = null;
-      } else if (prev['type'] == 'person') {
-        _selectedPersonId = prev['id'];
+      } else if (p['type'] == 'person') {
+        _selectedPersonId = p['id'];
         _selectedMediaId = null;
       }
     });
+  }
+
+  void _onNavigateToMediaFromStats(String id, int statsTab) {
+    _navHistory.add({'type': 'settings_statistics', 'statsTab': statsTab.toString()});
+    Navigator.of(context).pop();
+    _navigateTo('media', id);
   }
 
   void _goForward() {
@@ -125,6 +231,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _selectedMediaId = null;
       }
     });
+  }
+
+  Future<void> _toggleFullscreen() async {
+    if (kIsWeb) return;
+    try {
+      final isFs = await windowManager.isFullScreen();
+      await windowManager.setFullScreen(!isFs);
+      if (mounted) setState(() => _isFullscreen = !isFs);
+    } catch (e) {
+      debugPrint('toggleFullscreen failed: $e');
+    }
   }
 
   Widget _buildNavIcon({
@@ -169,14 +286,28 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+  Widget _buildClockWidget() {
+    final h = _now.hour.toString().padLeft(2, '0');
+    final m = _now.minute.toString().padLeft(2, '0');
+    return Text(
+      '$h:$m',
+      style: TextStyle(
+        color: Colors.white.withValues(alpha: 0.45),
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        fontFeatures: const [ui.FontFeature.tabularFigures()],
+      ),
+    );
+  }
+
   Widget _buildNavigationButtons() {
     final hasBack = _navHistory.isNotEmpty || _selectedMediaId != null || _selectedPersonId != null;
     final hasForward = _forwardHistory.isNotEmpty;
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
+    if (!_isSidebarExpanded) {
+      // Collapsed: vertical column — back, home, forward, then expand button
+      return Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           _buildNavIcon(
             icon: Icons.arrow_back_ios_new_rounded,
@@ -184,15 +315,390 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             enabled: hasBack,
             onPressed: _goBack,
           ),
-          const SizedBox(width: 12),
+          const SizedBox(height: 8),
+          _buildNavIcon(
+            icon: Icons.home_rounded,
+            tooltip: 'Hem',
+            enabled: true,
+            onPressed: _navigateHome,
+          ),
+          const SizedBox(height: 8),
           _buildNavIcon(
             icon: Icons.arrow_forward_ios_rounded,
             tooltip: 'Gå framåt',
             enabled: hasForward,
             onPressed: _goForward,
           ),
+          const SizedBox(height: 16),
+          // Expand button
+          Tooltip(
+            message: 'Fäll ut menyn',
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: InkWell(
+                onTap: () => setState(() => _isSidebarExpanded = true),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF8A5BFF).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.view_sidebar_outlined, color: Color(0xFF8A5BFF), size: 22),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Expanded: horizontal row — back, home, forward, [clock]
+    return Row(
+      children: [
+        _buildNavIcon(
+          icon: Icons.arrow_back_ios_new_rounded,
+          tooltip: 'Gå bakåt',
+          enabled: hasBack,
+          onPressed: _goBack,
+        ),
+        const SizedBox(width: 10),
+        _buildNavIcon(
+          icon: Icons.home_rounded,
+          tooltip: 'Hem',
+          enabled: true,
+          onPressed: _navigateHome,
+        ),
+        const SizedBox(width: 10),
+        _buildNavIcon(
+          icon: Icons.arrow_forward_ios_rounded,
+          tooltip: 'Gå framåt',
+          enabled: hasForward,
+          onPressed: _goForward,
+        ),
+        if (_showClock) ...[
+          const Spacer(),
+          _buildClockWidget(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildPersistentTopBar() {
+    final isHome = _tabController.index == 0 &&
+        _selectedMediaId == null &&
+        _selectedPersonId == null;
+    return Row(
+      children: [
+        if (isHome) ...[
+          Tooltip(
+            message: 'Redigera hemsektioner',
+            child: InkWell(
+              onTap: _openHomeLayoutEditor,
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+                ),
+                child: const Icon(Icons.tune, color: Colors.white60, size: 20),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+        Expanded(child: _buildHomeSearchBox()),
+        const SizedBox(width: 12),
+        _buildCompactPosterSizeSlider(),
+        const SizedBox(width: 12),
+        if (!kIsWeb) ...[
+          Tooltip(
+            message: _isFullscreen ? 'Avsluta helskärm (F11)' : 'Helskärm (F11)',
+            child: InkWell(
+              onTap: _toggleFullscreen,
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+                ),
+                child: Icon(
+                  _isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                  color: Colors.white70,
+                  size: 20,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+        ],
+        _buildUserSwitcher(),
+      ],
+    );
+  }
+
+  Widget _buildCompactPosterSizeSlider() {
+    return SizedBox(
+      width: 80,
+      child: SliderTheme(
+        data: SliderTheme.of(context).copyWith(
+          activeTrackColor: const Color(0xFF8A5BFF),
+          inactiveTrackColor: Colors.white.withValues(alpha: 0.10),
+          thumbColor: const Color(0xFFB593FF),
+          overlayColor: const Color(0xFF8A5BFF).withValues(alpha: 0.14),
+          trackHeight: 2,
+          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4),
+          overlayShape: const RoundSliderOverlayShape(overlayRadius: 8),
+        ),
+        child: Slider(
+          value: _posterSizeStep.toDouble(),
+          min: 0,
+          max: 9,
+          divisions: 9,
+          onChanged: (value) {
+            setState(() {
+              _posterSizeStep = value.round();
+            });
+          },
+          onChangeEnd: (_) => _savePosterSize(),
+        ),
+      ),
+    );
+  }
+
+  void _savePosterSize() {
+    widget.apiService.updateSettings({'POSTER_SIZE_STEP': _posterSizeStep.toString()}).catchError((_) {});
+  }
+
+  Future<void> _confirmRestartServer() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF15102A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        title: const Text('Starta om servern?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'Servern stängs av och startas om. Pågående uppspelningar avbryts.',
+          style: TextStyle(color: Colors.white70, height: 1.5),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orangeAccent.withValues(alpha: 0.85),
+              foregroundColor: Colors.black87,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Starta om', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
         ],
       ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await widget.apiService.restartServer();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Servern startas om...'),
+        backgroundColor: Colors.orangeAccent,
+        duration: Duration(seconds: 6),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Fel: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  Widget _buildUserSwitcher() {
+    final username = _currentUsername();
+    final initials = _currentUserInitials();
+    final isAdmin = widget.apiService.currentUserPayload?['role'] == 'Admin';
+
+    return PopupMenuButton<String>(
+      tooltip: 'Byt användare / Inställningar',
+      color: const Color(0xFF11151D),
+      offset: const Offset(0, 56),
+      onSelected: (value) {
+        if (value == 'account') {
+          openSettings(context, widget.apiService,
+              initialCategory: 0,
+              initialStatsTab: widget.apiService.lastStatsTabIndex,
+              onNavigateHome: _navigateHome,
+              onLibraryChanged: () { setState(() {}); _loadAllMedia(); },
+              onNavigateToMedia: _onNavigateToMediaFromStats)
+            .then((_) => _loadSettings());
+        } else if (value == 'settings') {
+          openSettings(context, widget.apiService,
+              initialStatsTab: widget.apiService.lastStatsTabIndex,
+              onNavigateHome: _navigateHome,
+              onLibraryChanged: () {
+                setState(() {});
+                _loadAllMedia();
+              },
+              onNavigateToMedia: _onNavigateToMediaFromStats)
+            .then((_) => _loadSettings());
+        } else if (value == 'switch') {
+          _openUserPicker();
+        } else if (value == 'restart') {
+          _confirmRestartServer();
+        } else if (value == 'logout') {
+          _handleLogout();
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem<String>(
+          value: 'account',
+          child: Row(children: [
+            CircleAvatar(
+              radius: 13,
+              backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.2),
+              backgroundImage: _avatarUrl != null ? NetworkImage(_avatarUrl!) : null,
+              child: _avatarUrl == null ? Text(
+                initials,
+                style: const TextStyle(color: Color(0xFFB593FF), fontSize: 11, fontWeight: FontWeight.bold),
+              ) : null,
+            ),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(username, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                Text('Mitt konto', style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11)),
+              ],
+            ),
+          ]),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'settings',
+          child: Row(children: [
+            Icon(Icons.settings_outlined, size: 16, color: Colors.white70),
+            SizedBox(width: 10),
+            Text('Inställningar'),
+          ]),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'switch',
+          child: Row(children: [
+            Icon(Icons.people_outline, size: 16, color: Colors.white70),
+            SizedBox(width: 10),
+            Text('Byt användare'),
+          ]),
+        ),
+        if (isAdmin) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem<String>(
+            value: 'restart',
+            child: Row(children: [
+              Icon(Icons.restart_alt_rounded, size: 16, color: Colors.orangeAccent),
+              SizedBox(width: 10),
+              Text('Starta om servern', style: TextStyle(color: Colors.orangeAccent)),
+            ]),
+          ),
+        ],
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'logout',
+          child: Row(children: [
+            Icon(Icons.logout, size: 16, color: Colors.white38),
+            SizedBox(width: 10),
+            Text('Logga ut', style: TextStyle(color: Colors.white54)),
+          ]),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.all(2.5),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFF8A5BFF).withValues(alpha: 0.95),
+              const Color(0xFFB593FF).withValues(alpha: 0.55),
+            ],
+          ),
+        ),
+        child: Container(
+          padding: const EdgeInsets.all(2),
+          decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF0F131A)),
+          child: CircleAvatar(
+            radius: 20,
+            backgroundColor: const Color(0xFF151A24),
+            backgroundImage: _avatarUrl != null ? NetworkImage(_avatarUrl!) : null,
+            child: _avatarUrl == null ? Text(
+              initials,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+            ) : null,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openUserPicker() {
+    showUserPicker(
+      context,
+      widget.apiService,
+      onSuccess: () {
+        // Reload everything with the new user's token
+        setState(() {});
+        _loadAllMedia();
+      },
+    );
+  }
+
+  Widget _buildPosterSizeSlider() {
+    final currentLabel = '${_posterSizeStep + 1}/15';
+    return Row(
+      children: [
+        const Icon(Icons.photo_size_select_large_outlined, color: Colors.white54, size: 18),
+        const SizedBox(width: 12),
+        const Text(
+          'Posterstorlek',
+          style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: const Color(0xFF8A5BFF),
+              inactiveTrackColor: Colors.white.withValues(alpha: 0.10),
+              thumbColor: const Color(0xFFB593FF),
+              overlayColor: const Color(0xFF8A5BFF).withValues(alpha: 0.14),
+              trackHeight: 4,
+            ),
+            child: Slider(
+              value: _posterSizeStep.toDouble(),
+              min: 0,
+              max: 14,
+              divisions: 14,
+              label: currentLabel,
+              onChanged: (value) {
+                setState(() {
+                  _posterSizeStep = value.round();
+                });
+              },
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          currentLabel,
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+        ),
+      ],
     );
   }
 
@@ -213,8 +719,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Map<String, dynamic>? _lastScanResult;
 
   List<dynamic> _libraryPaths = [];
-  List<dynamic> _trustedDevices = [];
-  bool _isLoadingDevices = false;
 
   // Settings
   final TextEditingController _tmdbKeyController = TextEditingController();
@@ -234,6 +738,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String _defaultAudioLanguage = 'sv';
   String _watchProviderRegion = 'SE';
   String _titleDisplayStyle = 'Translated';
+  bool _alwaysOnTop = false;
 
   // Granular Sync Platform Options
   bool _syncTraktRatings = true;
@@ -264,6 +769,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   List<dynamic> _homeSearchLastLocalResults = [];
   List<dynamic> _homeSearchLastTmdbResults = [];
   int _homeSearchSelectedIndex = -1;
+  final OverlayPortalController _searchOverlayController = OverlayPortalController();
+  final LayerLink _searchLayerLink = LayerLink();
+  final GlobalKey _searchBoxKey = GlobalKey();
   String? _hoveredPosterKey;
   final Set<String> _selectedMediaIds = {};
   int? _lastSelectedMediaIndex;
@@ -271,19 +779,28 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _homeSections = _defaultHomeSections();
-    _tabController.addListener(() {
-      if (_tabController.index == 4) {
-        _loadDevices();
-        _loadSettings();
-      }
-    });
     _loadAllMedia();
     _checkScannerStatus();
     _loadLibraryPaths();
-    _loadDevices();
     _loadSettings();
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
+    });
+    if (!kIsWeb) HardwareKeyboard.instance.addHandler(_onKey);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchOverlayController.show();
+    });
+  }
+
+  bool _onKey(KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.f11) {
+      _toggleFullscreen();
+      return true;
+    }
+    return false;
   }
 
   List<Map<String, dynamic>> _defaultHomeSections() {
@@ -493,6 +1010,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   @override
   void dispose() {
+    if (!kIsWeb) HardwareKeyboard.instance.removeHandler(_onKey);
+    _clockTimer?.cancel();
     _manualSyncTimer?.cancel();
     _homeSearchDebounce?.cancel();
     _tabController.dispose();
@@ -551,7 +1070,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Added path: "$folderPath" to ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}'),
+          content: Text('Lade till sökväg: "$folderPath" i ${type == 'Show' ? 'TV-Serier' : type == 'Movie' ? 'Filmer' : 'Musik'}'),
           backgroundColor: const Color(0xFF8A5BFF),
         ),
       );
@@ -559,7 +1078,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to add path: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('Kunde inte lägga till sökväg: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -570,7 +1089,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Removed path successfully'),
+          content: Text('Sökväg borttagen'),
           backgroundColor: Color(0xFF8A5BFF),
         ),
       );
@@ -579,7 +1098,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to remove path: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('Kunde inte ta bort sökväg: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -590,7 +1109,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Updated path! Bulk modified ${res['updatedCount'] ?? 0} file paths in DB.'),
+          content: Text('Sökväg uppdaterad! Ändrade ${res['updatedCount'] ?? 0} filsökvägar i databasen.'),
           backgroundColor: const Color(0xFF8A5BFF),
         ),
       );
@@ -599,7 +1118,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update path: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('Kunde inte uppdatera sökväg: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -623,14 +1142,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 borderRadius: BorderRadius.circular(20),
                 side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
               ),
-              title: Text('Edit ${type == 'Show' ? 'TV Show' : type == 'Movie' ? 'Movie' : 'Music'} Folder'),
+              title: Text('Redigera ${type == 'Show' ? 'TV-seriemapp' : type == 'Movie' ? 'Filmmapp' : 'Musikmapp'}'),
               content: SizedBox(
                 width: 500,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Editing this path will update all matching files in your database to the new path prefix.',
+                      'Att redigera denna sökväg uppdaterar alla matchande filer i databasen till det nya sökvägsprefixet.',
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13.5, height: 1.4),
                     ),
                     const SizedBox(height: 24),
@@ -643,7 +1162,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             decoration: InputDecoration(
                               filled: true,
                               fillColor: Colors.black.withValues(alpha: 0.3),
-                              hintText: 'Enter new path or click Browse...',
+                              hintText: 'Ange ny sökväg eller klicka Bläddra...',
                               hintStyle: const TextStyle(color: Colors.white24),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                               border: OutlineInputBorder(
@@ -700,7 +1219,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                     ),
                                   )
                                 : const Icon(Icons.folder_open_outlined, color: Color(0xFFB593FF)),
-                            label: const Text('Browse...'),
+                            label: const Text('Bläddra...'),
                           ),
                         ),
                       ],
@@ -711,7 +1230,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                  child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
@@ -726,7 +1245,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                       await _updatePath(id, newPath);
                     }
                   },
-                  child: const Text('Save Changes'),
+                  child: const Text('Spara ändringar'),
                 ),
               ],
             );
@@ -742,7 +1261,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       setState(() {
         _isScanning = status['isScanning'] ?? false;
         _lastScanResult = status['lastScanResult'];
-        _scanStatusText = _isScanning ? 'Scanning...' : 'Idle';
+        _scanStatusText = _isScanning ? 'Skannar...' : 'Vilande';
         if (!_isScanning) {
           _currentlyScanningPath = null;
         }
@@ -769,7 +1288,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Selected folder: ${result['path']}'),
+            content: Text('Vald mapp: ${result['path']}'),
             backgroundColor: const Color(0xFF8A5BFF),
           ),
         );
@@ -780,7 +1299,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Failed to open native folder browser: $e'),
+          content: Text('Kunde inte öppna mappbläddraren: $e'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -791,14 +1310,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     final path = _pathController.text.trim();
     if (path.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid path to scan')),
+        const SnackBar(content: Text('Ange en giltig sökväg att skanna')),
       );
       return;
     }
 
     setState(() {
       _isScanning = true;
-      _scanStatusText = 'Starting scan...';
+      _scanStatusText = 'Startar skanning...';
     });
 
     try {
@@ -809,7 +1328,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(response['message'] ?? 'Scan started successfully!'),
+          content: Text(response['message'] ?? 'Skanning startad!'),
           backgroundColor: const Color(0xFF8A5BFF),
         ),
       );
@@ -821,7 +1340,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _isScanning = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to trigger scan: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('Kunde inte starta skanning: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -856,6 +1375,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           ),
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Left sidebar navigation
             _buildSidebar(),
@@ -863,74 +1383,91 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             // Main Content Area
             Expanded(
               child: SafeArea(
-                child: _selectedPersonId != null
-                    ? PersonDetailsScreen(
-                        personId: _selectedPersonId!,
-                        apiService: widget.apiService,
-                        onBack: _goBack,
-                        onMediaSelected: (mediaId) {
-                          _navigateTo('media', mediaId);
-                        },
-                      )
-                    : _selectedMediaId != null
-                        ? MediaDetailsScreen(
-                            mediaId: _selectedMediaId!,
-                            apiService: widget.apiService,
-                            onBack: _goBack,
-                            onGenreSelected: (g) {
-                              setState(() {
-                                _selectedMediaId = null;
-                                _genreFilter = g;
-                                _keywordFilter = null; // clear keyword when picking genre
-                              });
-                              // Switch to Movies tab so the filtered list is visible
-                              try {
-                                _tabController.animateTo(1);
-                              } catch (_) {}
-                            },
-                            onKeywordSelected: (k) {
-                              setState(() {
-                                _selectedMediaId = null;
-                                _keywordFilter = k;
-                                _genreFilter = null; // clear genre when picking keyword
-                              });
-                              // Ensure Movies tab is selected when filtering by keyword
-                              try {
-                                _tabController.animateTo(1);
-                              } catch (_) {}
-                            },
-                            onMediaSelected: (mediaId) {
-                              _navigateTo('media', mediaId);
-                            },
-                            onPersonSelected: (personId) {
-                              _navigateTo('person', personId);
-                            },
-                          )
-                    : Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 30),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildHeader(),
-                            const SizedBox(height: 30),
-                            
-                            // Tab views
-                            Expanded(
-                              child: TabBarView(
-                                controller: _tabController,
-                                physics: const NeverScrollableScrollPhysics(),
-                                children: [
-                                  _buildHomeView(),
-                                  _buildMoviesView(),
-                                  _buildShowsView(),
-                                  _buildScannerView(),
-                                  _buildSettingsView(),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildPersistentTopBar(),
+                      const SizedBox(height: 18),
+                      if (_selectedMediaId == null && _selectedPersonId == null) ...[
+                        _buildHeader(),
+                        // Kalendern har egna chips direkt under — minimal gap
+                        SizedBox(height: _tabController.index == 3 ? 6 : 22),
+                      ],
+                      Expanded(
+                        child: _selectedPersonId != null
+                            ? PersonDetailsScreen(
+                                personId: _selectedPersonId!,
+                                apiService: widget.apiService,
+                                onBack: _goBack,
+                                onMediaSelected: (mediaId) {
+                                  _navigateTo('media', mediaId);
+                                },
+                              )
+                            : _selectedMediaId != null
+                                ? MediaDetailsScreen(
+                                    key: ValueKey(_selectedMediaId),
+                                    mediaId: _selectedMediaId!,
+                                    apiService: widget.apiService,
+                                    onBack: _goBack,
+                                    autoPlaySeconds: _autoPlaySecondsInNextOpen,
+                                    onVideoPlayerClosed: _loadAllMedia,
+                                    onGenreSelected: (g) {
+                                      setState(() {
+                                        _selectedMediaId = null;
+                                        _genreFilter = g;
+                                        _keywordFilter = null;
+                                      });
+                                      try {
+                                        _tabController.animateTo(1);
+                                      } catch (_) {}
+                                    },
+                                    onKeywordSelected: (k) {
+                                      setState(() {
+                                        _selectedMediaId = null;
+                                        _keywordFilter = k;
+                                        _genreFilter = null;
+                                      });
+                                      try {
+                                        _tabController.animateTo(1);
+                                      } catch (_) {}
+                                    },
+                                    onMediaSelected: (mediaId) {
+                                      _navigateTo('media', mediaId);
+                                    },
+                                    onPersonSelected: (personId) {
+                                      _navigateTo('person', personId);
+                                    },
+                                    onEdit: () => _openMediaEditor({'id': _selectedMediaId}),
+                                    onContextMenu: (id, pos) => _openPosterActionsMenu({'id': id}, isHomeCard: false, globalPos: pos),
+                                  )
+                                : AnimatedBuilder(
+                                    animation: _tabController,
+                                    builder: (context, _) => IndexedStack(
+                                      index: _tabController.index,
+                                      children: [
+                                        _buildHomeView(),
+                                        _buildMoviesView(),
+                                        _buildShowsView(),
+                                        CalendarScreen(
+                                          apiService: widget.apiService,
+                                          initialSelectedDay: _calendarSelectedDay,
+                                          onDayChanged: (d) { _calendarSelectedDay = d; },
+                                          onShowTap: (showId) => _navigateTo('media', showId),
+                                          onContextMenu: (localId, pos) => _openPosterActionsMenu(
+                                            {'id': localId},
+                                            isHomeCard: false,
+                                            globalPos: pos,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                       ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ],
@@ -954,29 +1491,22 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 35),
-          
-          // Sidebar Header: back button above collapse/expand control
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 24 : 16, vertical: 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildNavigationButtons(),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
-                  children: [
-                    if (_isSidebarExpanded) ...[
+
+          if (_isSidebarExpanded) ...[
+            // ── Expanded header ─────────────────────
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Logo row + collapse button
+                  Row(
+                    children: [
                       MouseRegion(
                         cursor: SystemMouseCursors.click,
                         child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _tabController.animateTo(0);
-                              _selectedMediaId = null;
-                              _selectedPersonId = null;
-                            });
-                          },
+                          onTap: _navigateHome,
+                          borderRadius: BorderRadius.circular(10),
                           child: Row(
                             children: [
                               Container(
@@ -985,83 +1515,78 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                   color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
-                                child: const Icon(
-                                  Icons.play_circle_fill,
-                                  color: Color(0xFF8A5BFF),
-                                  size: 26,
-                                ),
+                                child: const Icon(Icons.play_circle_fill, color: Color(0xFF8A5BFF), size: 26),
                               ),
                               const SizedBox(width: 12),
-                              const Text(
-                                'LOOM',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 2,
-                                ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text(
+                                    'LOOM',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 2,
+                                    ),
+                                  ),
+                                  if (_serverName.isNotEmpty)
+                                    Text(
+                                      _serverName,
+                                      style: TextStyle(
+                                        color: Colors.white.withValues(alpha: 0.38),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w500,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                ],
                               ),
                             ],
                           ),
                         ),
                       ),
-                      MouseRegion(
-                        cursor: SystemMouseCursors.click,
+                      const Spacer(),
+                      Tooltip(
+                        message: 'Fäll ihop menyn',
                         child: IconButton(
-                          icon: const Icon(Icons.chevron_left, color: Colors.white54),
-                          onPressed: () {
-                            setState(() {
-                              _isSidebarExpanded = false;
-                            });
-                          },
-                        ),
-                      ),
-                    ] else ...[
-                      MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _isSidebarExpanded = true;
-                            });
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(
-                              Icons.menu,
-                              color: Color(0xFF8A5BFF),
-                              size: 26,
-                            ),
-                          ),
+                          icon: const Icon(Icons.menu_open, color: Colors.white38),
+                          onPressed: () => setState(() => _isSidebarExpanded = false),
                         ),
                       ),
                     ],
-                  ],
-                ),
-              ],
+                  ),
+                  // Separator under server name (or under LOOM if no server name)
+                  const SizedBox(height: 12),
+                  Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+                  const SizedBox(height: 14),
+                  // Navigation buttons (horizontal with optional clock)
+                  _buildNavigationButtons(),
+                ],
+              ),
             ),
-          ),
-          
-          const SizedBox(height: 40),
-          
-          // Navigation Items (Tab-based)
+          ] else ...[
+            // ── Collapsed header ────────────────────
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Center(
+                child: _buildNavigationButtons(), // renders vertical column + expand btn
+              ),
+            ),
+          ],
 
+          SizedBox(height: _isSidebarExpanded ? 8 : 16),
+
+          // Navigation Items (Tab-based)
           _buildSidebarItem(0, Icons.home_outlined, Icons.home, 'Hem'),
-          _buildSidebarItem(1, Icons.movie_outlined, Icons.movie, 'Movies'),
-          _buildSidebarItem(2, Icons.tv_outlined, Icons.tv, 'TV Shows'),
-          _buildSidebarItem(3, Icons.scanner_outlined, Icons.scanner, 'Library Scanner'),
-          _buildSidebarItem(4, Icons.settings_outlined, Icons.settings, 'Settings'),
-          
+          _buildSidebarItem(1, Icons.movie_outlined, Icons.movie, 'Filmer'),
+          _buildSidebarItem(2, Icons.tv_outlined, Icons.tv, 'TV-Serier'),
+          _buildSidebarItem(3, Icons.calendar_month_outlined, Icons.calendar_month, 'Kalender'),
+
           const Spacer(),
-          
-          // User profile card at bottom
           _buildUserProfileCard(),
-          
-          const SizedBox(height: 30),
+          const SizedBox(height: 16),
         ],
       ),
     );
@@ -1073,10 +1598,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12, vertical: 6),
       child: InkWell(
         onTap: () {
-          setState(() {
-            _tabController.animateTo(index);
-            _selectedMediaId = null; // reset selected media details when shifting tabs
-          });
+          if (index == 0) {
+            _navigateHome();
+          } else {
+            setState(() {
+              _tabController.animateTo(index);
+              _selectedMediaId = null;
+              _selectedPersonId = null;
+            });
+          }
         },
         borderRadius: BorderRadius.circular(12),
         child: Container(
@@ -1117,6 +1647,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildUserProfileCard() {
+    final username = _currentUsername();
+    final initials = _currentUserInitials();
+    final role = widget.apiService.currentUserPayload?['role'] as String? ?? '';
+
     return Container(
       margin: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 6),
       padding: EdgeInsets.all(_isSidebarExpanded ? 16 : 6),
@@ -1129,14 +1663,18 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
         children: [
           InkWell(
-            onTap: _isSidebarExpanded ? null : _handleLogout,
+            onTap: _isSidebarExpanded ? null : _openUserPicker,
             child: CircleAvatar(
-              backgroundColor: const Color(0xFF8A5BFF),
               radius: 20,
-              child: Text(
-                'A',
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontWeight: FontWeight.bold),
-              ),
+              backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.2),
+              backgroundImage: _avatarUrl != null ? NetworkImage(_avatarUrl!) : null,
+              child: _avatarUrl == null
+                  ? Text(
+                      initials,
+                      style: const TextStyle(
+                          color: Color(0xFFB593FF), fontWeight: FontWeight.bold, fontSize: 14),
+                    )
+                  : null,
             ),
           ),
           if (_isSidebarExpanded) ...[
@@ -1146,21 +1684,23 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'admin',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                  Text(
+                    username,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
                   ),
                   Text(
-                    'Server Owner',
+                    role,
                     style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
                   ),
                 ],
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.logout, color: Colors.white30, size: 20),
-              onPressed: _handleLogout,
-              tooltip: 'Logga ut',
+              icon: const Icon(Icons.people_outline, color: Colors.white30, size: 20),
+              onPressed: _openUserPicker,
+              tooltip: 'Byt användare',
             ),
           ],
         ],
@@ -1169,80 +1709,89 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Future<void> _handleLogout() async {
-    try {
-      final deviceId = widget.apiService.getOrCreateDeviceId();
-      await widget.apiService.unpairDevice(deviceId);
-    } catch (e) {
-      debugPrint('Error unpairing device on server during logout: $e');
-    }
-
-    widget.apiService.clearToken();
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const PairingScreen()),
-      );
-    }
+    await widget.apiService.clearToken();
+    if (!mounted) return;
+    // Show profile picker — user must log in as someone
+    _openUserPicker();
   }
 
   Widget _buildHeader() {
     final isHome = _tabController.index == 0;
+    final title = isHome
+        ? 'Hem'
+        : _tabController.index == 1
+            ? 'Filmer'
+            : _tabController.index == 2
+                ? 'TV-Serier'
+                : _tabController.index == 3
+                    ? 'Kalender'
+                    : 'Inställningar';
+    final subtitle = isHome
+        ? 'Din personliga mediadashboard'
+        : _tabController.index == 3
+            ? 'Din TV- och film-guide'
+            : _tabController.index == 4
+                ? 'Hantera betrodda enheter och serverinställningar'
+                : 'Hantera och strömma din mediesamling';
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!_tabController.indexIsChanging && !isHome)
-              Text(
-                _tabController.index == 1
-                    ? 'Movies'
-                    : _tabController.index == 2
-                        ? 'TV Shows'
-                        : _tabController.index == 3
-                            ? 'Library Scanner'
-                            : 'Settings',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 32,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            const SizedBox(height: 6),
-            if (isHome)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2, right: 10),
-                      child: IconButton(
-                        tooltip: 'Redigera hemsektioner',
-                        onPressed: _openHomeLayoutEditor,
-                        icon: const Icon(Icons.tune, color: Colors.white70),
-                      ),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 32,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
                     ),
-                    SizedBox(
-                      width: 680,
-                      child: _buildHomeSearchBox(),
-                    ),
-                  ],
-                )
-            else
-              Text(
-                _tabController.index == 3
-                    ? 'Manage media scan routes and server settings'
-                    : _tabController.index == 4
-                        ? 'Manage trusted devices and server preferences'
-                        : 'Manage and stream your media collection',
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
+                  ),
+                ],
               ),
-          ],
+            ],
+          ),
         ),
-        
-        // Quick Actions
         Row(
           children: [
-            if (_selectedMediaIds.isNotEmpty)
+            if (_selectedMediaIds.isNotEmpty) ...[
+              // Radera-knapp (admin only) till vänster om räknaren
+              if (widget.apiService.currentUserPayload?['role'] == 'Admin')
+                Tooltip(
+                  message: 'Radera markerade',
+                  child: GestureDetector(
+                    onTap: _deleteSelectedItems,
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.delete_outline, color: Colors.redAccent, size: 16),
+                          SizedBox(width: 5),
+                          Text('Radera', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              // Räknare
               Container(
                 margin: const EdgeInsets.only(right: 12),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1265,6 +1814,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   ],
                 ),
               ),
+            ],
             if (_isScanning)
               Container(
                 margin: const EdgeInsets.only(right: 15),
@@ -1283,20 +1833,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     ),
                     SizedBox(width: 8),
                     Text(
-                      'Scanning Library',
+                      'Skannar bibliotek',
                       style: TextStyle(color: Color(0xFFF59E0B), fontSize: 13, fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
               ),
-            IconButton(
-              onPressed: () {
-                _loadAllMedia();
-                _checkScannerStatus();
-              },
-              icon: const Icon(Icons.refresh, color: Colors.white70),
-              tooltip: 'Refresh Library',
-            ),
           ],
         ),
       ],
@@ -1312,13 +1854,23 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   List<dynamic> _getContinueWatchingMovies(List<dynamic> movies, int? days) {
-    return movies.where((movie) {
+    final filtered = movies.where((movie) {
       final metadata = movie['metadata'];
       if (metadata is! Map) return false;
       final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
       if (progress <= 0) return false;
       return _isWithinDays(movie['last_watched_at']?.toString(), days);
     }).toList();
+
+    filtered.sort((a, b) {
+      final aTime = DateTime.tryParse(a['last_watched_at']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = DateTime.tryParse(b['last_watched_at']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+
+    return filtered;
   }
 
   List<dynamic> _getRecentlyWatchedMovies(List<dynamic> movies) {
@@ -1327,9 +1879,16 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       return metadata is Map && metadata['watch_status'] == 'watched';
     }).toList();
 
+    // Sort by when the film was COMPLETED (watch_completed_at), not just last touched
     watched.sort((a, b) {
-      final aTime = DateTime.tryParse(a['last_watched_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bTime = DateTime.tryParse(b['last_watched_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final metaA = a['metadata'] is Map ? a['metadata'] as Map : <String, dynamic>{};
+      final metaB = b['metadata'] is Map ? b['metadata'] as Map : <String, dynamic>{};
+      final aTime = DateTime.tryParse(metaA['watch_completed_at']?.toString() ?? '')
+          ?? DateTime.tryParse(a['last_watched_at']?.toString() ?? '')
+          ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = DateTime.tryParse(metaB['watch_completed_at']?.toString() ?? '')
+          ?? DateTime.tryParse(b['last_watched_at']?.toString() ?? '')
+          ?? DateTime.fromMillisecondsSinceEpoch(0);
       return bTime.compareTo(aTime);
     });
 
@@ -1353,8 +1912,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildHomePosterStrip(List<dynamic> items) {
+    // Card width (115) × 1.5 (2:3 ratio) + 48px for text section (title + year/resolution + padding)
+    final stripHeight = 115.0 * _posterScale * 1.5 + 48;
     return SizedBox(
-      height: 200,
+      height: stripHeight,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         itemCount: items.length,
@@ -1588,6 +2149,32 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   List<dynamic> _currentMediaGridItemsSnapshot = [];
 
+  Future<void> _deleteSelectedItems() async {
+    if (_selectedMediaIds.isEmpty) return;
+    final count = _selectedMediaIds.length;
+    final confirmed = await _confirmAction(
+      'Radera $count markerade?',
+      'Titlarna flyttas till papperskorgen.',
+    );
+    if (!confirmed) return;
+    final ids = List<String>.from(_selectedMediaIds);
+    _clearMediaSelection();
+    int failed = 0;
+    for (final id in ids) {
+      try {
+        await widget.apiService.deleteMediaItem(id);
+      } catch (_) {
+        failed++;
+      }
+    }
+    await _loadAllMedia();
+    if (mounted && failed > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$failed titlar kunde inte raderas.')),
+      );
+    }
+  }
+
   void _clearMediaSelection() {
     setState(() {
       _selectedMediaIds.clear();
@@ -1649,7 +2236,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     return value;
   }
 
-  Future<void> _openPosterActionsMenu(dynamic item, {required bool isHomeCard}) async {
+  Future<void> _openPosterActionsMenu(dynamic item, {required bool isHomeCard, Offset? globalPos, RelativeRect? position}) async {
     final itemId = item['id']?.toString();
     if (itemId == null) return;
 
@@ -1657,10 +2244,18 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
     final watched = metadata['watch_status']?.toString() == 'watched';
 
+    RelativeRect effectivePosition = position ?? RelativeRect.fromLTRB(MediaQuery.of(context).size.width / 2 - 10, MediaQuery.of(context).size.height / 2 - 10, 0, 0);
+    if (globalPos != null) {
+      final overlay = Overlay.of(context)?.context.findRenderObject() as RenderBox?;
+      if (overlay != null) {
+        effectivePosition = RelativeRect.fromRect(Rect.fromPoints(globalPos, globalPos), Offset.zero & overlay.size);
+      }
+    }
+
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF11151D),
-      position: const RelativeRect.fromLTRB(100, 100, 0, 0),
+      position: effectivePosition,
       items: [
         if (progress > 0)
           const PopupMenuItem(value: 'clear_continue', child: Text('Ta bort från fortsätt titta')),
@@ -1668,20 +2263,45 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         PopupMenuItem(value: watched ? 'mark_unwatched' : 'mark_watched', child: Text('Markera som visad/osedd')),
         const PopupMenuItem(value: 'refresh', child: Text('Uppdatera metadata')),
         const PopupMenuItem(value: 'analyze', child: Text('Analysera')),
+        const PopupMenuItem(value: 'edit', child: Text('Redigera')),
         const PopupMenuItem(value: 'fix_match', child: Text('Fixa matchning')),
         const PopupMenuItem(value: 'unmatch', child: Text('Ta bort matchning')),
-        const PopupMenuItem(value: 'delete', child: Text('Ta bort')),
+        if (widget.apiService.currentUserPayload?['role'] == 'Admin')
+          const PopupMenuItem(
+            value: 'delete',
+            child: Row(children: [
+              Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+              SizedBox(width: 8),
+              Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
+            ]),
+          ),
+        const PopupMenuItem(value: 'info', child: Text('Info')),
         const PopupMenuItem(value: 'stats', child: Text('Visa statistik')),
       ],
     );
 
     if (selected == null) return;
 
+    // Info is read-only — show dialog and return, skip _loadAllMedia.
+    if (selected == 'info') {
+      _showMediaInfoDialog(item);
+      return;
+    }
+
+    if (selected == 'edit') {
+      _openMediaEditor(item);
+      return;
+    }
+
+    if (selected == 'stats') {
+      _showMediaStatsDialog(item);
+      return;
+    }
+
     try {
       switch (selected) {
         case 'clear_continue':
           await widget.apiService.saveMediaMetadata(itemId, 'playback_progress', '0');
-          await widget.apiService.toggleSeenStatus(itemId, false);
           break;
         case 'playlist':
           final playlistName = await _promptText('Lägg till på spellista', 'Spellistnamn');
@@ -1711,12 +2331,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           await widget.apiService.unmatchMediaItem(itemId);
           break;
         case 'delete':
-          if (await _confirmAction('Ta bort titel?', 'Detta tar bort posten från biblioteket.') ) {
+          if (await _confirmAction('Flytta till papperskorgen?', 'Ska detta media flyttas till papperskorgen?')) {
             await widget.apiService.deleteMediaItem(itemId);
           }
-          break;
-        case 'stats':
-          await _showInfoMessage('Statistik kommer senare.');
           break;
       }
 
@@ -1724,6 +2341,187 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     } catch (e) {
       await _showInfoMessage('Kunde inte utföra åtgärden: $e');
     }
+  }
+
+  void _showMediaInfoDialog(dynamic item) {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => MediaInfoDialog(
+        mediaId: itemId,
+        title: item['title']?.toString() ?? 'Media',
+        apiService: widget.apiService,
+      ),
+    );
+  }
+
+  void _showMediaStatsDialog(dynamic item) {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
+    final mediaTitle = item['title']?.toString() ?? 'Statistik';
+    final future = widget.apiService.fetchMediaPlays(itemId);
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) => Dialog(
+        backgroundColor: const Color(0xFF11151D),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 540),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── rubrik ───────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 8, 12),
+                child: Row(children: [
+                  const Icon(Icons.bar_chart_outlined, color: Color(0xFF8A5BFF), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Statistik — $mediaTitle',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                    onPressed: () => Navigator.pop(dialogCtx),
+                  ),
+                ]),
+              ),
+              const Divider(color: Colors.white10, height: 1),
+              // ── innehåll ─────────────────────────
+              Expanded(
+                child: FutureBuilder<Map<String, dynamic>>(
+                  future: future,
+                  builder: (ctx, snap) {
+                    if (snap.connectionState != ConnectionState.done) {
+                      return const Center(
+                        child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))),
+                      );
+                    }
+                    if (snap.hasError) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text('Kunde inte hämta statistik:\n${snap.error}',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+                        ),
+                      );
+                    }
+                    final data  = snap.data!;
+                    final plays = (data['plays'] as List<dynamic>?) ?? [];
+                    final mi    = data['mediaItem'] as Map<String, dynamic>? ?? {};
+                    final isMovie = mi['type'] == 'Movie';
+
+                    if (plays.isEmpty) {
+                      return const Center(
+                        child: Text('Ingen spelningshistorik för detta media',
+                            style: TextStyle(color: Colors.white38, fontSize: 14)),
+                      );
+                    }
+
+                    return ListView.builder(
+                      padding: const EdgeInsets.all(12),
+                      itemCount: plays.length,
+                      itemBuilder: (ctx, i) {
+                        final p        = plays[i] as Map<String, dynamic>;
+                        final username = (p['username'] as String?) ?? '—';
+                        final initials = username.isNotEmpty ? username[0].toUpperCase() : '?';
+
+                        Widget trailing;
+                        String? line1;
+                        String line2;
+
+                        if (isMovie) {
+                          final isWatched = (p['is_watched'] as num?)?.toInt() == 1;
+                          final durSec    = (p['total_duration_seconds'] as num?)?.toInt() ?? 0;
+                          final posSec    = (p['last_position_seconds']  as num?)?.toInt() ?? 0;
+                          final pct       = durSec > 0 ? (posSec / durSec * 100).round() : 0;
+                          final updAt     = (p['updated_at']        as String?) ?? '';
+                          final startAt   = (p['started_at_approx'] as String?) ?? '';
+                          line1 = startAt.length >= 16
+                              ? 'Start: ${startAt.substring(0, 16)}'
+                              : startAt.isNotEmpty ? 'Start: $startAt' : null;
+                          line2 = updAt.length >= 16
+                              ? 'Slut: ${updAt.substring(0, 16)}'
+                              : 'Slut: $updAt';
+                          trailing = isWatched
+                              ? const Row(mainAxisSize: MainAxisSize.min, children: [
+                                  Icon(Icons.check_circle, size: 14, color: Colors.greenAccent),
+                                  SizedBox(width: 4),
+                                  Text('Slutförd', style: TextStyle(color: Colors.greenAccent, fontSize: 12)),
+                                ])
+                              : Text('$pct% sedd',
+                                  style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12));
+                        } else {
+                          final epCount   = (p['episode_count']       as num?)?.toInt() ?? 0;
+                          final compCount = (p['completed_count']     as num?)?.toInt() ?? 0;
+                          final totSec    = (p['totalSeconds']        as num?)?.toInt() ?? 0;
+                          final lastAt    = (p['updated_at']          as String?) ?? '';
+                          final firstAt   = (p['first_watched_approx'] as String?) ?? '';
+                          line1 = firstAt.length >= 10 ? 'Startade: ${firstAt.substring(0, 10)}' : null;
+                          line2 = '${lastAt.length >= 10 ? lastAt.substring(0, 10) : lastAt}'
+                              '  •  $epCount avsnitt ($compCount klara)';
+                          final hh = totSec ~/ 3600;
+                          final mm = (totSec % 3600) ~/ 60;
+                          trailing = Text('${hh}h ${mm}m',
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600));
+                        }
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.03),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                          ),
+                          child: Row(children: [
+                            CircleAvatar(
+                              radius: 14,
+                              backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                              child: Text(initials,
+                                  style: const TextStyle(
+                                      color: Color(0xFFB593FF),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(username,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
+                                if (line1 != null)
+                                  Text(line1,
+                                      style: TextStyle(
+                                          color: Colors.white.withValues(alpha: 0.38), fontSize: 11)),
+                                Text(line2,
+                                    style: TextStyle(
+                                        color: Colors.white.withValues(alpha: 0.38), fontSize: 11)),
+                              ]),
+                            ),
+                            const SizedBox(width: 8),
+                            trailing,
+                          ]),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _openMediaEditor(dynamic item) async {
@@ -2132,12 +2930,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                             ('square', 'Square Art'),
                             ('info', 'Info'),
                           ])
-                            ListTile(
-                              dense: true,
-                              selected: activeTab == tab.$1,
-                              selectedTileColor: const Color(0xFF8A5BFF).withValues(alpha: 0.16),
-                              title: Text(tab.$2, style: const TextStyle(color: Colors.white)),
-                              onTap: () => dialogSetState(() => activeTab = tab.$1),
+                            Material(
+                              type: MaterialType.transparency,
+                              child: ListTile(
+                                dense: true,
+                                selected: activeTab == tab.$1,
+                                selectedTileColor: const Color(0xFF8A5BFF).withValues(alpha: 0.16),
+                                title: Text(tab.$2, style: const TextStyle(color: Colors.white)),
+                                onTap: () => dialogSetState(() => activeTab = tab.$1),
+                              ),
                             ),
                           const Spacer(),
                           Text('Lås ikon hindrar scanner från att skriva över fältet.', style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12)),
@@ -2240,7 +3041,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                     return Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Text('Path: ${details['file_path'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
+                                        Text('Sökväg: ${details['file_path'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
                                         const SizedBox(height: 8),
                                         Text('Filnamn: ${details['title'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
                                       ],
@@ -2259,7 +3060,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                 ),
                                 const SizedBox(width: 12),
                                 ElevatedButton(
-                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF8A5BFF),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                  ),
                                   onPressed: () async {
                                     try {
                                       await saveEditor();
@@ -2273,7 +3078,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                       }
                                     }
                                   },
-                                  child: const Text('Spara'),
+                                  child: const Text('Spara', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                                 ),
                               ],
                             ),
@@ -2313,13 +3118,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     squareArtController.dispose();
   }
 
-  Widget _buildPosterActionButton({required IconData icon, required VoidCallback onPressed}) {
+  Widget _buildPosterActionButton({required IconData icon, VoidCallback? onPressed, GestureTapDownCallback? onTapDown}) {
     return Material(
       color: Colors.black.withValues(alpha: 0.45),
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onPressed,
+        onTapDown: onTapDown,
         child: Padding(
           padding: const EdgeInsets.all(8),
           child: Icon(icon, color: Colors.white, size: 18),
@@ -2331,26 +3137,55 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Future<void> _handlePosterTap(dynamic item, {required bool isHomeCard}) async {
     final itemId = item['id']?.toString();
     if (itemId == null) return;
+    // Always open media details — play/resume is triggered via the hover play button.
+    _navigateTo('media', itemId);
+  }
+
+  // Called by the hover play icon on any card. Shows resume dialog if progress exists,
+  // then pushes VideoPlayerScreen directly so the user returns to Home when done.
+  void _handlePlayTap(dynamic item) {
+    final itemId = item['id']?.toString();
+    if (itemId == null) return;
 
     final metadata = item['metadata'] is Map ? item['metadata'] as Map : <String, dynamic>{};
     final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
 
-    if (progress > 0) {
-      final resume = await showDialog<int?>(
-        context: context,
-        builder: (dialogContext) {
-          return ResumePlaybackModal(
-            savedPositionSeconds: progress,
-            onResume: () => Navigator.pop(dialogContext, progress),
-            onStartOver: () => Navigator.pop(dialogContext, 0),
-          );
-        },
-      );
-
-      if (resume == null) return;
+    void pushPlayer(int fromSeconds) {
+      final mediaData = item is Map<String, dynamic> ? Map<String, dynamic>.from(item) : null;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VideoPlayerScreen(
+            mediaId: itemId,
+            apiService: widget.apiService,
+            mediaData: mediaData,
+            startFromSeconds: fromSeconds,
+          ),
+        ),
+      ).then((_) {
+        // Reload so "Fortsätt titta" reflects the updated position and order.
+        _loadAllMedia();
+      });
     }
 
-    _navigateTo('media', itemId);
+    if (progress > 0) {
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => ResumePlaybackModal(
+          savedPositionSeconds: progress,
+          onResume: () {
+            Navigator.pop(dialogContext);
+            pushPlayer(progress);
+          },
+          onStartOver: () {
+            Navigator.pop(dialogContext);
+            pushPlayer(0);
+          },
+        ),
+      );
+    } else {
+      pushPlayer(0);
+    }
   }
 
   void _activateHomeSearchSelectionOrSubmit() {
@@ -2445,10 +3280,80 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
           return KeyEventResult.ignored;
         },
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
+        child: OverlayPortal(
+          controller: _searchOverlayController,
+          overlayChildBuilder: (ctx) {
+            if (!_homeSearchIsOpen || !hasQuery) return const SizedBox.shrink();
+            final RenderBox? box = _searchBoxKey.currentContext?.findRenderObject() as RenderBox?;
+            final width = box?.size.width ?? 700.0;
+            return CompositedTransformFollower(
+              link: _searchLayerLink,
+              showWhenUnlinked: false,
+              targetAnchor: Alignment.bottomLeft,
+              followerAnchor: Alignment.topLeft,
+              offset: const Offset(0, 8),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: TextFieldTapRegion(
+                  child: SizedBox(
+                    width: width,
+                    child: Container(
+                      constraints: const BoxConstraints(maxHeight: 340),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF141820),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.5),
+                            blurRadius: 20,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: hasResults
+                          ? ListView(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              shrinkWrap: true,
+                              children: [
+                                ...List.generate(_homeSearchLocalResults.length, (index) {
+                                  final movie = _homeSearchLocalResults[index];
+                                  return _buildHomeSearchLocalRow(movie, isSelected: _homeSearchSelectedIndex == index);
+                                }),
+                                if (_homeSearchLocalResults.isNotEmpty && (_homeSearchTmdbResults.isNotEmpty || _homeSearchLoadingTmdb))
+                                  _buildHomeSearchSeparator('Från TMDB'),
+                                ...List.generate(_homeSearchTmdbResults.length, (index) {
+                                  final movie = _homeSearchTmdbResults[index];
+                                  final selectedIndex = _homeSearchLocalResults.length + index;
+                                  return _buildHomeSearchTmdbRow(movie, isSelected: _homeSearchSelectedIndex == selectedIndex);
+                                }),
+                                if (_homeSearchLoadingTmdb)
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 12),
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8A5BFF)),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            )
+                          : const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+                              child: Text('Inga träffar', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+          child: CompositedTransformTarget(
+            link: _searchLayerLink,
+            child: Container(
+              key: _searchBoxKey,
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.06),
                 borderRadius: BorderRadius.circular(14),
@@ -2500,50 +3405,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 ),
               ),
             ),
-            if (_homeSearchIsOpen && hasQuery) const SizedBox(height: 10),
-            if (_homeSearchIsOpen && hasQuery)
-              Container(
-                constraints: const BoxConstraints(maxHeight: 340),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF141820),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
-                ),
-                child: hasResults
-                    ? ListView(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        shrinkWrap: true,
-                        children: [
-                          ...List.generate(_homeSearchLocalResults.length, (index) {
-                            final movie = _homeSearchLocalResults[index];
-                            return _buildHomeSearchLocalRow(movie, isSelected: _homeSearchSelectedIndex == index);
-                          }),
-                          if (_homeSearchLocalResults.isNotEmpty && (_homeSearchTmdbResults.isNotEmpty || _homeSearchLoadingTmdb))
-                            _buildHomeSearchSeparator('Från TMDB'),
-                          ...List.generate(_homeSearchTmdbResults.length, (index) {
-                            final movie = _homeSearchTmdbResults[index];
-                            final selectedIndex = _homeSearchLocalResults.length + index;
-                            return _buildHomeSearchTmdbRow(movie, isSelected: _homeSearchSelectedIndex == selectedIndex);
-                          }),
-                          if (_homeSearchLoadingTmdb)
-                            const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 12),
-                              child: Center(
-                                child: SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8A5BFF)),
-                                ),
-                              ),
-                            ),
-                        ],
-                      )
-                    : const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-                        child: Text('Inga träffar', style: TextStyle(color: Colors.white54, fontSize: 13)),
-                      ),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -2673,7 +3535,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       child: Chip(
         backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.1),
         side: const BorderSide(color: Color(0xFF8A5BFF)),
-        label: Text(_keywordFilter != null ? 'Keyword: $_keywordFilter' : 'Genre: $_genreFilter', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        label: Text(_keywordFilter != null ? 'Nyckelord: $_keywordFilter' : 'Genre: $_genreFilter', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         deleteIcon: const Icon(Icons.close, color: Colors.white, size: 18),
         onDeleted: () {
           setState(() {
@@ -2687,7 +3549,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
 
   Widget _buildHomeView() {
-    final recentMovies = _movies.take(12).toList();
+    // Newest-added movies first
+    final recentMovies = (List<dynamic>.from(_movies)
+          ..sort((a, b) {
+            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            return bTime.compareTo(aTime);
+          }))
+        .take(12)
+        .toList();
     final watchedMovies = _getRecentlyWatchedMovies(_movies).take(12).toList();
 
     return SingleChildScrollView(
@@ -2777,83 +3649,223 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildHomeCard(dynamic movie) {
-    final posterPath = movie['poster_path'];
-    final title = movie['title'] ?? '';
-    final year = movie['year']?.toString() ?? '';
-    final posterKey = _posterKeyFor(movie, 'home');
+    final cardWidth = 115 * _posterScale;
+    return SizedBox(
+      width: cardWidth,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 14),
+        child: _buildUnifiedPosterCard(movie, isHomeCard: true, posterPrefix: 'home'),
+      ),
+    );
+  }
+
+  /// Normalise any resolution string to a human-friendly label.
+  /// Handles height-only ("1080p"), dimension pairs ("1920x800"), and keywords ("4K").
+  /// For dimension pairs, both width AND height are checked so Scope-format films
+  /// like 1920×800 are correctly reported as 1080P (not 720P).
+  static String? _normaliseResolution(String? raw) {
+    if (raw == null) return null;
+    final s = raw.trim();
+    if (s.isEmpty) return null;
+    final u = s.toUpperCase();
+
+    // Try to parse as WxH (e.g. "1920X800" or "1920x1080")
+    final dimMatch = RegExp(r'^(\d+)[Xx](\d+)$').firstMatch(s);
+    if (dimMatch != null) {
+      final w = int.parse(dimMatch.group(1)!);
+      final h = int.parse(dimMatch.group(2)!);
+      if (w >= 3200 || h >= 2000) return '4K';
+      if (w >= 1900 || h >= 1000) return '1080P';
+      if (w >= 1100 || h >= 650)  return '720P';
+      if (w >= 700  || h >= 420)  return '480P';
+      return '${h}P';
+    }
+
+    if (u.contains('4K') || u.contains('2160') || u.contains('3840')) return '4K';
+    if (u.contains('1080')) return '1080P';
+    if (u.contains('720'))  return '720P';
+    if (u.contains('480'))  return '480P';
+    if (u.contains('360'))  return '360P';
+    return u;
+  }
+
+  /// Shared card widget used for both the home-strip and the movies/shows grid.
+  Widget _buildUnifiedPosterCard(
+    dynamic item, {
+    required bool isHomeCard,
+    int index = 0,
+    required String posterPrefix,
+  }) {
+    final title = (_titleDisplayStyle == 'Original' &&
+            item['original_title'] != null &&
+            (item['original_title'] as String).isNotEmpty)
+        ? item['original_title'] as String
+        : (item['title'] ?? 'Okänd').toString();
+
+    final type = (item['type'] ?? 'Movie').toString();
+
+    // Collect unique non-null resolutions from all versions; fall back to metadata keys
+    final versions = item['versions'] as List? ?? [];
+    final resolutionSet = <String>{};
+    for (final v in versions) {
+      final r = _normaliseResolution(v['resolution']?.toString());
+      if (r != null) resolutionSet.add(r);
+    }
+    if (resolutionSet.isEmpty) {
+      final meta = item['metadata'];
+      final raw = meta is Map
+          ? (meta['resolution'] ??
+                  meta['video_resolution'] ??
+                  meta['quality'] ??
+                  meta['video_quality'])
+              ?.toString()
+          : null;
+      final r = raw ?? item['resolution']?.toString();
+      final n = _normaliseResolution(r);
+      if (n != null) resolutionSet.add(n);
+      // Last resort: derive from stored video dimensions
+      if (resolutionSet.isEmpty && meta is Map) {
+        final h = int.tryParse(meta['video_height']?.toString() ?? '');
+        if (h != null && h > 0) {
+          final derived = _normaliseResolution('${h}p');
+          if (derived != null) resolutionSet.add(derived);
+        }
+      }
+    }
+    final resolutionLabel = resolutionSet.isEmpty ? null : resolutionSet.join(' · ');
+
+    final versionsCount = versions.isNotEmpty ? versions.length : 1;
+    final metadata = item['metadata'] ?? {};
+    final posterPath = item['poster_path'];
+    final posterKey = _posterKeyFor(item, posterPrefix);
     final isHovered = _hoveredPosterKey == posterKey;
+    final itemId = item['id']?.toString();
+    final isSelected = itemId != null && _selectedMediaIds.contains(itemId);
+    final posterTextScale = _posterScale.clamp(0.85, 1.25).toDouble();
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hoveredPosterKey = posterKey),
       onExit: (_) {
-        if (_hoveredPosterKey == posterKey) {
-          setState(() => _hoveredPosterKey = null);
-        }
+        if (_hoveredPosterKey == posterKey) setState(() => _hoveredPosterKey = null);
       },
-      child: GestureDetector(
-        onTap: () => _handlePosterTap(movie, isHomeCard: true),
+      child: Listener(
+        onPointerDown: (event) {
+          if (event.buttons == kSecondaryMouseButton) {
+            _openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: event.position);
+          }
+        },
+        child: GestureDetector(
+        onTap: () => _handlePosterTap(item, isHomeCard: isHomeCard),
         child: Container(
-          width: 130,
-          margin: const EdgeInsets.only(right: 14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.03),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 10, offset: const Offset(0, 4)),
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── Poster area (fills remaining cell height after text section) ──
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.05),
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.4), blurRadius: 10, offset: const Offset(0, 5))],
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        const Color(0xFF8A5BFF).withValues(alpha: 0.05),
+                        const Color(0xFF8A5BFF).withValues(alpha: 0.15),
+                      ],
+                    ),
                   ),
-                  clipBehavior: Clip.antiAlias,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      // Gradient placeholder background
-                      Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              const Color(0xFF8A5BFF).withValues(alpha: 0.05),
-                              const Color(0xFF8A5BFF).withValues(alpha: 0.15),
-                            ],
-                          ),
-                        ),
-                        child: const Center(
-                          child: Icon(Icons.movie_outlined, color: Colors.white24, size: 36),
-                        ),
-                      ),
-                      
-                      // Actual Network Image with CORS fail-safety
-                      if (posterPath != null && posterPath.isNotEmpty)
+                      // Poster image
+                      if (posterPath != null && (posterPath as String).isNotEmpty)
                         Image.network(
                           posterPath,
                           fit: BoxFit.cover,
                           width: double.infinity,
                           height: double.infinity,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Center(
-                              child: Icon(Icons.movie_outlined, color: Colors.white24, size: 36),
-                            );
-                          },
+                          errorBuilder: (context, error, stackTrace) => Center(
+                            child: Icon(
+                              type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
+                              color: Colors.white24,
+                              size: 36,
+                            ),
+                          ),
+                        )
+                      else
+                        Center(
+                          child: Icon(
+                            type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
+                            color: Colors.white24,
+                            size: 36,
+                          ),
                         ),
 
+                      // Hover dark overlay
                       Positioned.fill(
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 180),
-                          opacity: isHovered ? 1 : 0,
-                          child: Container(
-                            color: Colors.black.withValues(alpha: 0.22),
-                            child: const Center(
-                              child: Icon(Icons.play_circle_fill, color: Colors.white, size: 54),
+                        child: IgnorePointer(
+                          child: AnimatedOpacity(
+                            duration: const Duration(milliseconds: 180),
+                            opacity: isHovered ? 1 : 0,
+                            child: Container(color: Colors.black.withValues(alpha: 0.30)),
+                          ),
+                        ),
+                      ),
+
+                      // Play button (hover only)
+                      Positioned.fill(
+                        child: Center(
+                          child: IgnorePointer(
+                            ignoring: !isHovered,
+                            child: GestureDetector(
+                              onTap: () => _handlePlayTap(item),
+                              child: AnimatedOpacity(
+                                duration: const Duration(milliseconds: 180),
+                                opacity: isHovered ? 1 : 0,
+                                child: Container(
+                                  width: 48,
+                                  height: 48,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.black.withValues(alpha: 0.3),
+                                  ),
+                                  child: const Icon(Icons.play_circle_fill, color: Colors.white, size: 40),
+                                ),
+                              ),
                             ),
                           ),
                         ),
                       ),
 
+                      // Selection checkbox (all views)
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                          child: GestureDetector(
+                            onTap: () => _toggleMediaSelection(item, index),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 160),
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: isSelected ? const Color(0xFF8A5BFF) : Colors.black.withValues(alpha: 0.35),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: isSelected ? Colors.white : Colors.white24, width: 1),
+                              ),
+                              child: Icon(isSelected ? Icons.check : Icons.circle_outlined, color: Colors.white, size: 16),
+                            ),
+                          ),
+                        ),
+
+                      // "..." button (bottom-left)
                       Positioned(
                         left: 8,
                         bottom: 8,
@@ -2862,11 +3874,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           opacity: isHovered ? 1 : 0.65,
                           child: _buildPosterActionButton(
                             icon: Icons.more_horiz,
-                            onPressed: () => _openPosterActionsMenu(movie, isHomeCard: true),
+                            onTapDown: (details) =>
+                                _openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: details.globalPosition),
                           ),
                         ),
                       ),
 
+                      // Edit button (bottom-right)
                       Positioned(
                         right: 8,
                         bottom: 8,
@@ -2875,29 +3889,62 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           opacity: isHovered ? 1 : 0.65,
                           child: _buildPosterActionButton(
                             icon: Icons.edit,
-                            onPressed: () => _openMediaEditor(movie),
+                            onPressed: () => _openMediaEditor(item),
                           ),
                         ),
                       ),
-                      
-                      // Top-left watched checkmark badge
+
+                      // "Premiär" banner for new season premieres
+                      if (type == 'Show' && metadata['has_season_premiere'] == '1')
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 5),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  const Color(0xFFFF6B35).withValues(alpha: 0.95),
+                                  const Color(0xFFFFAB40).withValues(alpha: 0.95),
+                                ],
+                              ),
+                            ),
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.star, size: 10, color: Colors.white),
+                                SizedBox(width: 4),
+                                Text(
+                                  'PREMIÄR',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 1.2,
+                                  ),
+                                ),
+                                SizedBox(width: 4),
+                                Icon(Icons.star, size: 10, color: Colors.white),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                      // Watched checkmark (top-left)
                       Positioned(
                         top: 10,
                         left: 10,
                         child: Builder(builder: (context) {
-                          final metadata = movie['metadata'] ?? {};
                           if (metadata['watch_status'] == 'watched') {
                             return Container(
                               padding: const EdgeInsets.all(4),
                               decoration: BoxDecoration(
                                 color: Colors.black.withValues(alpha: 0.6),
                                 shape: BoxShape.circle,
-                                border: Border.all(color: const Color(0xFF00E676), width: 1.5), // neon green outline
+                                border: Border.all(color: const Color(0xFF00E676), width: 1.5),
                                 boxShadow: [
-                                  BoxShadow(
-                                    color: const Color(0xFF00E676).withValues(alpha: 0.3),
-                                    blurRadius: 6,
-                                  )
+                                  BoxShadow(color: const Color(0xFF00E676).withValues(alpha: 0.3), blurRadius: 6),
                                 ],
                               ),
                               child: const Icon(Icons.check, color: Color(0xFF00E676), size: 14),
@@ -2906,23 +3953,20 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           return const SizedBox.shrink();
                         }),
                       ),
-                      
-                      // Bottom progress bar if playback_progress > 0
+
+                      // Selection checkbox restored to top-right (no resolution badge here)
+
+                      // Progress bar (bottom)
                       Builder(builder: (context) {
-                        final metadata = movie['metadata'] ?? {};
                         final progress = int.tryParse((metadata['playback_progress']?.toString() ?? '0')) ?? 0;
                         if (progress <= 0) return const SizedBox.shrink();
-
                         int duration = int.tryParse((metadata['duration']?.toString() ?? '0')) ?? 0;
                         if (duration == 0) {
                           final runtimeMinutes = int.tryParse((metadata['runtime']?.toString() ?? '0')) ?? 0;
                           duration = runtimeMinutes * 60;
                         }
-                        if (duration == 0) {
-                          duration = 7200; // 120 min default fallback
-                        }
+                        if (duration == 0) duration = 7200;
                         final ratio = (progress / duration).clamp(0.0, 1.0);
-
                         return Positioned(
                           left: 0,
                           right: 0,
@@ -2942,12 +3986,62 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              Text(title, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
-              if (year.isNotEmpty)
-                Text(year, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+
+              // ── Text section below poster ─────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13.0 * posterTextScale,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        // Year – left side
+                        Text(
+                          (item['year'] != null && item['year'].toString().isNotEmpty && item['year'].toString() != 'null')
+                              ? item['year'].toString()
+                              : '',
+                          style: TextStyle(color: Colors.white38, fontSize: 11.0 * posterTextScale),
+                        ),
+                        // Resolution – right side (replaces version count; both share the right)
+                        if (resolutionLabel != null)
+                          Text(
+                            resolutionLabel,
+                            style: TextStyle(
+                              color: const Color(0xFFB593FF),
+                              fontSize: 10.0 * posterTextScale,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          )
+                        else if (!isHomeCard && versionsCount > 1)
+                          Text(
+                            '$versionsCount ver.',
+                            style: TextStyle(
+                              color: const Color(0xFFB593FF).withValues(alpha: 0.8),
+                              fontSize: 11.0 * posterTextScale,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
+        ),
         ),
       ),
     );
@@ -2964,7 +4058,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     }
 
     if (_movies.isEmpty) {
-      return _buildEmptyState('No movies found', 'Go to the Library Scanner tab to import your media files.');
+      return _buildEmptyState('Inga filmer hittades', 'Gå till Biblioteks scanner-fliken för att importera dina mediafiler.');
     }
 
     List<dynamic> filteredMovies = _movies;
@@ -3028,7 +4122,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           Expanded(child: _buildEmptyState(
             _moviesSearchQuery.isNotEmpty
                 ? 'Inga filmer matchar "$_moviesSearchQuery"'
-                : (_keywordFilter != null ? 'Inga filmer matchar keyword "$_keywordFilter"' : 'Inga filmer matchar genren "$_genreFilter"'),
+                : (_keywordFilter != null ? 'Inga filmer matchar nyckelord "$_keywordFilter"' : 'Inga filmer matchar genren "$_genreFilter"'),
             'Ta bort filtret för att se alla filmer.'
           )),
         ],
@@ -3069,11 +4163,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             // Keep the current filtered list available for shift-range selection.
             key: ValueKey(filteredMovies.length),
             padding: const EdgeInsets.only(top: 10, bottom: 30),
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 220,
+            gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 150 * _posterScale,
               mainAxisSpacing: 30,
               crossAxisSpacing: 24,
-              childAspectRatio: 0.72,
+              childAspectRatio: (150 * _posterScale) / (225 * _posterScale + 48),
             ),
             itemCount: filteredMovies.length,
             itemBuilder: (context, index) {
@@ -3087,348 +4181,81 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildShowsView() {
+    Widget gridContent;
+
     if (_loadingMedia) {
-      return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))));
-    }
-
-    if (_mediaError != null) {
-      return _buildErrorState(_mediaError!);
-    }
-
-    if (_shows.isEmpty) {
-      return _buildEmptyState('No TV shows found', 'Go to the Library Scanner tab to import your media files.');
-    }
-
-    List<dynamic> filteredShows = _shows;
-    if (_genreFilter != null) {
-      filteredShows = _shows.where((s) => (s['genre'] as String? ?? '').toString().toLowerCase().contains(_genreFilter!.toLowerCase())).toList();
-    } else if (_keywordFilter != null) {
-      filteredShows = _shows.where((s) {
-        final meta = s['metadata'] ?? {};
-        dynamic kwData = meta['keywords'];
-        List<dynamic> klist = [];
-        if (kwData is List) {
-          klist = kwData;
-        } else if (kwData is String && kwData.isNotEmpty) {
-          try {
-            klist = (kwData.startsWith('[') || kwData.startsWith('{')) ? (jsonDecode(kwData) as List<dynamic>) : [kwData];
-          } catch (e) {
-            klist = [kwData];
+      gridContent = const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))));
+    } else if (_mediaError != null) {
+      gridContent = _buildErrorState(_mediaError!);
+    } else if (_shows.isEmpty) {
+      gridContent = _buildEmptyState('Inga TV-serier hittades', 'Gå till Biblioteks scanner-fliken för att importera dina mediafiler.');
+    } else {
+      List<dynamic> filteredShows = _shows;
+      if (_genreFilter != null) {
+        filteredShows = _shows.where((s) => (s['genre'] as String? ?? '').toString().toLowerCase().contains(_genreFilter!.toLowerCase())).toList();
+      } else if (_keywordFilter != null) {
+        filteredShows = _shows.where((s) {
+          final meta = s['metadata'] ?? {};
+          dynamic kwData = meta['keywords'];
+          List<dynamic> klist = [];
+          if (kwData is List) {
+            klist = kwData;
+          } else if (kwData is String && kwData.isNotEmpty) {
+            try {
+              klist = (kwData.startsWith('[') || kwData.startsWith('{')) ? (jsonDecode(kwData) as List<dynamic>) : [kwData];
+            } catch (e) {
+              klist = [kwData];
+            }
           }
-        }
-        return klist.any((kw) => kw.toString().toLowerCase() == _keywordFilter!.toLowerCase());
-      }).toList();
-    }
-
-    if (filteredShows.isEmpty) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildGenreFilterBadge(),
-          Expanded(child: _buildEmptyState(
-            _keywordFilter != null ? 'Inga serier matchar keyword "$_keywordFilter"' : 'Inga serier matchar genren "$_genreFilter"',
-            'Ta bort filtret för att se alla serier.'
-          )),
-        ],
-      );
-    }
+          return klist.any((kw) => kw.toString().toLowerCase() == _keywordFilter!.toLowerCase());
+        }).toList();
+      }
 
       _currentMediaGridItemsSnapshot = filteredShows;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (_genreFilter != null) _buildGenreFilterBadge(),
-        Expanded(
-          child: GridView.builder(
-            key: ValueKey(filteredShows.length),
-            padding: const EdgeInsets.only(top: 10, bottom: 30),
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 220,
-              mainAxisSpacing: 30,
-              crossAxisSpacing: 24,
-              childAspectRatio: 0.72,
+      if (filteredShows.isEmpty) {
+        gridContent = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildGenreFilterBadge(),
+            Expanded(child: _buildEmptyState(
+              _keywordFilter != null ? 'Inga serier matchar nyckelord "$_keywordFilter"' : 'Inga serier matchar genren "$_genreFilter"',
+              'Ta bort filtret för att se alla serier.'
+            )),
+          ],
+        );
+      } else {
+        gridContent = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (_genreFilter != null) _buildGenreFilterBadge(),
+            Expanded(
+              child: GridView.builder(
+                key: ValueKey(filteredShows.length),
+                padding: const EdgeInsets.only(top: 10, bottom: 30),
+                gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 150 * _posterScale,
+                  mainAxisSpacing: 30,
+                  crossAxisSpacing: 24,
+                  childAspectRatio: (150 * _posterScale) / (225 * _posterScale + 48),
+                ),
+                itemCount: filteredShows.length,
+                itemBuilder: (context, index) {
+                  final show = filteredShows[index];
+                  return _buildMediaCard(show, index: index);
+                },
+              ),
             ),
-            itemCount: filteredShows.length,
-            itemBuilder: (context, index) {
-              final show = filteredShows[index];
-              return _buildMediaCard(show, index: index);
-            },
-          ),
-        ),
-      ],
-    );
+          ],
+        );
+      }
+    }
+
+    return gridContent;
   }
 
   Widget _buildMediaCard(dynamic item, {required int index}) {
-    final title = (_titleDisplayStyle == 'Original' && item['original_title'] != null && (item['original_title'] as String).isNotEmpty)
-        ? item['original_title']
-        : (item['title'] ?? 'Unknown');
-    final type = item['type'] ?? 'Movie';
-    final resolution = item['resolution'] ?? '1080p';
-    final versionsCount = item['versions'] != null ? (item['versions'] as List).length : 1;
-    final metadata = item['metadata'] ?? {};
-    final genre = metadata['genre'] ?? 'Media';
-    
-    // Check if it's TV show to show episodes count
-    final episodesCount = item['episodes'] != null ? (item['episodes'] as List).length : 0;
-    final posterPath = item['poster_path'];
-    final posterKey = _posterKeyFor(item, 'media');
-    final isHovered = _hoveredPosterKey == posterKey;
-    final itemId = item['id']?.toString();
-    final isSelected = itemId != null && _selectedMediaIds.contains(itemId);
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hoveredPosterKey = posterKey),
-      onExit: (_) {
-        if (_hoveredPosterKey == posterKey) {
-          setState(() => _hoveredPosterKey = null);
-        }
-      },
-      child: GestureDetector(
-        onTap: () => _handlePosterTap(item, isHomeCard: false),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.03),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Simulated Poster Area (Glassmorphism & Gradient)
-              Expanded(
-                child: Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        const Color(0xFF8A5BFF).withValues(alpha: 0.1),
-                        const Color(0xFF8A5BFF).withValues(alpha: 0.25),
-                      ],
-                    ),
-                  ),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      // Actual Network Image with CORS fail-safety
-                      if (posterPath != null && posterPath.isNotEmpty)
-                        Image.network(
-                          posterPath,
-                          fit: BoxFit.cover,
-                          width: double.infinity,
-                          height: double.infinity,
-                          errorBuilder: (context, error, stackTrace) {
-                            return Center(
-                              child: Icon(
-                                type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
-                                color: Colors.white24,
-                                size: 48,
-                              ),
-                            );
-                          },
-                        )
-                      else
-                        Center(
-                          child: Icon(
-                            type == 'Movie' ? Icons.movie_outlined : Icons.tv_outlined,
-                            color: Colors.white24,
-                            size: 48,
-                          ),
-                        ),
-
-                      Positioned.fill(
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 180),
-                          opacity: isHovered ? 1 : 0,
-                          child: Container(
-                            color: Colors.black.withValues(alpha: 0.22),
-                            child: const Center(
-                              child: Icon(Icons.play_circle_fill, color: Colors.white, size: 58),
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      Positioned(
-                        top: 10,
-                        right: 10,
-                        child: GestureDetector(
-                          onTap: () => _toggleMediaSelection(item, index),
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 160),
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: isSelected ? const Color(0xFF8A5BFF) : Colors.black.withValues(alpha: 0.35),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: isSelected ? Colors.white : Colors.white24, width: 1),
-                            ),
-                            child: Icon(isSelected ? Icons.check : Icons.circle_outlined, color: Colors.white, size: 16),
-                          ),
-                        ),
-                      ),
-
-                      Positioned(
-                        left: 10,
-                        bottom: 10,
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 180),
-                          opacity: isHovered ? 1 : 0.72,
-                          child: _buildPosterActionButton(
-                            icon: Icons.more_horiz,
-                            onPressed: () => _openPosterActionsMenu(item, isHomeCard: false),
-                          ),
-                        ),
-                      ),
-
-                      Positioned(
-                        right: 10,
-                        bottom: 10,
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 180),
-                          opacity: isHovered ? 1 : 0.72,
-                          child: _buildPosterActionButton(
-                            icon: Icons.edit,
-                            onPressed: () => _openMediaEditor(item),
-                          ),
-                        ),
-                      ),
-                      
-                      // Top-left watched checkmark badge
-                      Positioned(
-                        top: 12,
-                        left: 12,
-                        child: Builder(builder: (context) {
-                          if (metadata['watch_status'] == 'watched') {
-                            return Container(
-                              padding: const EdgeInsets.all(4),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.6),
-                                shape: BoxShape.circle,
-                                border: Border.all(color: const Color(0xFF00E676), width: 1.5), // neon green outline
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: const Color(0xFF00E676).withValues(alpha: 0.3),
-                                    blurRadius: 6,
-                                  )
-                                ],
-                              ),
-                              child: const Icon(Icons.check, color: Color(0xFF00E676), size: 14),
-                            );
-                          }
-                          return const SizedBox.shrink();
-                        }),
-                      ),
-                      
-                      // Resolution Badge
-                      if (type == 'Movie')
-                        Positioned(
-                          top: 12,
-                          right: 12,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF8A5BFF),
-                              borderRadius: BorderRadius.circular(6),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: const Color(0xFF8A5BFF).withValues(alpha: 0.3),
-                                  blurRadius: 6,
-                                )
-                              ],
-                            ),
-                            child: Text(
-                              resolution.toUpperCase(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                      // Thumbnail progress bar for in-progress items (only a small bar)
-                      if (metadata is Map && int.tryParse((metadata['playback_progress']?.toString() ?? '0')) != null && int.tryParse((metadata['playback_progress']?.toString() ?? '0'))! > 0)
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          child: Container(
-                            height: 6,
-                            decoration: const BoxDecoration(
-                              color: Colors.white12,
-                            ),
-                            child: Builder(builder: (context) {
-                              final progress = int.tryParse((metadata['playback_progress']?.toString() ?? '0')) ?? 0;
-                              int duration = int.tryParse((metadata['duration']?.toString() ?? '0')) ?? 0;
-                              if (duration == 0) {
-                                final runtimeMinutes = int.tryParse((metadata['runtime']?.toString() ?? '0')) ?? 0;
-                                duration = runtimeMinutes * 60;
-                              }
-                              if (duration == 0) {
-                                duration = 7200; // 120 min default fallback
-                              }
-                              final ratio = (progress / duration).clamp(0.0, 1.0);
-                              return LinearProgressIndicator(value: ratio, color: const Color(0xFF8A5BFF), backgroundColor: Colors.transparent);
-                            }),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              
-              // Details Area
-              Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          genre,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.35),
-                            fontSize: 12,
-                          ),
-                        ),
-                        Text(
-                          type == 'Movie' 
-                            ? (versionsCount > 1 ? '$versionsCount versions' : 'Movie')
-                            : '$episodesCount eps',
-                          style: TextStyle(
-                            color: const Color(0xFFB593FF).withValues(alpha: 0.8),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return _buildUnifiedPosterCard(item, isHomeCard: false, index: index, posterPrefix: 'media');
   }
 
   Widget _buildEmptyState(String title, String subtitle) {
@@ -3479,11 +4306,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             ),
             onPressed: () {
               setState(() {
-                _tabController.animateTo(2);
+                _tabController.animateTo(3);
               });
             },
             icon: const Icon(Icons.scanner_outlined),
-            label: const Text('Go to Library Scanner'),
+            label: const Text('Gå till Biblioteks scanner'),
           ),
         ],
       ),
@@ -3498,7 +4325,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
           const SizedBox(height: 16),
           const Text(
-            'Failed to load library data',
+            'Kunde inte ladda biblioteksdata',
             style: TextStyle(color: Colors.white70, fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
@@ -3509,7 +4336,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           const SizedBox(height: 24),
           ElevatedButton(
             onPressed: _loadAllMedia,
-            child: const Text('Try Again'),
+            child: const Text('Försök igen'),
           )
         ],
       ),
@@ -3545,7 +4372,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     children: [
                       Icon(Icons.movie_outlined, size: 18),
                       SizedBox(width: 8),
-                      Text('Movies', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text('Filmer', style: TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -3555,7 +4382,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     children: [
                       Icon(Icons.tv_outlined, size: 18),
                       SizedBox(width: 8),
-                      Text('TV Shows', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text('TV-Serier', style: TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -3565,7 +4392,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     children: [
                       Icon(Icons.music_note_outlined, size: 18),
                       SizedBox(width: 8),
-                      Text('Music', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text('Musik', style: TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -3574,7 +4401,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           ),
           
           const SizedBox(height: 25),
-          
+
           // Tab views
           Expanded(
             child: TabBarView(
@@ -3590,6 +4417,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+
   Widget _buildScannerSubTab(String type) {
     final pathsOfType = _libraryPaths.where((p) => p['type'] == type).toList();
     
@@ -3601,7 +4429,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              'Configured ${type == 'Show' ? 'TV Show' : type == 'Movie' ? 'Movie' : 'Music'} Folders',
+              'Konfigurerade ${type == 'Show' ? 'TV-seriemappar' : type == 'Movie' ? 'filmmappar' : 'musikmappar'}',
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
             if (pathsOfType.isNotEmpty && _isScanning)
@@ -3624,7 +4452,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             ),
             child: Center(
               child: Text(
-                'No folders added yet for ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}.',
+                'Inga mappar tillagda än för ${type == 'Show' ? 'TV-Serier' : type == 'Movie' ? 'Filmer' : 'Musik'}.',
                 style: const TextStyle(color: Colors.white24, fontSize: 14),
               ),
             ),
@@ -3647,7 +4475,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         
         // Section: Add Folder Form
         Text(
-          'Add ${type == 'Show' ? 'TV Show' : type == 'Movie' ? 'Movie' : 'Music'} Folder',
+          'Lägg till ${type == 'Show' ? 'TV-seriemapp' : type == 'Movie' ? 'filmmapp' : 'musikmapp'}',
           style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 15),
@@ -3690,7 +4518,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               IconButton(
                 onPressed: () => _showEditPathDialog(pathItem),
                 icon: const Icon(Icons.edit_outlined, color: Colors.blueAccent),
-                tooltip: 'Edit Folder Path',
+                tooltip: 'Redigera mappsökväg',
               ),
               
               // Action: Scan folder
@@ -3699,14 +4527,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   ? null 
                   : () => _triggerScanOfSpecificPath(folderPath, type),
                 icon: const Icon(Icons.sync_outlined, color: Colors.greenAccent),
-                tooltip: 'Scan Folder Now',
+                tooltip: 'Skanna mapp nu',
               ),
               
               // Action: Remove path
               IconButton(
                 onPressed: () => _deletePath(id),
                 icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                tooltip: 'Remove Folder',
+                tooltip: 'Ta bort mapp',
               ),
             ],
           ),
@@ -3735,7 +4563,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     setState(() {
       _isScanning = true;
       _currentlyScanningPath = folderPath;
-      _scanStatusText = 'Scanning $type...';
+      _scanStatusText = 'Skannar...';
     });
 
     try {
@@ -3747,7 +4575,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(response['message'] ?? 'Scan started successfully!'),
+          content: Text(response['message'] ?? 'Skanning startad!'),
           backgroundColor: const Color(0xFF8A5BFF),
         ),
       );
@@ -3758,7 +4586,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _isScanning = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to trigger scan: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('Kunde inte starta skanning: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -3783,7 +4611,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   decoration: InputDecoration(
                     filled: true,
                     fillColor: Colors.black.withValues(alpha: 0.3),
-                    hintText: 'Enter path or click Browse...',
+                    hintText: 'Ange sökväg eller klicka Bläddra...',
                     hintStyle: const TextStyle(color: Colors.white24),
                     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                     border: OutlineInputBorder(
@@ -3821,14 +4649,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)),
                         )
                       : const Icon(Icons.folder_open_outlined, color: Color(0xFFB593FF)),
-                  label: const Text('Browse...'),
+                  label: const Text('Bläddra...'),
                 ),
               ),
             ],
           ),
-          
+
           const SizedBox(height: 15),
-          
+
           // Switch Row for Local NFO
           Container(
             padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
@@ -3840,11 +4668,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             child: SwitchListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               title: const Text(
-                'Prefer local NFO metadata',
+                'Föredra lokal NFO-metadata',
                 style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
               ),
               subtitle: Text(
-                'Import titles and details from local .nfo files instead of fetching online.',
+                'Importera titlar och detaljer från lokala .nfo-filer istället för att hämta online.',
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11.5),
               ),
               value: _preferLocalNfo,
@@ -3875,13 +4703,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   _pathController.clear();
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please select or enter a folder path')),
+                    const SnackBar(content: Text('Välj eller ange en mappsökväg')),
                   );
                 }
               },
               icon: const Icon(Icons.add),
               label: Text(
-                'Add Folder to ${type == 'Show' ? 'TV Shows' : type == 'Movie' ? 'Movies' : 'Music'}',
+                'Lägg till mapp i ${type == 'Show' ? 'TV-Serier' : type == 'Movie' ? 'Filmer' : 'Musik'}',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
               ),
             ),
@@ -3891,18 +4719,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
-  Future<void> _loadDevices() async {
-    setState(() => _isLoadingDevices = true);
-    try {
-      final devices = await widget.apiService.fetchDevices();
-      setState(() => _trustedDevices = devices);
-    } catch (e) {
-      debugPrint('Failed to load devices: $e');
-    } finally {
-      if (mounted) setState(() => _isLoadingDevices = false);
-    }
-  }
-
   Future<void> _loadSettings() async {
     if (_isLoadingSettings) return;
     setState(() {
@@ -3910,6 +4726,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     });
     try {
       final settings = await widget.apiService.getSettings();
+      await widget.apiService.saveSettingsCache(settings);
       setState(() {
         _tmdbKeyController.text = settings['TMDB_API_KEY'] ?? '';
         _omdbKeyController.text = settings['OMDB_API_KEY'] ?? '';
@@ -3932,9 +4749,56 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         _syncTraktWatched = settings['sync_trakt_watched'] != 'false';
         _syncSimklRatings = settings['sync_simkl_ratings'] != 'false';
         _syncSimklWatched = settings['sync_simkl_watched'] != 'false';
+        _posterSizeStep = int.tryParse(settings['POSTER_SIZE_STEP'] ?? '') ?? 1;
+        _serverName = settings['SERVER_NAME'] ?? '';
+        _showClock = settings['SHOW_CLOCK'] == 'true';
         _isLoadingSettings = false;
       });
+      // Load avatar URL in parallel; append timestamp so any recently uploaded
+      // avatar is not served from Flutter's stale NetworkImage cache.
+      widget.apiService.fetchCurrentUserProfile().then((profile) {
+        final path = profile['avatar_path'] as String?;
+        if (path != null && path.isNotEmpty && mounted) {
+          final newUrl = '${widget.apiService.baseUrl}$path?t=${DateTime.now().millisecondsSinceEpoch}';
+          if (_avatarUrl != null) {
+            PaintingBinding.instance.imageCache.evict(NetworkImage(_avatarUrl!));
+          }
+          setState(() => _avatarUrl = newUrl);
+        }
+      }).catchError((_) {});
     } catch (e) {
+      final cachedSettings = widget.apiService.loadSettingsCache();
+      if (cachedSettings != null) {
+        setState(() {
+          _tmdbKeyController.text = cachedSettings['TMDB_API_KEY'] ?? '';
+          _omdbKeyController.text = cachedSettings['OMDB_API_KEY'] ?? '';
+          _simklKeyController.text = cachedSettings['SIMKL_CLIENT_ID'] ?? '';
+          _simklSecretController.text = cachedSettings['SIMKL_CLIENT_SECRET'] ?? '';
+          _simklTokenController.text = cachedSettings['SIMKL_ACCESS_TOKEN'] ?? '';
+          _traktKeyController.text = cachedSettings['TRAKT_API_KEY'] ?? '';
+          _traktSecretController.text = cachedSettings['TRAKT_CLIENT_SECRET'] ?? '';
+          _traktTokenController.text = cachedSettings['TRAKT_ACCESS_TOKEN'] ?? '';
+          _tmdbAuthController.text = cachedSettings['TMDB_USER_AUTH'] ?? '';
+          _defaultSubLangController.text = cachedSettings['DEFAULT_SUBTITLE_LANG'] ?? 'sv';
+          _metadataLanguage = cachedSettings['METADATA_LANGUAGE'] ?? 'sv-SE';
+          _fallbackLanguage = cachedSettings['METADATA_FALLBACK_LANGUAGE'] ?? 'en-US';
+          _defaultAudioLanguage = cachedSettings['DEFAULT_AUDIO_LANG'] ?? 'sv';
+          _watchProviderRegion = cachedSettings['WATCH_PROVIDER_REGION'] ?? 'SE';
+          _titleDisplayStyle = cachedSettings['TITLE_DISPLAY_STYLE'] ?? 'Translated';
+          _preferLocalNfo = cachedSettings['PREFER_LOCAL_NFO'] != 'false';
+          _loadHomeSectionsFromSettings(cachedSettings['HOME_LAYOUT']);
+          _syncTraktRatings = cachedSettings['sync_trakt_ratings'] != 'false';
+          _syncTraktWatched = cachedSettings['sync_trakt_watched'] != 'false';
+          _syncSimklRatings = cachedSettings['sync_simkl_ratings'] != 'false';
+          _syncSimklWatched = cachedSettings['sync_simkl_watched'] != 'false';
+          _posterSizeStep = int.tryParse(cachedSettings['POSTER_SIZE_STEP'] ?? '') ?? 1;
+          _serverName = cachedSettings['SERVER_NAME'] ?? '';
+          _showClock = cachedSettings['SHOW_CLOCK'] == 'true';
+          _isLoadingSettings = false;
+        });
+        debugPrint('Loaded cached settings after live fetch failed: $e');
+        return;
+      }
       setState(() {
         _isLoadingSettings = false;
       });
@@ -3966,13 +4830,38 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         'sync_trakt_watched': _syncTraktWatched ? 'true' : 'false',
         'sync_simkl_ratings': _syncSimklRatings ? 'true' : 'false',
         'sync_simkl_watched': _syncSimklWatched ? 'true' : 'false',
+        'POSTER_SIZE_STEP': _posterSizeStep.toString(),
+      });
+      await widget.apiService.saveSettingsCache({
+        'TMDB_API_KEY': _tmdbKeyController.text.trim(),
+        'OMDB_API_KEY': _omdbKeyController.text.trim(),
+        'SIMKL_CLIENT_ID': _simklKeyController.text.trim(),
+        'SIMKL_CLIENT_SECRET': _simklSecretController.text.trim(),
+        'SIMKL_ACCESS_TOKEN': _simklTokenController.text.trim(),
+        'TRAKT_API_KEY': _traktKeyController.text.trim(),
+        'TRAKT_CLIENT_SECRET': _traktSecretController.text.trim(),
+        'TRAKT_ACCESS_TOKEN': _traktTokenController.text.trim(),
+        'TMDB_USER_AUTH': _tmdbAuthController.text.trim(),
+        'DEFAULT_SUBTITLE_LANG': _defaultSubLangController.text.trim(),
+        'METADATA_LANGUAGE': _metadataLanguage,
+        'METADATA_FALLBACK_LANGUAGE': _fallbackLanguage,
+        'DEFAULT_AUDIO_LANG': _defaultAudioLanguage,
+        'WATCH_PROVIDER_REGION': _watchProviderRegion,
+        'TITLE_DISPLAY_STYLE': _titleDisplayStyle,
+        'PREFER_LOCAL_NFO': _preferLocalNfo ? 'true' : 'false',
+        'HOME_LAYOUT': _serializeHomeSections(),
+        'sync_trakt_ratings': _syncTraktRatings ? 'true' : 'false',
+        'sync_trakt_watched': _syncTraktWatched ? 'true' : 'false',
+        'sync_simkl_ratings': _syncSimklRatings ? 'true' : 'false',
+        'sync_simkl_watched': _syncSimklWatched ? 'true' : 'false',
+        'POSTER_SIZE_STEP': _posterSizeStep.toString(),
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Inställningar sparade!'), backgroundColor: Color(0xFF8A5BFF)),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save settings: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('Kunde inte spara inställningar: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
@@ -3991,87 +4880,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to save local NFO preference: $e'), backgroundColor: Colors.redAccent),
       );
-    }
-  }
-
-  Future<void> _renameDevice(String deviceId, String currentName) async {
-    final TextEditingController controller = TextEditingController(text: currentName);
-    final String? newName = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF15102A),
-        title: const Text('Rename Device', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: 'Device name',
-            hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
-            enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-            focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF8A5BFF))),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Save', style: TextStyle(color: Color(0xFF8A5BFF))),
-          ),
-        ],
-      ),
-    );
-
-    if (newName != null && newName.isNotEmpty && newName != currentName) {
-      try {
-        await widget.apiService.renameDevice(deviceId, newName);
-        _loadDevices();
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to rename: $e')));
-        }
-      }
-    }
-  }
-
-  Future<void> _removeDevice(String deviceId) async {
-    final bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF15102A),
-        title: const Text('Remove Device?', style: TextStyle(color: Colors.white)),
-        content: const Text('Are you sure you want to remove this device? It will need to be paired again to access the server.', style: TextStyle(color: Colors.white70)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Remove', style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      try {
-        await widget.apiService.removeDevice(deviceId);
-        
-        final currentDeviceId = widget.apiService.getOrCreateDeviceId();
-        if (deviceId == currentDeviceId) {
-           _handleLogout();
-        } else {
-           _loadDevices();
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to remove: $e')));
-        }
-      }
     }
   }
 
@@ -4512,7 +5320,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   const SizedBox(width: 20),
                   Expanded(
                     child: _buildSettingsDropdown(
-                      'Standard Titelvisning',
+                      'Standard titelvisning',
                       _titleDisplayStyle,
                       ['Translated', 'Original'],
                       (val) {
@@ -4534,11 +5342,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 child: SwitchListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   title: const Text(
-                    'Prefer local NFO metadata',
+                    'Föredra lokal NFO-metadata',
                     style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                   ),
                   subtitle: Text(
-                    'Import titles and details from local .nfo files instead of fetching online.',
+                    'Importera titlar och detaljer från lokala .nfo-filer istället för att hämta online.',
                     style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 11.5),
                   ),
                   value: _preferLocalNfo,
@@ -4560,7 +5368,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 children: [
                   Expanded(
                     child: _buildSettingsDropdown(
-                      'Default Ljudspråk',
+                      'Standardljudspråk',
                       _defaultAudioLanguage,
                       ['sv', 'en', 'no'],
                       (val) {
@@ -4571,7 +5379,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   const SizedBox(width: 20),
                   Expanded(
                     child: _buildSettingsDropdown(
-                      'Default Undertext-språk',
+                      'Standardundertextspråk',
                       _defaultSubLangController.text,
                       ['sv', 'en', 'no', 'None'],
                       (val) {
@@ -4587,82 +5395,61 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               ),
             ],
           ),
-          const SizedBox(height: 30),
+          const SizedBox(height: 24),
 
-          // Trusted Devices List
-          const Text('Betrodda Enheter', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 10),
-          _isLoadingDevices
-              ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF))))
-              : _trustedDevices.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 20),
-                      child: Text('Inga enheter parade än.', style: TextStyle(color: Colors.white38)),
-                    )
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: _trustedDevices.length,
-                      itemBuilder: (context, index) {
-                        final device = _trustedDevices[index];
-                        final isCurrentDevice = device['device_id'] == widget.apiService.getOrCreateDeviceId();
-                        
-                        String addedText = '';
-                        if (device['paired_at'] != null) {
-                          addedText = 'Parat: ${device['paired_at']}';
-                        }
-
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.03),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(isCurrentDevice ? Icons.devices : Icons.device_unknown, color: const Color(0xFF8A5BFF), size: 28),
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Text(device['device_name'] ?? 'Unknown Device', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-                                        if (isCurrentDevice) ...[
-                                          const SizedBox(width: 8),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                            decoration: BoxDecoration(color: const Color(0xFF8A5BFF).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10)),
-                                            child: const Text('Denna Enhet', style: TextStyle(color: Color(0xFFB593FF), fontSize: 11, fontWeight: FontWeight.bold)),
-                                          )
-                                        ]
-                                      ],
-                                    ),
-                                    if (addedText.isNotEmpty) ...[
-                                      const SizedBox(height: 4),
-                                      Text(addedText, style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 13)),
-                                    ]
-                                  ],
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.edit, color: Colors.white60),
-                                onPressed: () => _renameDevice(device['device_id'], device['device_name'] ?? ''),
-                                tooltip: 'Byt namn',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.redAccent),
-                                onPressed: () => _removeDevice(device['device_id']),
-                                tooltip: 'Ta bort enhet',
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+          // ── Fönsterinställningar ───────────────────────────────────────
+          _buildSettingsSection(
+            'Fönsterinställningar',
+            Icons.window,
+            [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Alltid överst',
+                            style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+                        SizedBox(height: 4),
+                        Text('Håller Loom-fönstret ovanpå alla andra fönster.',
+                            style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      ],
                     ),
+                  ),
+                  Switch(
+                    value: _alwaysOnTop,
+                    activeColor: const Color(0xFF8A5BFF),
+                    onChanged: kIsWeb
+                        ? null
+                        : (val) async {
+                            try {
+                              await windowManager.setAlwaysOnTop(val);
+                              setState(() => _alwaysOnTop = val);
+                            } catch (e) {
+                              debugPrint('setAlwaysOnTop failed: $e');
+                            }
+                          },
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // Papperskorg
+          _buildSettingsSection(
+            'Papperskorg',
+            Icons.delete_outline,
+            [
+              SizedBox(
+                height: 600,
+                child: TrashScreen(
+                  apiService: widget.apiService,
+                  onRestored: _loadAllMedia,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 60),
         ],
       ),
@@ -4964,3 +5751,4 @@ class _PremiumToastWidgetState extends State<_PremiumToastWidget> with SingleTic
     );
   }
 }
+

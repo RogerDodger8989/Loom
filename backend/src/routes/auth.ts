@@ -1,25 +1,25 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import bcrypt from 'bcryptjs';
 import db from '../config/database';
-import { pairingService } from '../services/pairing';
-import crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const avatarsDir = path.resolve(__dirname, '../../../config/avatars');
+const AUTH_DEBUG_LOG = path.resolve(__dirname, '../../../config/settings_debug.log');
+function dbg(msg: string, data?: any) {
+  const line = `[${new Date().toISOString()}] ${msg}${data !== undefined ? '\n' + JSON.stringify(data, null, 2) : ''}\n`;
+  fs.appendFileSync(AUTH_DEBUG_LOG, line);
+}
 
 interface LoginBody {
   username?: string;
   password?: string;
 }
 
-interface PairRequestBody {
-  deviceId?: string;
-}
-
-interface PairConfirmBody {
-  code?: string;
-  deviceName?: string;
-}
+interface JwtUser { id: string; username: string; role: string; }
 
 export default async function authRoutes(fastify: FastifyInstance) {
-  
+
   // 1. POST /api/auth/login
   fastify.post('/api/auth/login', async (request: FastifyRequest<{ Body: LoginBody }>, reply: FastifyReply) => {
     const { username, password } = request.body;
@@ -66,199 +66,155 @@ export default async function authRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // 2. POST /api/auth/pair/request
-  // Unauthenticated TV app requests a PIN code and Device ID
-  fastify.post('/api/auth/pair/request', async (request: FastifyRequest<{ Body: PairRequestBody }>, reply: FastifyReply) => {
-    // If the device doesn't have a deviceId, we'll generate one
-    const deviceId = request.body?.deviceId || crypto.randomUUID();
-    
-    const result = pairingService.requestPairing(deviceId);
-    
-    return reply.send({
-      code: result.code,
-      deviceId: result.deviceId,
-      expiresAt: result.expiresAt
-    });
+  // 2. GET /api/auth/profiles — public list of users for profile picker (no passwords)
+  fastify.get('/api/auth/profiles', async (_request: FastifyRequest, reply: FastifyReply) => {
+    const rows = db.prepare(
+      `SELECT id, username, full_name, role, avatar_path,
+              CASE WHEN pin_hash IS NOT NULL AND pin_hash != '' THEN 1 ELSE 0 END AS has_pin
+       FROM users ORDER BY username ASC`
+    ).all();
+    return reply.send(rows);
   });
 
-  // 3. GET /api/auth/pair/status
-  // TV app polls this endpoint to check if the user confirmed the code
-  fastify.get('/api/auth/pair/status', async (request: FastifyRequest<{ Querystring: { deviceId?: string } }>, reply: FastifyReply) => {
-    const { deviceId } = request.query;
-
-    if (!deviceId) {
-      return reply.code(400).send({ error: 'Query parameter deviceId is required' });
-    }
-
-    const status = pairingService.checkStatus(deviceId);
-
-    if (status.paired && status.userId) {
-      // Find the paired user in the DB to sign a JWT
-      try {
-        const user = db.prepare('SELECT id, username, role FROM users WHERE id = ?').all(status.userId)[0] as {
-          id: string;
-          username: string;
-          role: 'Admin' | 'User';
-        } | undefined;
-
-        if (!user) {
-          return reply.code(404).send({ error: 'Paired user not found' });
-        }
-
-        const token = fastify.jwt.sign({
-          id: user.id,
-          username: user.username,
-          role: user.role
-        });
-
-        return reply.send({
-          paired: true,
-          token,
-          user: {
-            id: user.id,
-            username: user.username,
-            role: user.role
-          }
-        });
-      } catch (err) {
-        console.error(err);
-        return reply.code(500).send({ error: 'Internal server error pairing' });
-      }
-    }
-
-    return reply.send({ paired: false });
-  });
-
-  // 4. POST /api/auth/pair/confirm
-  // Authenticated user inputs code on device management screen
-  fastify.post(
-    '/api/auth/pair/confirm',
+  // 3. GET /api/auth/me — hämta inloggad användares profil
+  fastify.get('/api/auth/me',
     {
       preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
-      }]
-    },
-    async (request: FastifyRequest<{ Body: PairConfirmBody }>, reply: FastifyReply) => {
-      const { code, deviceName } = request.body;
-      const user = request.user as { id: string; username: string; role: string };
-
-      if (!code) {
-        return reply.code(400).send({ error: 'Pairing code is required' });
-      }
-
-      const success = pairingService.confirmPairing(code, user.id, deviceName || 'TV App');
-
-      if (!success) {
-        return reply.code(400).send({ error: 'Invalid or expired pairing code' });
-      }
-
-      return reply.send({ success: true, message: 'Device paired successfully!' });
-    }
-  );
-
-  // 5. POST /api/auth/pair/unpair
-  // Unpair/remove a device ID from the database
-  fastify.post('/api/auth/pair/unpair', async (request: FastifyRequest<{ Body: { deviceId?: string } }>, reply: FastifyReply) => {
-    const { deviceId } = request.body || {};
-
-    if (!deviceId) {
-      return reply.code(400).send({ error: 'Device ID is required' });
-    }
-
-    const success = pairingService.unpairDevice(deviceId);
-
-    if (!success) {
-      return reply.code(500).send({ error: 'Failed to unpair device' });
-    }
-
-    return reply.send({ success: true, message: 'Device unpaired successfully!' });
-  });
-
-  // 6. GET /api/auth/devices
-  // Authenticated: List all paired/trusted devices
-  fastify.get(
-    '/api/auth/devices',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
+        try { await request.jwtVerify(); } catch { reply.code(401).send({ error: 'Unauthorized' }); }
       }]
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const devices = db.prepare('SELECT device_id, user_id, device_name, paired_at FROM paired_devices ORDER BY paired_at DESC').all();
-        return reply.send(devices);
-      } catch (err) {
-        console.error('[Auth] Failed to retrieve devices:', err);
-        return reply.code(500).send({ error: 'Failed to retrieve devices' });
-      }
+      const caller = request.user as JwtUser;
+      const row = db.prepare('SELECT id, username, full_name, role, avatar_path FROM users WHERE id = ?').get(caller.id) as {
+        id: string; username: string; full_name: string | null; role: string; avatar_path: string | null;
+      } | undefined;
+      if (!row) return reply.code(404).send({ error: 'Användaren finns inte' });
+      dbg(`GET /api/auth/me — returnerar profil för user ${caller.id}`, row);
+      return reply.send(row);
     }
   );
 
-  // 7. PUT /api/auth/devices/rename
-  // Authenticated: Rename a paired device
-  fastify.put(
-    '/api/auth/devices/rename',
+  // 4. PUT /api/auth/me — byta eget lösenord / namn / användarnamn / PIN
+  fastify.put('/api/auth/me',
     {
       preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
+        try { await request.jwtVerify(); } catch { reply.code(401).send({ error: 'Unauthorized' }); }
       }]
     },
-    async (request: FastifyRequest<{ Body: { deviceId?: string; deviceName?: string } }>, reply: FastifyReply) => {
-      const { deviceId, deviceName } = request.body || {};
-      if (!deviceId || !deviceName) {
-        return reply.code(400).send({ error: 'deviceId and deviceName are required' });
+    async (request: FastifyRequest<{
+      Body: {
+        currentPassword?: string;
+        newPassword?: string;
+        full_name?: string;
+        newUsername?: string;
+        pin?: string | null;
+      }
+    }>, reply: FastifyReply) => {
+      const caller = request.user as JwtUser;
+      const { currentPassword, newPassword, full_name, newUsername, pin } = request.body ?? {};
+
+      const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(caller.id) as { password_hash: string } | undefined;
+      if (!row) return reply.code(404).send({ error: 'Användaren finns inte' });
+
+      // Byta lösenord kräver currentPassword
+      if (newPassword !== undefined) {
+        if (!currentPassword) return reply.code(400).send({ error: 'currentPassword krävs för att byta lösenord' });
+        if (!bcrypt.compareSync(currentPassword, row.password_hash)) {
+          return reply.code(401).send({ error: 'Fel nuvarande lösenord' });
+        }
+        if (newPassword.length < 6) return reply.code(400).send({ error: 'Nytt lösenord måste vara minst 6 tecken' });
+        const newHash = bcrypt.hashSync(newPassword, 10);
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, caller.id);
       }
 
-      try {
-        db.prepare('UPDATE paired_devices SET device_name = ? WHERE device_id = ?').run(deviceName, deviceId);
-        console.log(`[Auth] Renamed device ${deviceId} to "${deviceName}"`);
-        return reply.send({ success: true, message: `Device renamed to "${deviceName}"` });
-      } catch (err) {
-        console.error('[Auth] Failed to rename device:', err);
-        return reply.code(500).send({ error: 'Failed to rename device' });
+      if (full_name !== undefined) {
+        db.prepare('UPDATE users SET full_name = ? WHERE id = ?').run(full_name || null, caller.id);
       }
+
+      if (newUsername !== undefined) {
+        const conflict = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(newUsername, caller.id);
+        if (conflict) return reply.code(409).send({ error: 'Användarnamnet är redan taget' });
+        db.prepare('UPDATE users SET username = ? WHERE id = ?').run(newUsername, caller.id);
+      }
+
+      if (pin !== undefined) {
+        const pinHash = pin ? bcrypt.hashSync(pin, 10) : null;
+        const pinPlain = pin || null;
+        db.prepare('UPDATE users SET pin_hash = ?, pin_plain = ? WHERE id = ?').run(pinHash, pinPlain, caller.id);
+      }
+
+      // Return a fresh JWT so the frontend reflects any username change immediately
+      const updated = db.prepare('SELECT id, username, role, full_name, avatar_path FROM users WHERE id = ?').get(caller.id) as any;
+      const newToken = fastify.jwt.sign({ id: updated.id, username: updated.username, role: updated.role });
+      dbg(`PUT /api/auth/me — sparade för user ${caller.id}`, { full_name: updated.full_name, username: updated.username });
+      return reply.send({ success: true, token: newToken });
     }
   );
 
-  // 8. DELETE /api/auth/devices/:deviceId
-  // Authenticated: Remove a specific paired device
-  fastify.delete(
-    '/api/auth/devices/:deviceId',
+  // 4. POST /api/auth/me/avatar — ladda upp profilbild
+  fastify.post('/api/auth/me/avatar',
     {
       preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
+        try { await request.jwtVerify(); } catch { reply.code(401).send({ error: 'Unauthorized' }); }
       }]
     },
-    async (request: FastifyRequest<{ Params: { deviceId: string } }>, reply: FastifyReply) => {
-      const { deviceId } = request.params;
-      if (!deviceId) {
-        return reply.code(400).send({ error: 'Device ID is required' });
-      }
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const caller = (request.user as JwtUser);
+      const data = await (request as any).file();
+      if (!data) return reply.code(400).send({ error: 'Ingen fil skickades' });
 
-      try {
-        db.prepare('DELETE FROM paired_devices WHERE device_id = ?').run(deviceId);
-        console.log(`[Auth] Removed device ${deviceId}`);
-        return reply.send({ success: true, message: 'Device removed successfully' });
-      } catch (err) {
-        console.error('[Auth] Failed to remove device:', err);
-        return reply.code(500).send({ error: 'Failed to remove device' });
-      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of data.file) chunks.push(chunk);
+      const buf = Buffer.concat(chunks);
+
+      if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
+      const filePath = path.join(avatarsDir, `${caller.id}.jpg`);
+      fs.writeFileSync(filePath, buf);
+
+      const avatarUrl = `/api/avatars/${caller.id}.jpg`;
+      db.prepare('UPDATE users SET avatar_path = ? WHERE id = ?').run(avatarUrl, caller.id);
+      return reply.send({ success: true, avatar_path: avatarUrl });
     }
   );
+
+  // 6. GET /api/avatars/:userId.jpg — servera profilbild
+  fastify.get('/api/avatars/:filename', async (request: FastifyRequest<{ Params: { filename: string } }>, reply: FastifyReply) => {
+    const { filename } = request.params;
+    const filePath = path.join(avatarsDir, filename);
+    if (!fs.existsSync(filePath)) return reply.code(404).send({ error: 'Not found' });
+    const buf = fs.readFileSync(filePath);
+    reply.header('Content-Type', 'image/jpeg');
+    reply.header('Cache-Control', 'public, max-age=3600');
+    return reply.send(buf);
+  });
+
+  // 7. POST /api/auth/login-pin — logga in med userId + PIN, returnerar JWT
+  fastify.post('/api/auth/login-pin',
+    async (request: FastifyRequest<{ Body: { userId?: string; pin?: string } }>, reply: FastifyReply) => {
+      const { userId, pin } = request.body ?? {};
+      if (!userId || !pin) return reply.code(400).send({ error: 'userId och pin krävs' });
+      const user = db.prepare('SELECT id, username, role, pin_hash FROM users WHERE id = ?').get(userId) as {
+        id: string; username: string; role: string; pin_hash: string | null;
+      } | undefined;
+      if (!user) return reply.code(404).send({ error: 'Användaren finns inte' });
+      if (!user.pin_hash) return reply.code(400).send({ error: 'Ingen PIN satt för denna användare' });
+      if (!bcrypt.compareSync(pin, user.pin_hash)) return reply.code(401).send({ error: 'Fel PIN' });
+      const token = fastify.jwt.sign({ id: user.id, username: user.username, role: user.role });
+      return reply.send({ token, user: { id: user.id, username: user.username, role: user.role } });
+    }
+  );
+
+  // 8. POST /api/auth/verify-pin — kontrollera PIN (för profilväljaren)
+  fastify.post('/api/auth/verify-pin',
+    async (request: FastifyRequest<{ Body: { userId?: string; pin?: string } }>, reply: FastifyReply) => {
+      const { userId, pin } = request.body ?? {};
+      if (!userId || !pin) return reply.code(400).send({ error: 'userId och pin krävs' });
+      const row = db.prepare('SELECT pin_hash FROM users WHERE id = ?').get(userId) as { pin_hash: string | null } | undefined;
+      if (!row) return reply.code(404).send({ error: 'Användaren finns inte' });
+      if (!row.pin_hash) return reply.code(200).send({ valid: true }); // ingen PIN satt = tillåt
+      const valid = bcrypt.compareSync(pin, row.pin_hash);
+      return reply.send({ valid });
+    }
+  );
+
 }

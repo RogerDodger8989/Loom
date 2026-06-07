@@ -1,91 +1,108 @@
-# Loom - Projektvision & Arkitektur
+# Loom — Projektvision & Arkitektur
 
-Detta dokument fungerar som den övergripande specifikationen och "master plan" för Loom, så att vi aldrig tappar bort grundvisionen för hur systemet ska fungera och byggas.
-
-## 1. Övergripande Vision & Arkitektur
-Loom är en helt API-driven, modulär ("headless") mediaserver byggd för att fungera 100 % "offgrid" och lokalt, men med säker åtkomst över internet. Systemet hanterar film, TV-serier, musik och fotoalbum. Ingen affärslogik eller databasåtkomst sker i klienterna; både TV-appen och skrivbordsappen kommunicerar uteslutande via ett strukturerat REST- och WebSocket-API.
-
-**Teknikstack:**
-- **Backend:** Node.js med TypeScript och ramverket Fastify (för maximal API-prestanda).
-- **Databas:** SQLite med WAL-mode (Write-Ahead Logging) för optimal lokal prestanda och enkel backup (allt i en fil i `/config`).
-- **Paketering:** Docker-container anpassad för Unraid-servrar (med miljövariabler för hårdvaruacceleration, t.ex. `/dev/dri`).
-- **Mediehantering:** Inbäddad FFmpeg-binär i Docker-containern för strömning och transkodning.
-- **Klienter (Frontend):** En gemensam kodbas i Flutter som kompilerar till en Android-TV-app (med fullt stöd för D-pad/fjärrkontroll) och en skrivbordsapp för dator (PC).
-
-## 2. Autentisering & Enhetsparning (Loom-liknande PIN)
-**Offgrid-first:** Ingen extern molntjänst krävs för inloggning.
-
-**PIN-parningsflöde:**
-1. En oautentiserad TV-app anropar `POST /api/auth/pair/request` och får en tidsbegränsad alfanumerisk kod (t.ex. X87B) samt ett unikt `Device_ID`.
-2. Användaren loggar in via en datorwebbläsare (som admin eller vanlig användare) och anger koden under enhethanteringen (`POST /api/auth/pair/confirm`).
-3. Backend parar ihop `Device_ID` med användarkontot i databasen.
-4. TV-appen pollar backend (eller lyssnar via WebSocket) och tar emot ett giltigt JWT (JSON Web Token) för framtida krypterade API-anrop.
-
-## 3. Användarroller, Behörigheter & Innehållsfiltrering
-- **Roller:** Systemet har två grundroller: `Admin` och `User`.
-- **Granulär filtrering:** Admin kan tilldela restriktioner per användare baserat på Genre, Keywords eller Age_Rating.
-- **API-nivå:** När en användare begär media (t.ex. `GET /api/media/movies`) applicerar backend automatiskt filter i SQL-frågan. Otillåten media exkluderas helt i databasnivå, vilket gör att användaren aldrig kan se eller gissa att innehållet existerar.
-
-## 4. Medieströmning & Realtidstranskodning
-- **Direct Play (Prioriterat):** Om klienten stöder video- och ljudformatet skickas filen rå via HTTP för att minimera CPU/GPU-belastning på Unraid-servern.
-- **Valbar transkodning:** Användaren kan i klientens spelare manuellt välja fasta bitrates (t.ex. 2 Mbps, 4 Mbps, 8 Mbps, 20 Mbps) för att anpassa sig efter nätverket över internet.
-- **HLS (HTTP Live Streaming):** Backend använder FFmpeg för att koda om strömmen i realtid till H.264/H.265-video och AAC-ljud, uppdelat i sekventiella `.ts`-segment.
-- **Hårdvaruacceleration:** Stöd för Intel QuickSync (QSV) och Nvidia NVENC via mappning av grafikdrivrutiner i Docker.
-
-## 5. Hybrid Metadatahantering & Låsning
-- **Biblioteksinställning:** Varje mediebibliotek har en boolean: `prefer_local_nfo`.
-- **Skanningslogik:**
-  - **Om true:** Skannern letar först efter lokala `.nfo`-filer och bilder (`-poster.jpg`, `-fanart.jpg`). Finns de, läses de in. Data som saknas kompletteras via TMDB (The Movie Database) API.
-  - **Om false:** Skannern struntar i lokala filer och hämtar all metadata direkt från TMDB baserat på mapp-/filnamn och år.
-- **Admin-editering & Metadata-lås:** Admin kan redigera metadata (titlar, beskrivningar etc.) direkt i webb-/admin-gränssnittet. Vid manuell ändring sätts flaggan `is_locked = true` på det specifika fältet i databasen. Framtida biblioteksskanningar hoppar helt över att skriva över låsta fält.
-- **Multi-versioner:** Om samma film finns i flera utgåvor (t.ex. 4K HDR och 1080p SDR) ska systemet stödja två valbara visningslägen i inställningarna:
-  - **Sammanslaget läge:** Filmerna grupperas till ett kort, och användaren väljer version vid uppspelning.
-  - **Separerat läge:** Filmerna visas som egna kort i biblioteket, men får en visuell badge/tagg på omslaget (t.ex. "4K" eller "1080p") som genereras automatiskt baserat på filens upplösning.
-
-## 6. Den Interaktiva Historiska Kalendern & *arr-Integration
-- **Datakälla 1 (Lokal/Live):** Anropar Radarr- och Sonarr-API:er för att hämta planerad sändningsstatus, samt flagga avsnitt som "Missing" (saknade).
-- **Datakälla 2 (Global/Watchlist):** Gör ett schemalagt bakgrundsjobb mot användarens synkade Simkl- eller IMDb-watchlist för att hämta premiärdatum för ej ägd media.
-- **Interaktivt UI:** Kalendern kan backas och bläddras i månadsvis bakåt i tiden. Varje titel har en färgkodad status:
-  - **Grön (Ägs):** Finns lokalt på servern och är spelbar.
-  - **Gul (Bevakas):** Ligger i Radarr/Sonarrs kö men är ej färginedladdad.
-  - **Röd (Saknas):** Finns på din externa watchlist eller har sänts, men saknas lokalt.
-- **"Ta hem"-knapp:** Vid klick på en "Röd" eller saknad titel skickar Loom-backend ett API-anrop till Radarr eller Sonarr för att lägga till produktionen och trigga en omedelbar sökning på dina indexers.
-
-## 7. Lokal Scrobbling, Spårning & Import/Export
-- **Lokal Scrobbling:** Vid uppspelning skickas hjärtslag (`POST /api/playback/progress`) var 10:e sekund till backend. Framstegen sparas i tabellen `WATCH_HISTORY`. Vid 90 % av speltiden flaggas mediet automatiskt som "Sedd".
-- **Visuellt framsteg (Continue Watching):** På hemskärmen ritas en visuell linje (progress bar) ut baserat på procentuell framgång `((last_position / total_duration) * 100)`.
-- **Automatisk Watched-status Synkronisering:** Fullt integrerad tvåvägssynk av sedd-status mot externa tjänster (Trakt & Simkl):
-  * **Hämtning (Pull):** Historik synkas automatiskt till SQLite vid serverstart, efter lyckad OAuth-koppling, samt direkt efter avslutad biblioteksskanning för nyligen inskannad media.
-  * **Sändning (Push):** När en film markeras som sedd lokalt i Loom (eller uppnår 90 % uppspelning) pushas statusen omedelbart till Trakt och Simkl.
-  * **Grafiskt Gränssnitt:** Sedda objekt pryds med en neongrön bock i övre vänstra hörnet på postern, samt en premium grön "Sedd"-badge under omslaget i detaljvyn (vilken ersätts med den lila progress-baren om användaren börjar se om filmen).
-- **Offgrid Import/Export:**
-  - **Import:** Möjlighet att ladda upp en CSV/JSON-fil exporterad från IMDb, Trakt eller Simkl. Backend matchar IMDb-id och sätter rätt historisk status.
-  - **Export:** Dumpa hela din lokala visningshistorik, betyg och watchlist till en JSON/CSV-fil.
-- **Tvåvägssynk (Tillval):** Manuell knapp för att synka den lokala datan ut till Trakt/Simkl.
-
-## 8. Avancerad Seriehantering & Undertexter
-- **Multi-Episode-filer:** Databasen (`EPISODES`) stöder att en videofil pekar på flera unika avsnitt (t.ex. `S01E01-E02.mkv`). När filen spelats klart markeras samtliga länkade avsnitt som sedda.
-- **Intro & Outro Skipping:** `EPISODE_MARKERS` lagrar tidsstämplar. Klienten visar en interaktiv "Hoppa över"-knapp när uppspelningen når dessa tidsspann.
-- **Undertextmotor:** Systemet skannar efter lokala externa `.srt`-filer samt inbäddade spår. Saknas text anropar backend OpenSubtitles/Bazarr API och laddar ner till mediets mapp.
-
-## 9. Musik- & Bildmoduler (Fotoalbum)
-- **Musikmodul:** Skannern använder en inbäddad ID3-parser för metadata. Saknad info hämtas via MusicBrainz/Last.fm. All musikscrobbling sparas lokalt med stöd för export. Ljud spelas i bakgrunden vid navigering i klienten.
-- **Bildmodul (Fotoalbum):** Mappbaserad struktur lagrad i databasen. Backend genererar automatiskt on-the-fly nerskalade miniatyrer (via Sharp) i cache för snabb laddning. Originalen förblir orörda.
-
-## 10. Aktuell verklighet i kodbasen
-* **Premium OAuth, Betygssynk & Watched-status**: OAuth är helt integrerat och klart för Trakt.tv och Simkl. Användaren ansluter med ett klick via inställningarna. Loom startar automatiskt bakgrundsjobb som hämtar och importerar alla användarens historiska betyg samt sedda filmer (watched status) direkt till Loom SQLite-databasen vid anslutning. Denna synk körs även vid varje serverstart och efter avslutad biblioteksskanning. Nya betyg och sedd-markeringar synkas ut i realtid till Trakt, Simkl och TMDB.
-* **Poster- och Omslagsvisualisering**: Gridkort visar en neongrön bock uppe till vänster för sedda filmer, och i detaljvyn visas en premium grön "Sedd"-ruta under omslagsbilden (såvida inte en pågående omläsning/rewatch med aktiv progress finns, då progress-baren visas i stället).
-* **UX & Design**: Inställningssidan är helt omstrukturerad för att gruppera inmatningsfält, snabblänkar för registrering, Redirect URI-instruktioner och OAuth-knappar bredvid varandra för optimal användarvänlighet.
-* **Miljö**: SQLite-databasen under utveckling lagras i `/config/loom.db` i rotnivå. Både backend och frontend snurrar i hot reload utan kompileringsfel.
+Senast uppdaterad: 2026-06-01
 
 ---
 
-## Implementeringsstatus (Uppdaterad 2026-05-30)
+## Övergripande mål
 
-Kärnan i systemet är nu byggd och fullt fungerande inklusive premium design, enhetsparning, och nu även full tvåvägs betygssynk via OAuth. Se **HANDOFF.md** för detaljerad status.
+Loom ska vara den bästa lokala, offline-first mediaservern för en ensam eller liten hushållsanvändare som:
 
-**Aktiva tjänster:**
-- Backend: `http://localhost:8080` (Fastify API)
-- Frontend: `http://localhost:50645` (Flutter Web)
+- Vill ha **full kontroll** över sin mediesamling utan molntjänst.
+- Uppskattar **polerat UI** och omedelbar feedback (badges, betyg, progress).
+- Vill **synka sedda-status och betyg** med Trakt/Simkl för att hålla sin historia samlad.
+- Kör på **Unraid/NAS** eller en vanlig Windows-PC.
 
-**Nästa steg:** Riktiga IMDb-betyg cachade från OMDb i scanner-steget samt TV-seriestruktur. (Faktiska ljud- och undertextspår via ffprobe är nu helt klart!).
+Designprinciper:
+1. **Lokal first** — allt ska fungera utan internet.
+2. **Omedelbar respons** — uppspelning, seek, statusändringar ska kännas snabba.
+3. **Minimal friktion** — inga manuella konfigfiler, inga nödvändiga externa tjänster för grundfunktioner.
+
+---
+
+## Teknikstack
+
+| Del | Teknologi | Varför |
+|-----|-----------|--------|
+| Backend | Node.js + TypeScript + Fastify | Snabb, typsäker, bra ekosystem för media |
+| Databas | SQLite (WAL) | Ingen serverprocess, enkel backup |
+| Frontend | Flutter (Web + Windows + Android) | En kodbas för alla plattformar |
+| Medieverktyg | FFmpeg + FFprobe (bundlat) | Industristandardkodek, ingen installation |
+| Videospelaren | media_kit | Native prestanda i Flutter |
+
+---
+
+## Status per 2026-06-01
+
+### Implementerat och stabilt ✅
+
+**Backend**
+- JWT-autentisering
+- Mediabibliotek: scanning, FFprobe, TMDB-matchning, NFO-stöd, versions-sammanslagning
+- Video: Direct Play, HLS-transkodning (dynamisk segmentering), subtitle burn-in
+- Metadata: TMDB + OMDb + Simkl + Trakt + Rotten Tomatoes, prisbadges, kollektioner
+- Uppspelningsprogress: heartbeat-endpoint, auto-markera sedd vid 90 %
+- Watchlist och playlists
+- Trakt OAuth + Simkl OAuth med automatisk historik-import
+- Schemalagd/startup-synk av betyg och sedda-status
+- Inställningar via gränssnitt (inga `.env`-filer krävs)
+- Metadata-lås per fält, manuell omlänkning, refresh
+
+**Frontend**
+- Biblioteksvy med grid/list, zoom (10 nivåer), sök och filtrering
+- Detaljsida med alla ratings, cast, crew, awards, trailer, kollektioner, liknande titlar
+- Videospelare med HLS, undertextval, ljudspårsval, mini-player, tangentbordsgenvägar
+- Skådespelarprofil med sökbar/sorterbar filmografi
+- Resume-modal ("Fortsätt titta / Börja om")
+- Inbyggd metadata-redigering med fältlåsning
+- OAuth-knappar med smart polling
+
+### Kända brister / pågående arbete 🔲
+
+**Hög prioritet**
+- **TV-serier**: `_buildShowsView` existerar men saknar säsonger/avsnitt-struktur. Serier scannas in men visar inte korrekt hierarki.
+- **Resume + Windows media_kit**: "Svart skärm"-felet vid resume är känt och har en stabil workaround, men inte ett permanent fix. Se `HANDOFF.md`.
+- **Riktiga IMDb-betyg**: Hämtas via OMDb men behöver verifieras att de cachas korrekt i alla scenarion under scanning.
+
+**Medium prioritet**
+- Docker + hårdvaruaccelerationskonfiguration för Unraid (med `/dev/dri`)
+- FFmpeg `stderr`-buffertproblem vid långa transkodningar (kan orsaka hang — fix: `{ stdio: 'ignore' }` på spawn)
+
+**Låg prioritet / framtid**
+- Radarr/Sonarr-integration ("ta hem"-funktion, kalender)
+- Musikmodul och fotoalbum
+- Export/Import av biblioteksdata och delning via säker länk
+
+---
+
+## Produktroadmap
+
+### Sprint 1 — Stabilitet
+- Fixa TV-serier/säsonger-vyn
+- Robustifiera FFmpeg stderr-hantering (förhindra buffer hang)
+- Bekräfta att OMDb IMDb-betyg cachas konsekvent
+
+### Sprint 2 — Docker & Distribution
+- `Dockerfile` + `docker-compose.yml` anpassade för Unraid
+- Hardware acceleration via `/dev/dri` (Intel QSV / NVIDIA NVENC)
+- Dokumentation för självhostning
+
+### Sprint 3 — Radarr/Sonarr
+- Webhook-integration: ny media i Radarr → auto-scan i Loom
+- "Ta hem"-knapp för watchlist-items (triggar Radarr/Sonarr)
+- Kalendervy för kommande releaser
+
+### Långsiktigt
+- Musikmodul (artist/album/spår med Last.fm-integration)
+- Fotoalbum
+- Mobilapp (Android/iOS) med offline-cache
+
+---
+
+## Operativa riktlinjer för nästa IDE/AI
+
+1. Läs `HANDOFF.md` först — den har exakta filägar-platser, reproducerbara buggar och kodsnuttar.
+2. Bekräfta alltid att `npm run dev` och `flutter run` startar rent innan du rör i koden.
+3. Databasen sitter i `config/loom.db` — inte under `backend/`.
+4. Testa alltid resume-flödet på Windows efter ändringar i `video_player_screen.dart`.
+5. Backend-routes är stora filer (media.ts ~1900 rader) — använd sökning, rör inte logik du inte behöver.

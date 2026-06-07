@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'dart:html' as html;
+import 'package:universal_html/html.dart' as html;
 import '../services/api.dart';
 import 'media_details_screen.dart';
 

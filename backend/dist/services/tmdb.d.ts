@@ -68,6 +68,7 @@ export declare class TMDBService {
      * Helper to fetch any system setting from database
      */
     getSetting(key: string): string;
+    setSetting(key: string, value: string): void;
     /**
      * Search TMDB for a movie by title and optionally year
      */

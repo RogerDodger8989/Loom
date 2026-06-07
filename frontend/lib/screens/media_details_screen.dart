@@ -1,10 +1,14 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import '../services/api.dart';
 import 'dart:async';
 import 'dart:ui';
-import 'dart:html' as html;
+import 'package:universal_html/html.dart' as html;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'media_info_dialog.dart';
 import 'person_details_screen.dart';
 import 'resume_playback_modal.dart';
+import 'video_player_screen.dart';
 
 class MediaDetailsScreen extends StatefulWidget {
   final String mediaId;
@@ -14,6 +18,10 @@ class MediaDetailsScreen extends StatefulWidget {
   final ValueChanged<String>? onKeywordSelected;
   final ValueChanged<String>? onMediaSelected;
   final ValueChanged<String>? onPersonSelected;
+  final int? autoPlaySeconds;
+  final VoidCallback? onVideoPlayerClosed;
+  final VoidCallback? onEdit;
+  final void Function(String mediaId, Offset pos)? onContextMenu;
 
   const MediaDetailsScreen({
     super.key,
@@ -24,6 +32,10 @@ class MediaDetailsScreen extends StatefulWidget {
     this.onKeywordSelected,
     this.onMediaSelected,
     this.onPersonSelected,
+    this.autoPlaySeconds,
+    this.onVideoPlayerClosed,
+    this.onEdit,
+    this.onContextMenu,
   });
 
   @override
@@ -44,11 +56,122 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   bool _isWatched = false;
   int _savedProgressSeconds = 0;
   String _titleDisplayStyle = 'Translated';
-  String _selectedAudioTrack = 'English (AAC 5.1)';
-  String _selectedSubtitle = 'None';
   bool _isCoverHovered = false;
   bool _isInWatchlist = false;
   bool _isWatchlistLoading = false;
+
+  // Playback settings — persisted across sessions
+  String _selectedQuality = 'direct';
+  String _selectedSubtitleIndex = 'none';
+  String? _selectedAudioIndex;
+
+  // Version selection
+  String? _selectedVersionId;
+  String _versionPriority = '1080p,720p,4K'; // loaded from settings
+
+  // ── Version helpers ──────────────────────────────────────────────────────
+
+  static String _normalizeResForVersion(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return '';
+    final s = raw.trim();
+    final u = s.toUpperCase();
+    if (u.contains('2160') || u.contains('4K') || u.contains('UHD')) return '4K';
+    if (u.contains('1080')) return '1080p';
+    if (u.contains('720'))  return '720p';
+    if (u.contains('576'))  return '576p';
+    if (u.contains('480'))  return '480p';
+    if (u.contains('360'))  return '360p';
+    final dim = RegExp(r'^(\d+)[Xx](\d+)$').firstMatch(s);
+    if (dim != null) {
+      final w = int.tryParse(dim.group(1)!) ?? 0;
+      final h = int.tryParse(dim.group(2)!) ?? 0;
+      if (w >= 3200 || h >= 2000) return '4K';
+      if (w >= 1900 || h >= 1000) return '1080p';
+      if (w >= 1100 || h >= 650)  return '720p';
+      if (w >= 700  || h >= 420)  return '480p';
+      return '${h}p';
+    }
+    return s;
+  }
+
+  static String _extractVersionTag(String filePath) {
+    if (filePath.isEmpty) return '';
+    final name = filePath.replaceAll('\\', '/').split('/').last;
+    final noExt = name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name;
+
+    // Ordered: most specific first
+    final patterns = <(RegExp, String)>[
+      (RegExp(r'4K[\s._-]?Remaster(?:ed)?', caseSensitive: false), '4K Remaster'),
+      (RegExp(r"Director['’s]?s?[\s._-]?Cut", caseSensitive: false), "Director's Cut"),
+      (RegExp(r'Extended[\s._-]?Cut', caseSensitive: false), 'Extended Cut'),
+      (RegExp(r'Extended[\s._-]?Edition', caseSensitive: false), 'Extended Edition'),
+      (RegExp(r'Theatrical[\s._-]?Cut', caseSensitive: false), 'Theatrical Cut'),
+      (RegExp(r'Special[\s._-]?Edition', caseSensitive: false), 'Special Edition'),
+      (RegExp(r'Ultimate[\s._-]?Edition', caseSensitive: false), 'Ultimate Edition'),
+      (RegExp(r'Ultimate[\s._-]?Cut', caseSensitive: false), 'Ultimate Cut'),
+      (RegExp(r'Final[\s._-]?Cut', caseSensitive: false), 'Final Cut'),
+      (RegExp(r'International[\s._-]?Cut', caseSensitive: false), 'International Cut'),
+      (RegExp(r'Open[\s._-]?Matte', caseSensitive: false), 'Open Matte'),
+      (RegExp(r'\bRemaster(?:ed)?\b', caseSensitive: false), 'Remastered'),
+      (RegExp(r'\bExtended\b', caseSensitive: false), 'Extended'),
+      (RegExp(r'\bTheatrical\b', caseSensitive: false), 'Theatrical'),
+      (RegExp(r'\bUnrated\b', caseSensitive: false), 'Unrated'),
+      (RegExp(r'\bCriterion\b', caseSensitive: false), 'Criterion'),
+      (RegExp(r'\bIMAX\b', caseSensitive: false), 'IMAX'),
+      (RegExp(r'\bHybrid\b', caseSensitive: false), 'Hybrid'),
+      (RegExp(r'\bProper\b', caseSensitive: false), 'Proper'),
+      (RegExp(r'\bHDR10\+|\bHDR10\b|\bHDR\b', caseSensitive: false), 'HDR'),
+      (RegExp(r'\bBluRay|Blu-Ray|BDRip|BDRemux\b', caseSensitive: false), 'Blu-ray'),
+      (RegExp(r'\bWEB-DL|WEBRip|WebRip\b', caseSensitive: false), 'WEB-DL'),
+    ];
+
+    // Check bracketed/parenthesized sections first
+    final bracketRe = RegExp(r'[\[(]([^\])\r\n]{2,40})[\])]');
+    for (final m in bracketRe.allMatches(noExt)) {
+      final content = m.group(1)!.trim();
+      if (RegExp(r'^\d{4}$').hasMatch(content)) continue;
+      if (RegExp(r'^(1080p?|720p?|2160p?|4K|UHD|480p?|576p?|360p?)$', caseSensitive: false).hasMatch(content)) continue;
+      for (final (re, label) in patterns) {
+        if (re.hasMatch(content)) return label;
+      }
+      if (!RegExp(r'^\d+$').hasMatch(content) && content.length >= 2) return content;
+    }
+
+    // Check full filename
+    for (final (re, label) in patterns) {
+      if (re.hasMatch(noExt)) return label;
+    }
+    return '';
+  }
+
+  static String _buildVersionLabel(Map<String, dynamic> v) {
+    final filePath  = v['file_path']       as String? ?? '';
+    final resRaw    = v['resolution']      as String? ?? '';
+    final stored    = v['release_version'] as String? ?? '';
+    final res = _normalizeResForVersion(resRaw);
+    final tag = stored.isNotEmpty ? stored : _extractVersionTag(filePath);
+    if (res.isEmpty && tag.isEmpty) return 'Version';
+    if (res.isEmpty) return tag;
+    if (tag.isEmpty) return res;
+    return '$res – $tag';
+  }
+
+  List<Map<String, dynamic>> _sortedVersions() {
+    final versions = (_mediaData?['versions'] as List? ?? [])
+        .cast<Map<String, dynamic>>();
+    if (versions.isEmpty) return versions;
+    final order = _versionPriority
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .toList();
+    return [...versions]..sort((a, b) {
+        final ra = _normalizeResForVersion(a['resolution'] as String?).toUpperCase();
+        final rb = _normalizeResForVersion(b['resolution'] as String?).toUpperCase();
+        int ia = order.indexOf(ra); if (ia < 0) ia = order.length + 1;
+        int ib = order.indexOf(rb); if (ib < 0) ib = order.length + 1;
+        return ia.compareTo(ib);
+      });
+  }
 
   Future<void> _toggleWatchlist() async {
     if (_mediaData == null) return;
@@ -111,7 +234,72 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    _loadPlaybackSettings();
     _fetchDetails();
+    // Pre-warm HLS cache so playback starts instantly
+    if (!widget.mediaId.startsWith('external_')) {
+      widget.apiService.warmupStream(widget.mediaId);
+    }
+  }
+
+  Future<void> _loadPlaybackSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedQuality = prefs.getString('loom_player_quality_pref') ?? 'direct';
+    final savedSubLang = prefs.getString('loom_player_subtitle_lang') ?? '';
+    final savedAudioLang = prefs.getString('loom_player_audio_lang') ?? '';
+    if (!mounted) return;
+    setState(() {
+      _selectedQuality = savedQuality;
+      // Track indices will be resolved once media data loads (in _applyLanguageDefaults)
+      _selectedSubtitleIndex = 'none';
+      _selectedAudioIndex = null;
+      _pendingSubtitleLang = savedSubLang;
+      _pendingAudioLang = savedAudioLang;
+    });
+  }
+
+  // Resolved once tracks are known
+  String _pendingSubtitleLang = '';
+  String _pendingAudioLang = '';
+
+  void _applyLanguageDefaults(Map<String, dynamic> metadata) {
+    final subtitleTracks = (metadata['subtitle_tracks'] is List)
+        ? (metadata['subtitle_tracks'] as List).cast<Map>()
+        : <Map>[];
+    final audioTracks = (metadata['audio_tracks'] is List)
+        ? (metadata['audio_tracks'] as List).cast<Map>()
+        : <Map>[];
+
+    String resolvedSub = 'none';
+    if (_pendingSubtitleLang.isNotEmpty) {
+      final match = subtitleTracks.firstWhere(
+        (t) => (t['language']?.toString() ?? '').toLowerCase() ==
+            _pendingSubtitleLang.toLowerCase(),
+        orElse: () => {},
+      );
+      if (match.isNotEmpty) resolvedSub = match['index']?.toString() ?? 'none';
+    }
+
+    String? resolvedAudio;
+    if (_pendingAudioLang.isNotEmpty) {
+      final match = audioTracks.firstWhere(
+        (t) => (t['language']?.toString() ?? '').toLowerCase() ==
+            _pendingAudioLang.toLowerCase(),
+        orElse: () => {},
+      );
+      if (match.isNotEmpty) resolvedAudio = match['index']?.toString();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _selectedSubtitleIndex = resolvedSub;
+      _selectedAudioIndex = resolvedAudio;
+    });
+  }
+
+  Future<void> _savePlaybackSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('loom_player_quality_pref', _selectedQuality);
   }
 
   @override
@@ -121,6 +309,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   Future<void> _fetchDetails() async {
+    // Capture before any await — widget props can change while async work runs.
+    final pendingAutoPlay = widget.autoPlaySeconds;
     try {
       setState(() {
         _isLoading = true;
@@ -138,78 +328,44 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
       // Load settings to fetch default options
       String titleStyle = 'Translated';
-      String subLang = 'sv';
-      String audioLang = 'en';
+      String versionPriority = '1080p,720p,4K';
       try {
         final settings = await widget.apiService.getSettings();
         if (settings.containsKey('TITLE_DISPLAY_STYLE')) {
           titleStyle = settings['TITLE_DISPLAY_STYLE'];
         }
-        subLang = settings['DEFAULT_SUBTITLE_LANG'] ?? 'sv';
-        audioLang = settings['DEFAULT_AUDIO_LANG'] ?? 'en';
+        if (settings.containsKey('VERSION_PRIORITY')) {
+          versionPriority = settings['VERSION_PRIORITY'];
+        }
+        // Apply default language preferences from settings (overrides empty SharedPreferences)
+        final defaultSubLang = settings['DEFAULT_SUBTITLE_LANG'] as String? ?? '';
+        final defaultAudioLang = settings['DEFAULT_AUDIO_LANG'] as String? ?? '';
+        if (_pendingSubtitleLang.isEmpty && defaultSubLang.isNotEmpty) {
+          _pendingSubtitleLang = defaultSubLang;
+        }
+        if (_pendingAudioLang.isEmpty && defaultAudioLang.isNotEmpty) {
+          _pendingAudioLang = defaultAudioLang;
+        }
       } catch (e) {
         debugPrint('Error loading settings in details: $e');
       }
 
-      // Parse audio and subtitle tracks lists
-      final List<dynamic> audioTracks = (metadata['audio_tracks'] is List)
-          ? metadata['audio_tracks'] as List<dynamic>
-          : [];
-      final List<dynamic> subtitleTracks = (metadata['subtitle_tracks'] is List)
-          ? metadata['subtitle_tracks'] as List<dynamic>
-          : [];
-
-      // Pre-select based on settings
-      String audioTrack = 'English (AAC 5.1)';
-      if (audioTracks.isNotEmpty) {
-        final isSv = (audioLang.toLowerCase() == 'sv' ||
-            audioLang.toLowerCase() == 'swedish' ||
-            audioLang.toLowerCase() == 'swe');
-        final targetLang = isSv ? 'SWE' : 'ENG';
-        final matchIndex = audioTracks.indexWhere(
-            (t) => t['language']?.toString().toUpperCase() == targetLang);
-        if (matchIndex != -1) {
-          audioTrack =
-              audioTracks[matchIndex]['label']?.toString() ?? 'Unknown Audio';
-        } else {
-          audioTrack =
-              audioTracks.first['label']?.toString() ?? 'Unknown Audio';
-        }
-      } else {
-        audioTrack = (audioLang.toLowerCase() == 'sv' ||
-                audioLang.toLowerCase() == 'swedish')
-            ? 'Swedish (Stereo)'
-            : 'English (AAC 5.1)';
-      }
-
-      String subtitle = 'None';
-      if (subtitleTracks.isNotEmpty) {
-        final isSv = (subLang.toLowerCase() == 'sv' ||
-            subLang.toLowerCase() == 'swedish' ||
-            subLang.toLowerCase() == 'swe');
-        final isEn = (subLang.toLowerCase() == 'en' ||
-            subLang.toLowerCase() == 'english' ||
-            subLang.toLowerCase() == 'eng');
-        if (isSv || isEn) {
-          final targetLang = isSv ? 'SWE' : 'ENG';
-          final matchIndex = subtitleTracks.indexWhere(
-              (t) => t['language']?.toString().toUpperCase() == targetLang);
-          if (matchIndex != -1) {
-            subtitle =
-                subtitleTracks[matchIndex]['label']?.toString() ?? 'None';
-          }
-        }
-      } else {
-        subtitle = (subLang.toLowerCase() == 'sv' ||
-                subLang.toLowerCase() == 'swedish')
-            ? 'Swedish (SRT)'
-            : (subLang.toLowerCase() == 'en' ||
-                    subLang.toLowerCase() == 'english')
-                ? 'English (SDH)'
-                : 'None';
-      }
-
       final bool isInWatchlist = data['is_in_watchlist'] as bool? ?? false;
+
+      // Pick best version based on priority
+      final versions = (data['versions'] as List? ?? []).cast<Map<String, dynamic>>();
+      final order = versionPriority.split(',').map((s) => s.trim().toUpperCase()).toList();
+      String? bestVersionId;
+      if (versions.isNotEmpty) {
+        final sorted = [...versions]..sort((a, b) {
+            final ra = _normalizeResForVersion(a['resolution'] as String?).toUpperCase();
+            final rb = _normalizeResForVersion(b['resolution'] as String?).toUpperCase();
+            int ia = order.indexOf(ra); if (ia < 0) ia = order.length + 1;
+            int ib = order.indexOf(rb); if (ib < 0) ib = order.length + 1;
+            return ia.compareTo(ib);
+          });
+        bestVersionId = sorted.first['id']?.toString();
+      }
 
       setState(() {
         _mediaData = data;
@@ -217,11 +373,36 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         _isWatched = savedWatchStatus;
         _savedProgressSeconds = progress;
         _titleDisplayStyle = titleStyle;
-        _selectedAudioTrack = audioTrack;
-        _selectedSubtitle = subtitle;
         _isInWatchlist = isInWatchlist;
         _isLoading = false;
+        _versionPriority = versionPriority;
+        _selectedVersionId = bestVersionId ?? widget.mediaId;
       });
+      // Resolve saved language preferences using the best version's tracks
+      final bestVer = versions.isNotEmpty
+          ? versions.firstWhere(
+              (v) => v['id']?.toString() == (bestVersionId ?? widget.mediaId),
+              orElse: () => <String, dynamic>{},
+            )
+          : <String, dynamic>{};
+      final tracksForDefaults = bestVer.isNotEmpty
+          ? Map<String, dynamic>.from(bestVer)
+          : (data['metadata'] is Map ? Map<String, dynamic>.from(data['metadata'] as Map) : <String, dynamic>{});
+      _applyLanguageDefaults(tracksForDefaults);
+
+      // 4K media should default to direct play — transcoding 4K at 5 Mbit wastes quality.
+      // Override the saved pref only if a transcode bitrate was remembered.
+      final bestResolution = _normalizeResForVersion(bestVer['resolution'] as String?);
+      if (bestResolution == '4K' && _selectedQuality != 'direct') {
+        setState(() => _selectedQuality = 'direct');
+      }
+
+      // If parent requested autoplay on open, start playback now.
+      if (pendingAutoPlay != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _startPlayback(pendingAutoPlay);
+        });
+      }
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -342,14 +523,16 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
   void _playMedia() {
     if (_savedProgressSeconds > 0) {
-      showDialog(
+      showDialog<void>(
         context: context,
-        builder: (context) => ResumePlaybackModal(
+        builder: (dialogContext) => ResumePlaybackModal(
           savedPositionSeconds: _savedProgressSeconds,
           onResume: () {
+            Navigator.pop(dialogContext);
             _startPlayback(_savedProgressSeconds);
           },
           onStartOver: () {
+            Navigator.pop(dialogContext);
             _startPlayback(0);
           },
         ),
@@ -360,43 +543,28 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   void _startPlayback(int startFromSeconds) {
-    final meta = _mediaData?['metadata'] ?? {};
-    int durationSec = int.tryParse(meta['duration']?.toString() ?? '') ?? 0;
-    if (durationSec == 0) {
-      final runtimeMinutes =
-          int.tryParse(meta['runtime']?.toString() ?? '') ?? 0;
-      durationSec = runtimeMinutes * 60;
-    }
-    if (durationSec <= 0) {
-      durationSec = 7200; // default 120 minutes
-    }
-
-    showDialog(
-      context: context,
-      barrierDismissible: false, // Must click Stop to save progress
-      builder: (context) {
-        return _PlaybackSimulatorDialog(
-          mediaId: widget.mediaId,
+    final useTranscode = _selectedQuality != 'direct';
+    final bitrate = useTranscode ? _selectedQuality : '4000k';
+    unawaited(_savePlaybackSettings());
+    final playId = _selectedVersionId ?? widget.mediaId;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VideoPlayerScreen(
+          mediaId: playId,
           apiService: widget.apiService,
-          title: _mediaData?['title'] ?? 'Unknown Title',
-          durationSeconds: durationSec,
+          mediaData: _mediaData == null ? null : Map<String, dynamic>.from(_mediaData!),
           startFromSeconds: startFromSeconds,
-          onPlaybackFinished: (finalPosition, wasCompleted) {
-            if (wasCompleted) {
-              setState(() {
-                _isWatched = true;
-                _savedProgressSeconds = 0;
-              });
-            } else {
-              setState(() {
-                _savedProgressSeconds = finalPosition;
-              });
-            }
-            _fetchDetails(); // Reload media info to sync with UI
-          },
-        );
-      },
-    );
+          useTranscode: useTranscode,
+          bitrate: bitrate,
+          initialSubtitleIndex: _selectedSubtitleIndex,
+          initialAudioIndex: _selectedAudioIndex,
+        ),
+      ),
+    ).then((_) {
+      _fetchDetails();
+      widget.onVideoPlayerClosed?.call();
+    });
   }
 
   double _normalizeRating(double value) {
@@ -413,6 +581,189 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       _ratingPreview = preview;
       _isRatingHovering = true;
     });
+  }
+
+  Widget _buildPlaybackSelectors(Map<String, dynamic> metadata) {
+    // Prefer tracks from the selected version; fall back to global metadata
+    final allVersions = (_mediaData?['versions'] as List? ?? []).cast<Map<String, dynamic>>();
+    final selectedVer = allVersions.isNotEmpty
+        ? allVersions.firstWhere(
+            (v) => v['id']?.toString() == _selectedVersionId,
+            orElse: () => {},
+          )
+        : <String, dynamic>{};
+    final subtitleTracks = (selectedVer['subtitle_tracks'] is List)
+        ? (selectedVer['subtitle_tracks'] as List).cast<Map>()
+        : (metadata['subtitle_tracks'] is List)
+            ? (metadata['subtitle_tracks'] as List).cast<Map>()
+            : <Map>[];
+    final audioTracks = (selectedVer['audio_tracks'] is List)
+        ? (selectedVer['audio_tracks'] as List).cast<Map>()
+        : (metadata['audio_tracks'] is List)
+            ? (metadata['audio_tracks'] as List).cast<Map>()
+            : <Map>[];
+
+    Widget dropdown<T>({
+      required IconData icon,
+      required String label,
+      required T value,
+      required List<DropdownMenuItem<T>> items,
+      required ValueChanged<T?> onChanged,
+    }) {
+      return Container(
+        height: 34,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: const Color(0xFF8A5BFF), size: 14),
+            const SizedBox(width: 6),
+            Text('$label: ',
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
+            DropdownButtonHideUnderline(
+              child: DropdownButton<T>(
+                value: value,
+                dropdownColor: const Color(0xFF15102A),
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+                isDense: true,
+                items: items,
+                onChanged: onChanged,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Quality items
+    final qualityItems = <DropdownMenuItem<String>>[
+      const DropdownMenuItem(value: 'direct', child: Text('Direct play')),
+      const DropdownMenuItem(value: '2000k', child: Text('Transcode 2 Mb')),
+      const DropdownMenuItem(value: '5000k', child: Text('Transcode 5 Mb')),
+      const DropdownMenuItem(value: '8000k', child: Text('Transcode 8 Mb')),
+    ];
+
+    // Subtitle items
+    final subtitleItems = <DropdownMenuItem<String>>[
+      const DropdownMenuItem(value: 'none', child: Text('Av')),
+      ...subtitleTracks.map((t) {
+        final idx = t['index']?.toString() ?? '';
+        final label = t['label']?.toString() ?? t['codec']?.toString() ?? idx;
+        final lang = t['language']?.toString() ?? '';
+        return DropdownMenuItem(
+          value: idx,
+          child: Text(lang.isEmpty ? label : '$label · $lang',
+              overflow: TextOverflow.ellipsis),
+        );
+      }),
+    ];
+
+    // Audio items — no "Auto", user must pick a track
+    final audioItems = <DropdownMenuItem<String?>>[
+      ...audioTracks.map((t) {
+        final idx = t['index']?.toString() ?? '';
+        final codec = t['codec']?.toString() ?? 'Audio';
+        final lang = t['language']?.toString() ?? '';
+        final ch = t['channels']?.toString() ?? '';
+        final label = [codec, if (ch.isNotEmpty) '${ch}ch', if (lang.isNotEmpty) lang].join(' · ');
+        return DropdownMenuItem(value: idx, child: Text(label, overflow: TextOverflow.ellipsis));
+      }),
+    ];
+
+    // Build version items
+    final versions = _sortedVersions();
+    final singleVersion = versions.length <= 1;
+    final versionItems = versions.map((v) {
+      final id = v['id']?.toString() ?? '';
+      return DropdownMenuItem<String>(
+        value: id,
+        child: Text(_buildVersionLabel(v), overflow: TextOverflow.ellipsis),
+      );
+    }).toList();
+    // Ensure selected value is valid
+    final effectiveVersionId = versionItems.any((i) => i.value == _selectedVersionId)
+        ? _selectedVersionId
+        : (versionItems.isNotEmpty ? versionItems.first.value : widget.mediaId);
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        // ── Version dropdown (left of Kvalitet) ──
+        if (versionItems.isNotEmpty)
+          Opacity(
+            opacity: singleVersion ? 0.45 : 1.0,
+            child: dropdown<String>(
+              icon: Icons.layers_outlined,
+              label: 'Version',
+              value: effectiveVersionId!,
+              items: versionItems,
+              onChanged: singleVersion
+                  ? (_) {}
+                  : (v) {
+                      if (v == null) return;
+                      setState(() {
+                        _selectedVersionId = v;
+                        _selectedSubtitleIndex = 'none';
+                        _selectedAudioIndex = null;
+                      });
+                      // Apply saved language defaults for the new version's tracks
+                      final ver = (_mediaData?['versions'] as List? ?? [])
+                          .cast<Map<String, dynamic>>()
+                          .firstWhere((ver) => ver['id']?.toString() == v, orElse: () => {});
+                      if (ver.isNotEmpty) _applyLanguageDefaults(Map<String, dynamic>.from(ver));
+                    },
+            ),
+          ),
+        dropdown<String>(
+          icon: Icons.hd_outlined,
+          label: 'Kvalitet',
+          value: _selectedQuality,
+          items: qualityItems,
+          onChanged: (v) {
+            if (v != null) setState(() => _selectedQuality = v);
+            _savePlaybackSettings();
+          },
+        ),
+        if (subtitleTracks.isNotEmpty)
+          dropdown<String>(
+            icon: Icons.subtitles_outlined,
+            label: 'Undertext',
+            value: _selectedSubtitleIndex,
+            items: subtitleItems,
+            onChanged: (v) {
+              if (v != null) setState(() => _selectedSubtitleIndex = v);
+            },
+          ),
+        if (audioTracks.isNotEmpty) ...[
+          () {
+            // Ensure value is valid — default to first track if none selected
+            final firstIdx = audioTracks.first['index']?.toString();
+            final effectiveAudio = audioItems.any((i) => i.value == _selectedAudioIndex)
+                ? _selectedAudioIndex
+                : firstIdx;
+            if (effectiveAudio != _selectedAudioIndex) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) setState(() => _selectedAudioIndex = effectiveAudio);
+              });
+            }
+            return dropdown<String?>(
+              icon: Icons.audio_file_outlined,
+              label: 'Ljud',
+              value: effectiveAudio,
+              items: audioItems,
+              onChanged: (v) => setState(() => _selectedAudioIndex = v),
+            );
+          }(),
+        ],
+      ],
+    );
   }
 
   Widget _buildMyRatingControl() {
@@ -687,12 +1038,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final metadata = (media['metadata'] is Map)
         ? media['metadata'] as Map<String, dynamic>
         : {};
-    final audioTracks = (metadata['audio_tracks'] is List)
-        ? metadata['audio_tracks'] as List<dynamic>
-        : [];
-    final subtitleTracks = (metadata['subtitle_tracks'] is List)
-        ? metadata['subtitle_tracks'] as List<dynamic>
-        : [];
     final tagline = metadata['tagline'] as String?;
     final genresList = (media['genre'] as String? ?? '')
         .split(', ')
@@ -810,7 +1155,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   setState(() => _isCoverHovered = true),
                               onExit: (_) =>
                                   setState(() => _isCoverHovered = false),
-                              child: GestureDetector(
+                              child: Listener(
+                                onPointerDown: widget.mediaId.startsWith('external_') ? null : (event) {
+                                  if (event.buttons == kSecondaryMouseButton) {
+                                    widget.onContextMenu?.call(widget.mediaId, event.position);
+                                  }
+                                },
+                                child: GestureDetector(
                                 onTap: widget.mediaId.startsWith('external_')
                                     ? _toggleWatchlist
                                     : _playMedia,
@@ -864,6 +1215,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                       ],
                                     ),
                                   ),
+                                ),
                                 ),
                               ),
                             ),
@@ -1262,23 +1614,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                     final countryName = country is Map
                                         ? (country['name']?.toString() ?? '')
                                         : country.toString();
-                                    final iso = country is Map
+                                    final isoRaw = country is Map
                                         ? (country['iso_3166_1']?.toString() ??
                                             '')
                                         : '';
+                                    final iso = isoRaw.toUpperCase();
                                     if (countryName.isEmpty)
                                       return const SizedBox.shrink();
-
-                                    // Generate regional flag emoji
-                                    String flag = '';
-                                    if (iso.length == 2) {
-                                      final int char1 =
-                                          iso.codeUnitAt(0) - 65 + 127462;
-                                      final int char2 =
-                                          iso.codeUnitAt(1) - 65 + 127462;
-                                      flag = String.fromCharCode(char1) +
-                                          String.fromCharCode(char2);
-                                    }
 
                                     return Tooltip(
                                       message: countryName,
@@ -1294,11 +1636,36 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                               color: Colors.white
                                                   .withValues(alpha: 0.08)),
                                         ),
-                                        child: Text(
-                                          flag.isNotEmpty ? flag : countryName,
-                                          style: TextStyle(
-                                              fontSize:
-                                                  flag.isNotEmpty ? 20 : 12),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (iso.length == 2) ...[
+                                              ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(2),
+                                                child: Image.network(
+                                                  'https://flagcdn.com/w20/${iso.toLowerCase()}.png',
+                                                  width: 20,
+                                                  height: 14,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder: (_, __, ___) =>
+                                                      Text(iso,
+                                                          style:
+                                                              const TextStyle(
+                                                                  fontSize: 11,
+                                                                  color: Colors
+                                                                      .white54)),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                            ],
+                                            Text(
+                                              countryName,
+                                              style: const TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.white70),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                     );
@@ -1581,32 +1948,62 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                               builder: (ctx) => AlertDialog(
                                                 backgroundColor:
                                                     const Color(0xFF15102A),
-                                                title: const Text(
-                                                    'Ta bort media?',
-                                                    style: TextStyle(
-                                                        color: Colors.white)),
-                                                content: const Text(
-                                                    'Är du säker på att du vill ta bort den här filmen från biblioteket? Filen på disken kommer inte raderas.',
-                                                    style: TextStyle(
-                                                        color: Colors.white70)),
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius: BorderRadius.circular(16),
+                                                  side: BorderSide(color: Colors.redAccent.withValues(alpha: 0.3)),
+                                                ),
+                                                title: const Row(
+                                                  children: [
+                                                    Icon(Icons.delete_outline, color: Colors.redAccent, size: 24),
+                                                    SizedBox(width: 10),
+                                                    Text('Flytta till papperskorg?',
+                                                        style: TextStyle(color: Colors.white, fontSize: 18)),
+                                                  ],
+                                                ),
+                                                content: Column(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      'Filmen tas bort från biblioteket och filen på hårddisken flyttas till en .trash-mapp.',
+                                                      style: const TextStyle(color: Colors.white70, height: 1.4),
+                                                    ),
+                                                    const SizedBox(height: 12),
+                                                    Container(
+                                                      padding: const EdgeInsets.all(10),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.redAccent.withValues(alpha: 0.08),
+                                                        borderRadius: BorderRadius.circular(8),
+                                                        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.2)),
+                                                      ),
+                                                      child: const Row(
+                                                        children: [
+                                                          Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 16),
+                                                          SizedBox(width: 8),
+                                                          Expanded(
+                                                            child: Text(
+                                                              'Filen raderas från hårddisken om du tömmer papperskorgen i Inställningar.',
+                                                              style: TextStyle(color: Colors.orange, fontSize: 12, height: 1.4),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
                                                 actions: [
                                                   TextButton(
-                                                      onPressed: () =>
-                                                          Navigator.pop(
-                                                              ctx, false),
-                                                      child: const Text(
-                                                          'Avbryt',
-                                                          style: TextStyle(
-                                                              color: Colors
-                                                                  .white54))),
-                                                  TextButton(
-                                                    onPressed: () =>
-                                                        Navigator.pop(
-                                                            ctx, true),
-                                                    child: const Text('Ta bort',
-                                                        style: TextStyle(
-                                                            color: Colors
-                                                                .redAccent)),
+                                                      onPressed: () => Navigator.pop(ctx, false),
+                                                      child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+                                                  ElevatedButton.icon(
+                                                    onPressed: () => Navigator.pop(ctx, true),
+                                                    icon: const Icon(Icons.delete_outline, size: 18),
+                                                    label: const Text('Flytta till papperskorg'),
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor: Colors.redAccent,
+                                                      foregroundColor: Colors.white,
+                                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                                    ),
                                                   ),
                                                 ],
                                               ),
@@ -1640,6 +2037,33 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                                 );
                                               }
                                             }
+                                          } else if (value == 'scan_chapters') {
+                                            try {
+                                              await widget.apiService.scanChapters(widget.mediaId);
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text('Kapitelskanning startad i bakgrunden. Intro/outro-knappar visas när det är klart!'),
+                                                  backgroundColor: Color(0xFF8A5BFF),
+                                                  duration: Duration(seconds: 4),
+                                                ),
+                                              );
+                                            } catch (e) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(content: Text('Skanning misslyckades: $e'), backgroundColor: Colors.redAccent),
+                                              );
+                                            }
+                                          } else if (value == 'edit') {
+                                            widget.onEdit?.call();
+                                          } else if (value == 'info') {
+                                            showDialog(
+                                              context: context,
+                                              barrierDismissible: true,
+                                              builder: (_) => MediaInfoDialog(
+                                                mediaId: widget.mediaId,
+                                                title: _mediaData?['title']?.toString() ?? 'Media',
+                                                apiService: widget.apiService,
+                                              ),
+                                            );
                                           } else if (value == 'statistics') {
                                             ScaffoldMessenger.of(context)
                                                 .showSnackBar(
@@ -1681,6 +2105,11 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                                 style: TextStyle(
                                                     color: Colors.white)),
                                           ),
+                                          if (!widget.mediaId.startsWith('external_'))
+                                            const PopupMenuItem(
+                                              value: 'edit',
+                                              child: Text('Redigera', style: TextStyle(color: Colors.white)),
+                                            ),
                                           const PopupMenuItem(
                                             value: 'match',
                                             child: Text('Fixa matchning',
@@ -1694,10 +2123,22 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                                     color: Colors.white)),
                                           ),
                                           const PopupMenuItem(
+                                            value: 'scan_chapters',
+                                            child: Text('Skanna kapitel/intro',
+                                                style: TextStyle(
+                                                    color: Colors.white70)),
+                                          ),
+                                          const PopupMenuItem(
                                             value: 'delete',
                                             child: Text('Ta bort',
                                                 style: TextStyle(
                                                     color: Colors.redAccent)),
+                                          ),
+                                          const PopupMenuItem(
+                                            value: 'info',
+                                            child: Text('Info',
+                                                style: TextStyle(
+                                                    color: Colors.white)),
                                           ),
                                           const PopupMenuItem(
                                             value: 'statistics',
@@ -1788,6 +2229,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           const SizedBox(height: 20),
                         ],
 
+                        // ── Playback settings dropdowns ──────────────
+                        _buildPlaybackSelectors(Map<String, dynamic>.from(metadata)),
+                        const SizedBox(height: 16),
+
                         // Keywords section placed within left column
                         if (keywords.isNotEmpty) ...[
                           _KeywordsExpandableContainer(
@@ -1805,214 +2250,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           const SizedBox(height: 20),
                         ],
 
-                        // Compact Video, Audio & Subtitles Row
-                        if (!widget.mediaId.startsWith('external_'))
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.03),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.06)),
-                            ),
-                            child: Row(
-                              children: [
-                                // Video Format Selector (Disable and gray out if only 1 version exists)
-                                Builder(builder: (context) {
-                                  final List<dynamic> versions =
-                                      _mediaData?['versions']
-                                              as List<dynamic>? ??
-                                          [];
-                                  final displayVersions = versions.isNotEmpty
-                                      ? versions
-                                      : [
-                                          {
-                                            'id': widget.mediaId,
-                                            'resolution':
-                                                _mediaData?['resolution'] ??
-                                                    '1080p',
-                                          }
-                                        ];
-                                  final isMultiple = displayVersions.length > 1;
-
-                                  return Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.hd_outlined,
-                                          color: isMultiple
-                                              ? Colors.white38
-                                              : Colors.white24,
-                                          size: 18),
-                                      const SizedBox(width: 10),
-                                      DropdownButtonHideUnderline(
-                                        child: DropdownButton<String>(
-                                          isDense: true,
-                                          value: widget.mediaId,
-                                          dropdownColor:
-                                              const Color(0xFF15102A),
-                                          icon: Icon(Icons.keyboard_arrow_down,
-                                              color: isMultiple
-                                                  ? Colors.white38
-                                                  : Colors.transparent,
-                                              size: 16),
-                                          style: TextStyle(
-                                              color: isMultiple
-                                                  ? Colors.white70
-                                                  : Colors.white24,
-                                              fontSize: 14),
-                                          items: displayVersions
-                                              .map<DropdownMenuItem<String>>(
-                                                  (v) {
-                                            final res = v['resolution']
-                                                    ?.toString()
-                                                    .toUpperCase() ??
-                                                '1080P';
-                                            return DropdownMenuItem<String>(
-                                              value: v['id']?.toString(),
-                                              child: Text(res),
-                                            );
-                                          }).toList(),
-                                          onChanged: isMultiple
-                                              ? (newId) {
-                                                  if (newId != null &&
-                                                      newId != widget.mediaId) {
-                                                    if (widget
-                                                            .onMediaSelected !=
-                                                        null) {
-                                                      widget.onMediaSelected!(
-                                                          newId);
-                                                    } else {
-                                                      Navigator.pushReplacement(
-                                                        context,
-                                                        MaterialPageRoute(
-                                                          builder: (context) =>
-                                                              MediaDetailsScreen(
-                                                            mediaId: newId,
-                                                            apiService: widget
-                                                                .apiService,
-                                                            onBack:
-                                                                widget.onBack,
-                                                            onGenreSelected: widget
-                                                                .onGenreSelected,
-                                                            onKeywordSelected:
-                                                                widget
-                                                                    .onKeywordSelected,
-                                                            onMediaSelected: widget
-                                                                .onMediaSelected,
-                                                            onPersonSelected: widget
-                                                                .onPersonSelected,
-                                                          ),
-                                                        ),
-                                                      );
-                                                    }
-                                                  }
-                                                }
-                                              : null,
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                }),
-                                Container(
-                                    width: 1,
-                                    height: 24,
-                                    color: Colors.white10,
-                                    margin: const EdgeInsets.symmetric(
-                                        horizontal: 12)),
-
-                                // Audio Selector
-                                const Icon(Icons.volume_up_outlined,
-                                    color: Colors.white38, size: 18),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: DropdownButtonHideUnderline(
-                                    child: DropdownButton<String>(
-                                      isDense: true,
-                                      value: _selectedAudioTrack,
-                                      dropdownColor: const Color(0xFF15102A),
-                                      icon: const Icon(
-                                          Icons.keyboard_arrow_down,
-                                          color: Colors.white38,
-                                          size: 16),
-                                      style: const TextStyle(
-                                          color: Colors.white70, fontSize: 14),
-                                      items: (audioTracks.isNotEmpty
-                                              ? audioTracks
-                                                  .map((t) =>
-                                                      t['label']?.toString() ??
-                                                      '')
-                                                  .where((label) =>
-                                                      label.isNotEmpty)
-                                                  .toList()
-                                              : [
-                                                  'English (AAC 5.1)',
-                                                  'Swedish (Stereo)'
-                                                ])
-                                          .map((opt) => DropdownMenuItem(
-                                              value: opt, child: Text(opt)))
-                                          .toList(),
-                                      onChanged: (val) {
-                                        if (val != null)
-                                          setState(
-                                              () => _selectedAudioTrack = val);
-                                      },
-                                    ),
-                                  ),
-                                ),
-                                Container(
-                                    width: 1,
-                                    height: 24,
-                                    color: Colors.white10,
-                                    margin: const EdgeInsets.symmetric(
-                                        horizontal: 12)),
-
-                                // Subtitle Selector
-                                const Icon(Icons.subtitles_outlined,
-                                    color: Colors.white38, size: 18),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: DropdownButtonHideUnderline(
-                                    child: DropdownButton<String>(
-                                      isDense: true,
-                                      value: _selectedSubtitle,
-                                      dropdownColor: const Color(0xFF15102A),
-                                      icon: const Icon(
-                                          Icons.keyboard_arrow_down,
-                                          color: Colors.white38,
-                                          size: 16),
-                                      style: const TextStyle(
-                                          color: Colors.white70, fontSize: 14),
-                                      items: (subtitleTracks.isNotEmpty
-                                              ? [
-                                                  'None',
-                                                  ...subtitleTracks
-                                                      .map((t) =>
-                                                          t['label']
-                                                              ?.toString() ??
-                                                          '')
-                                                      .where((label) =>
-                                                          label.isNotEmpty)
-                                                ]
-                                              : [
-                                                  'None',
-                                                  'Swedish (SRT)',
-                                                  'English (SDH)'
-                                                ])
-                                          .map((opt) => DropdownMenuItem(
-                                              value: opt, child: Text(opt)))
-                                          .toList(),
-                                      onChanged: (val) {
-                                        if (val != null)
-                                          setState(
-                                              () => _selectedSubtitle = val);
-                                      },
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                       ],
                     ),
                   ),
@@ -2222,7 +2459,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                   if (parts.isEmpty) return const SizedBox.shrink();
 
                   return SizedBox(
-                    height: 230,
+                    height: 260,
                     child: ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 30),
                       scrollDirection: Axis.horizontal,
@@ -2234,14 +2471,20 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         final year =
                             item['year'] != null ? ' (${item['year']})' : '';
                         final localId = item['id']?.toString() ?? '';
+                        final tmdbId = item['tmdb_id']?.toString();
+                        final inLibrary = localId.isNotEmpty;
                         final isCurrent = localId == widget.mediaId;
 
-                        return MouseRegion(
+                        return Opacity(
+                          opacity: inLibrary ? 1.0 : 0.45,
+                          child: MouseRegion(
                           cursor: SystemMouseCursors.click,
                           child: GestureDetector(
                             onTap: () {
                               if (localId.isNotEmpty) {
                                 widget.onMediaSelected?.call(localId);
+                              } else if (tmdbId != null) {
+                                widget.onMediaSelected?.call('external_movie_$tmdbId');
                               }
                             },
                             child: Container(
@@ -2252,7 +2495,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Container(
-                                    height: 160,
+                                    height: 210,
                                     clipBehavior: Clip.antiAlias,
                                     decoration: BoxDecoration(
                                       color: Colors.white10,
@@ -2387,7 +2630,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               ),
                             ),
                           ),
-                        );
+                        ));
                       },
                     ),
                   );
@@ -2395,6 +2638,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               ),
               const SizedBox(height: 30),
             ],
+
+            // Seasons & Episodes (TV shows only)
+            if (media['type'] == 'Show' && media['episodes'] is List && (media['episodes'] as List).isNotEmpty)
+              _buildSeasonsSection(media['episodes'] as List<dynamic>),
 
             // Similar media should appear below cast and remain library-only via backend filter
             _buildSimilarCarousel(),
@@ -2862,6 +3109,253 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     );
   }
 
+  bool get _isAdmin =>
+      widget.apiService.currentUserPayload?['role'] == 'Admin';
+
+  Future<void> _showSeasonContextMenu(
+      BuildContext ctx, Offset globalPos, int seasonNum, List<Map<String, dynamic>> eps) async {
+    final overlay = Overlay.of(ctx).context.findRenderObject() as RenderBox;
+    final rel = RelativeRect.fromRect(
+      Rect.fromPoints(globalPos, globalPos),
+      Offset.zero & overlay.size,
+    );
+    final selected = await showMenu<String>(
+      context: ctx,
+      color: const Color(0xFF11151D),
+      position: rel,
+      items: [
+        PopupMenuItem(
+          value: 'delete_season',
+          child: Row(children: [
+            const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Text(
+              'Radera ${seasonNum == 0 ? "Specials" : "Säsong $seasonNum"} (${eps.length} avsnitt)',
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+          ]),
+        ),
+      ],
+    );
+    if (selected == 'delete_season' && mounted) {
+      final label = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (d) => AlertDialog(
+          title: const Text('Flytta till papperskorgen?'),
+          content: Text('Ska $label (${eps.length} avsnitt) flyttas till papperskorgen?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Avbryt')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('Radera'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true) {
+        try {
+          await widget.apiService.deleteSeason(widget.mediaId, seasonNum);
+          if (mounted) setState(() => _mediaData = null);
+          _fetchDetails();
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Kunde inte radera: $e')),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  Future<void> _showEpisodeContextMenu(
+      BuildContext ctx, Offset globalPos, String epId, String label) async {
+    final overlay = Overlay.of(ctx).context.findRenderObject() as RenderBox;
+    final rel = RelativeRect.fromRect(
+      Rect.fromPoints(globalPos, globalPos),
+      Offset.zero & overlay.size,
+    );
+    final selected = await showMenu<String>(
+      context: ctx,
+      color: const Color(0xFF11151D),
+      position: rel,
+      items: [
+        PopupMenuItem(
+          value: 'play',
+          child: Row(children: [
+            const Icon(Icons.play_arrow, size: 16, color: Color(0xFF8A5BFF)),
+            const SizedBox(width: 8),
+            Text('Spela $label'),
+          ]),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'delete',
+          child: Row(children: [
+            const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Text('Radera $label', style: const TextStyle(color: Colors.redAccent)),
+          ]),
+        ),
+      ],
+    );
+    if (!mounted) return;
+    if (selected == 'play') {
+      Navigator.push(context, MaterialPageRoute(
+        builder: (_) => VideoPlayerScreen(
+          mediaId: epId,
+          apiService: widget.apiService,
+          startFromSeconds: 0,
+        ),
+      ));
+    } else if (selected == 'delete') {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (d) => AlertDialog(
+          title: const Text('Flytta till papperskorgen?'),
+          content: Text('Ska $label flyttas till papperskorgen?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Avbryt')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('Radera'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true) {
+        try {
+          await widget.apiService.deleteEpisode(epId);
+          if (mounted) setState(() => _mediaData = null);
+          _fetchDetails();
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Kunde inte radera: $e')),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  Widget _buildSeasonsSection(List<dynamic> episodes) {
+    final Map<int, List<Map<String, dynamic>>> seasons = {};
+    for (final ep in episodes) {
+      final episode = Map<String, dynamic>.from(ep as Map);
+      final season = int.tryParse(episode['season_number']?.toString() ?? '0') ?? 0;
+      seasons.putIfAbsent(season, () => []).add(episode);
+    }
+    final sortedSeasons = seasons.keys.toList()..sort();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(40, 0, 40, 30),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Avsnitt',
+            style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 12),
+          ...sortedSeasons.map((seasonNum) {
+            final eps = seasons[seasonNum]!;
+            final seasonLabel = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.02),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+              ),
+              child: Theme(
+                data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  initiallyExpanded: sortedSeasons.length == 1,
+                  collapsedIconColor: Colors.white38,
+                  iconColor: const Color(0xFF8A5BFF),
+                  // Höger-musknapp på säsongstiteln (admin only)
+                  title: GestureDetector(
+                    onSecondaryTapUp: _isAdmin
+                        ? (d) => _showSeasonContextMenu(context, d.globalPosition, seasonNum, eps)
+                        : null,
+                    child: Text(
+                      '$seasonLabel  ·  ${eps.length} avsnitt',
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15),
+                    ),
+                  ),
+                  children: eps.map((ep) {
+                    final epNum = int.tryParse(ep['episode_number']?.toString() ?? '0') ?? 0;
+                    final epTitle = ep['title']?.toString() ?? 'Avsnitt $epNum';
+                    final epId = ep['id']?.toString();
+                    final label =
+                        'S${seasonNum.toString().padLeft(2, '0')}E${epNum.toString().padLeft(2, '0')}';
+                    return Material(
+                      type: MaterialType.transparency,
+                      // Höger-musknapp på enskilt avsnitt (admin only)
+                      child: GestureDetector(
+                        onSecondaryTapUp: (_isAdmin && epId != null)
+                            ? (d) => _showEpisodeContextMenu(
+                                context, d.globalPosition, epId, label)
+                            : null,
+                        child: ListTile(
+                          contentPadding:
+                              const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                          leading: Container(
+                            width: 52,
+                            height: 32,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.08)),
+                            ),
+                            child: Text(label,
+                                style: const TextStyle(
+                                    color: Color(0xFF8A5BFF),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                          title: Text(epTitle,
+                              style: const TextStyle(color: Colors.white, fontSize: 14),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                          trailing: epId != null
+                              ? IconButton(
+                                  icon: const Icon(Icons.play_circle_outline,
+                                      color: Color(0xFF8A5BFF), size: 28),
+                                  onPressed: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => VideoPlayerScreen(
+                                          mediaId: epId,
+                                          apiService: widget.apiService,
+                                          startFromSeconds: 0,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                )
+                              : null,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   void _showPlaylistDialog() {
     showDialog(
       context: context,
@@ -2879,72 +3373,150 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
     showDialog(
       context: context,
-      builder: (context) {
+      builder: (dialogCtx) {
         return FutureBuilder<Map<String, dynamic>>(
           future: widget.apiService.fetchCollectionItems(collectionId),
-          builder: (context, snapshot) {
+          builder: (_, snapshot) {
             final items = (snapshot.data?['items'] as List<dynamic>?) ?? [];
+            final name = snapshot.data?['collectionName'] as String? ?? collectionName;
 
             return AlertDialog(
               backgroundColor: const Color(0xFF15102A),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
-              title: Text(collectionName,
-                  style: const TextStyle(color: Colors.white)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               content: SizedBox(
-                width: 560,
+                width: 600,
                 child: snapshot.connectionState == ConnectionState.waiting
-                    ? const Center(
-                        child: Padding(
-                            padding: EdgeInsets.all(24),
-                            child: CircularProgressIndicator(
-                                color: Color(0xFF8A5BFF))))
+                    ? const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator(color: Color(0xFF8A5BFF))))
                     : items.isEmpty
-                        ? const Text(
-                            'Inga titlar hittades i den här samlingen.',
-                            style: TextStyle(color: Colors.white70))
+                        ? const Text('Inga titlar hittades.', style: TextStyle(color: Colors.white70))
                         : ListView.separated(
                             shrinkWrap: true,
                             itemCount: items.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(height: 8),
-                            itemBuilder: (context, index) {
+                            separatorBuilder: (_, __) => const Divider(color: Colors.white10, height: 1),
+                            itemBuilder: (ctx2, index) {
                               final item = items[index] as Map<String, dynamic>;
-                              return ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: item['poster_path'] != null
-                                      ? Image.network(item['poster_path'],
-                                          width: 44,
-                                          height: 66,
-                                          fit: BoxFit.cover)
-                                      : Container(
-                                          width: 44,
-                                          height: 66,
-                                          color: Colors.white10,
-                                          child: const Icon(Icons.movie,
-                                              color: Colors.white24)),
+                              final inLibrary = item['in_library'] as bool? ?? false;
+                              final libId = item['id']?.toString();
+                              final tmdbId = item['tmdb_id']?.toString();
+                              final poster = item['poster_path']?.toString();
+                              final title = item['title']?.toString() ?? 'Okänd titel';
+                              final year = item['year']?.toString() ?? '';
+
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Row(
+                                  children: [
+                                    // Poster
+                                    MouseRegion(
+                                      cursor: tmdbId != null ? SystemMouseCursors.click : MouseCursor.defer,
+                                      child: GestureDetector(
+                                        onTap: () {
+                                          if (inLibrary && libId != null) {
+                                            Navigator.pop(dialogCtx);
+                                            widget.onMediaSelected?.call(libId);
+                                          } else if (tmdbId != null) {
+                                            Navigator.pop(dialogCtx);
+                                            widget.onMediaSelected?.call('external_movie_$tmdbId');
+                                          }
+                                        },
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(8),
+                                          child: poster != null
+                                              ? Image.network(poster, width: 48, height: 72, fit: BoxFit.cover)
+                                              : Container(width: 48, height: 72, color: Colors.white10, child: const Icon(Icons.movie, color: Colors.white24)),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 14),
+                                    // Title + year
+                                    Expanded(
+                                      child: MouseRegion(
+                                        cursor: tmdbId != null ? SystemMouseCursors.click : MouseCursor.defer,
+                                        child: GestureDetector(
+                                        onTap: () {
+                                          if (inLibrary && libId != null) {
+                                            Navigator.pop(dialogCtx);
+                                            widget.onMediaSelected?.call(libId);
+                                          } else if (tmdbId != null) {
+                                            Navigator.pop(dialogCtx);
+                                            widget.onMediaSelected?.call('external_movie_$tmdbId');
+                                          }
+                                        },
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(title,
+                                                style: TextStyle(
+                                                    color: inLibrary ? Colors.white : Colors.white54,
+                                                    fontWeight: inLibrary ? FontWeight.w600 : FontWeight.normal)),
+                                            if (year.isNotEmpty)
+                                              Text(year, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                                          ],
+                                        ),
+                                      ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    // Badge or button
+                                    if (inLibrary)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF2ECC71).withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(20),
+                                          border: Border.all(color: const Color(0xFF2ECC71).withValues(alpha: 0.5)),
+                                        ),
+                                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                                          Icon(Icons.check_circle_outline, color: Color(0xFF2ECC71), size: 13),
+                                          SizedBox(width: 4),
+                                          Text('I samling', style: TextStyle(color: Color(0xFF2ECC71), fontSize: 12, fontWeight: FontWeight.w600)),
+                                        ]),
+                                      )
+                                    else
+                                      TextButton(
+                                        onPressed: tmdbId == null ? null : () async {
+                                          Navigator.pop(dialogCtx);
+                                          await widget.apiService.addToWatchlist(
+                                            tmdbId: tmdbId,
+                                            title: title,
+                                            type: 'Movie',
+                                            year: year.isNotEmpty ? int.tryParse(year) : null,
+                                            posterPath: poster,
+                                          );
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(content: Text('"$title" lagd i bevakningslistan!'), backgroundColor: const Color(0xFF8A5BFF)),
+                                            );
+                                          }
+                                        },
+                                        style: TextButton.styleFrom(
+                                          foregroundColor: const Color(0xFF8A5BFF),
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                          side: const BorderSide(color: Color(0xFF8A5BFF), width: 0.5),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                        ),
+                                        child: const Text('+ Bevakningslista', style: TextStyle(fontSize: 12)),
+                                      ),
+                                  ],
                                 ),
-                                title: Text(
-                                    item['title']?.toString() ?? 'Okänd titel',
-                                    style:
-                                        const TextStyle(color: Colors.white)),
-                                subtitle: Text(item['year']?.toString() ?? '',
-                                    style:
-                                        const TextStyle(color: Colors.white54)),
-                                onTap: () {
-                                  Navigator.pop(context);
-                                  final selectedId = item['id']?.toString();
-                                  if (selectedId != null &&
-                                      selectedId.isNotEmpty) {
-                                    widget.onMediaSelected?.call(selectedId);
-                                  }
-                                },
                               );
                             },
                           ),
               ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(dialogCtx),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: 0.08),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    elevation: 0,
+                  ),
+                  child: const Text('Stäng'),
+                ),
+              ],
             );
           },
         );

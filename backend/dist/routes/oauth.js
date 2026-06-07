@@ -146,6 +146,8 @@ async function oauthRoutes(fastify) {
             }
             const data = await response.json();
             saveSetting('TRAKT_ACCESS_TOKEN', data.access_token);
+            if (data.refresh_token)
+                saveSetting('TRAKT_REFRESH_TOKEN', data.refresh_token);
             // Trigger automatic background rating and watch history import immediately
             (0, rating_sync_1.importRatingsFromTrakt)();
             (0, rating_sync_1.importWatchHistoryFromTrakt)();

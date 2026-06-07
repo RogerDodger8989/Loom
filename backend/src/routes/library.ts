@@ -1,9 +1,12 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { mediaScanner } from '../services/scanner';
 import { exec } from 'child_process';
+import * as fs from 'fs';
 import db from '../config/database';
 import crypto from 'crypto';
 import { syncAllExternalData } from '../services/rating_sync';
+import { notifyScanComplete } from '../services/notify';
+import { getScanEvents } from '../services/scan_events';
 
 interface ScanBody {
   path?: string;
@@ -20,15 +23,6 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
   // Triggers media directory scanning in the background
   fastify.post(
     '/api/library/scan',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
-      }]
-    },
     async (request: FastifyRequest<{ Body: ScanBody }>, reply: FastifyReply) => {
       const { path: scanPath, type, preferLocalNfo } = request.body;
 
@@ -62,7 +56,10 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
             itemsUpdated: result.updated
           };
           console.log(`[Library] Background scan finished successfully. Added: ${result.added}, Updated: ${result.updated}`);
-          
+
+          // Skicka notifiering om nya/uppdaterade objekt hittades
+          notifyScanComplete(result.added, result.updated, scanPath).catch(() => {});
+
           // Trigger external sync immediately so new items can get ratings/watch statuses matched
           syncAllExternalData().catch(e => {
             console.error('[Library Scan Sync] Failed to run syncAllExternalData:', e);
@@ -89,15 +86,6 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
   // Returns current scanner state
   fastify.get(
     '/api/library/status',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
-      }]
-    },
     async (request: FastifyRequest, reply: FastifyReply) => {
       return reply.send({
         isScanning,
@@ -110,15 +98,6 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
   // Pops up a 100% native Windows Folder Browser Dialog on the host server
   fastify.get(
     '/api/library/browse-native',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-        }
-      }]
-    },
     async (request: FastifyRequest, reply: FastifyReply) => {
       return new Promise((resolve) => {
         // PowerShell script to launch a native STA FolderBrowserDialog
@@ -153,26 +132,122 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // GET /api/library/scan-events
+  // Poll for real-time scanner events (sinceId for incremental polling)
+  fastify.get(
+    '/api/library/scan-events',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { sinceId } = request.query as { sinceId?: string };
+      const sinceIdNum = sinceId ? parseInt(sinceId, 10) : undefined;
+      return reply.send({ events: getScanEvents(sinceIdNum) });
+    }
+  );
+
   // GET /api/library/paths
-  // Retrieves all configured media library scan paths
+  // Retrieves all configured media library scan paths with media counts
   fastify.get(
     '/api/library/paths',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Access token required' });
-        }
-      }]
-    },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const paths = db.prepare('SELECT * FROM library_paths ORDER BY added_at ASC').all();
-        return reply.send(paths);
+        const paths = db.prepare('SELECT * FROM library_paths ORDER BY added_at ASC').all() as Array<{
+          id: string; path: string; type: string; added_at: string; watch_for_changes: number;
+        }>;
+
+        const withCounts = paths.map(p => {
+          let count = 0;
+          try {
+            if (p.type === 'Movie') {
+              const row = db.prepare(
+                "SELECT COUNT(*) as cnt FROM media_items WHERE type='Movie' AND file_path LIKE ? AND deleted_at IS NULL"
+              ).get(p.path + '%') as { cnt: number };
+              count = row?.cnt ?? 0;
+            } else if (p.type === 'Show') {
+              const row = db.prepare(
+                "SELECT COUNT(*) as cnt FROM episodes WHERE file_path LIKE ?"
+              ).get(p.path + '%') as { cnt: number };
+              count = row?.cnt ?? 0;
+            } else if (p.type === 'Music') {
+              const row = db.prepare(
+                "SELECT COUNT(*) as cnt FROM music_tracks WHERE file_path LIKE ?"
+              ).get(p.path + '%') as { cnt: number };
+              count = row?.cnt ?? 0;
+            }
+          } catch (_) {}
+          return { ...p, media_count: count };
+        });
+
+        return reply.send(withCounts);
       } catch (err) {
         console.error('[Library] Failed to retrieve paths:', err);
         return reply.code(500).send({ error: 'Failed to retrieve library paths' });
+      }
+    }
+  );
+
+  // PUT /api/library/paths/watch
+  // Toggle watch_for_changes on a library path
+  fastify.put(
+    '/api/library/paths/watch',
+    async (request: FastifyRequest<{ Body: { id?: string; watch?: boolean } }>, reply: FastifyReply) => {
+      const { id, watch } = request.body;
+      if (!id) return reply.code(400).send({ error: 'Parameter "id" is required' });
+
+      try {
+        db.prepare('UPDATE library_paths SET watch_for_changes = ? WHERE id = ?').run(watch ? 1 : 0, id);
+        // Restart file watchers
+        setupFileWatchers();
+        return reply.send({ success: true });
+      } catch (err) {
+        console.error('[Library] Failed to toggle watch_for_changes:', err);
+        return reply.code(500).send({ error: 'Failed to update watch setting' });
+      }
+    }
+  );
+
+  // GET /api/library/export
+  // Export watched status and ratings as JSON
+  fastify.get(
+    '/api/library/export',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const items = db.prepare(`
+          SELECT
+            mi.id, mi.title, mi.type, mi.year, mi.imdb_id, mi.tmdb_id,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'watch_status') as watch_status,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'playback_progress') as playback_progress,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'duration') as duration,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'my_rating') as my_rating,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'imdb_rating') as imdb_rating,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'trakt_rating') as trakt_rating,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'simkl_rating') as simkl_rating,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'last_watched_at') as last_watched_at
+          FROM media_items mi
+          WHERE mi.deleted_at IS NULL
+          ORDER BY mi.type, mi.title
+        `).all();
+
+        const format = (request.query as any).format || 'json';
+
+        if (format === 'csv') {
+          const header = 'id,title,type,year,imdb_id,tmdb_id,watch_status,playback_progress,duration,my_rating,imdb_rating,trakt_rating,simkl_rating,last_watched_at';
+          const rows = (items as any[]).map(i =>
+            [i.id, `"${(i.title || '').replace(/"/g, '""')}"`, i.type, i.year, i.imdb_id || '',
+             i.tmdb_id || '', i.watch_status || '', i.playback_progress || '', i.duration || '',
+             i.my_rating || '', i.imdb_rating || '', i.trakt_rating || '', i.simkl_rating || '',
+             i.last_watched_at || ''].join(',')
+          );
+          const csv = [header, ...rows].join('\n');
+          reply.header('Content-Type', 'text/csv; charset=utf-8');
+          reply.header('Content-Disposition', `attachment; filename="loom-export-${new Date().toISOString().slice(0,10)}.csv"`);
+          return reply.send(csv);
+        }
+
+        reply.header('Content-Type', 'application/json');
+        reply.header('Content-Disposition', `attachment; filename="loom-export-${new Date().toISOString().slice(0,10)}.json"`);
+        return reply.send(items);
+      } catch (err) {
+        console.error('[Library] Export failed:', err);
+        return reply.code(500).send({ error: 'Export failed' });
       }
     }
   );
@@ -181,15 +256,6 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
   // Adds a new configured media directory to the SQLite database
   fastify.post(
     '/api/library/paths',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Access token required' });
-        }
-      }]
-    },
     async (request: FastifyRequest<{ Body: { path?: string; type?: string } }>, reply: FastifyReply) => {
       const { path: folderPath, type } = request.body;
 
@@ -220,15 +286,6 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
   // Removes a configured media directory and deletes associated media items from DB (NOT physically)
   fastify.delete(
     '/api/library/paths',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Access token required' });
-        }
-      }]
-    },
     async (request: FastifyRequest<{ Body: { id?: string } }>, reply: FastifyReply) => {
       const { id } = request.body;
 
@@ -291,15 +348,6 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
   // Edits a configured library path and bulk-updates all matching media file paths in the DB
   fastify.put(
     '/api/library/paths',
-    {
-      preValidation: [async (request, reply) => {
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          reply.code(401).send({ error: 'Unauthorized: Access token required' });
-        }
-      }]
-    },
     async (request: FastifyRequest<{ Body: { id?: string; newPath?: string } }>, reply: FastifyReply) => {
       const { id, newPath } = request.body;
 
@@ -348,8 +396,8 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
         db.exec('COMMIT;');
 
         console.log(`[Library] Updated library path ID "${id}" from "${oldPath}" to "${newPath}". Modified ${updatedCount} file paths in DB.`);
-        return reply.send({ 
-          success: true, 
+        return reply.send({
+          success: true,
           message: 'Library path and associated files updated successfully!',
           updatedCount
         });
@@ -360,4 +408,58 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
       }
     }
   );
+
+}
+
+// File watcher registry: path → fs.FSWatcher
+const _watchers = new Map<string, fs.FSWatcher>();
+let _watchDebounce: NodeJS.Timeout | null = null;
+
+export function setupFileWatchers(): void {
+  // Close all existing watchers
+  for (const [, watcher] of _watchers) {
+    try { watcher.close(); } catch (_) {}
+  }
+  _watchers.clear();
+
+  try {
+    const watchPaths = db.prepare(
+      "SELECT id, path, type FROM library_paths WHERE watch_for_changes = 1"
+    ).all() as Array<{ id: string; path: string; type: string }>;
+
+    for (const lp of watchPaths) {
+      if (!fs.existsSync(lp.path)) continue;
+      try {
+        const watcher = fs.watch(lp.path, { recursive: true }, (_event, filename) => {
+          if (!filename) return;
+          const ext = filename.toString().split('.').pop()?.toLowerCase() || '';
+          if (!['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm'].includes(ext)) return;
+          if (_watchDebounce) clearTimeout(_watchDebounce);
+          _watchDebounce = setTimeout(() => {
+            if (isScanning) return;
+            console.log(`[Library] Change detected in watched folder: ${lp.path}`);
+            isScanning = true;
+            lastScanResult = null;
+            mediaScanner.scanLibrary(lp.path, lp.type as 'Movie' | 'Show' | 'Music')
+              .then(result => {
+                isScanning = false;
+                lastScanResult = { success: true, timestamp: new Date().toISOString(), itemsAdded: result.added, itemsUpdated: result.updated };
+                notifyScanComplete(result.added, result.updated, lp.path).catch(() => {});
+                syncAllExternalData().catch(() => {});
+              })
+              .catch(err => {
+                isScanning = false;
+                lastScanResult = { success: false, timestamp: new Date().toISOString(), error: (err as Error).message };
+              });
+          }, 5000);
+        });
+        _watchers.set(lp.path, watcher);
+        console.log(`[Library] Watching for changes: ${lp.path}`);
+      } catch (watchErr) {
+        console.error(`[Library] Failed to watch path ${lp.path}:`, watchErr);
+      }
+    }
+  } catch (err) {
+    console.error('[Library] setupFileWatchers failed:', err);
+  }
 }

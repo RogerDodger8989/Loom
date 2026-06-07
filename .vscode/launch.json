@@ -1,0 +1,52 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Loom Frontend (Flutter)",
+      "request": "launch",
+      "type": "dart",
+      "program": "frontend/lib/main.dart"
+    },
+    {
+      "name": "Debug Backend (ts-node)",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["-r", "ts-node/register"],
+      "args": ["${workspaceFolder}/backend/src/index.ts"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "NODE_ENV": "development",
+        "TS_NODE_TRANSPILE_ONLY": "true"
+      },
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/backend/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug Jest Tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/.bin/jest",
+      "args": ["--runInBand", "--no-coverage"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug Enstaka Testfil",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/.bin/jest",
+      "args": ["--runInBand", "--no-coverage", "${fileBasenameNoExtension}"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

@@ -1,19 +1,30 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'screens/pairing_screen.dart';
+import 'package:window_manager/window_manager.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/login_screen.dart';
 import 'services/api.dart';
 
-void main() {
-  runApp(const LoomApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting('sv_SE');
+  if (!kIsWeb) {
+    await windowManager.ensureInitialized();
+  }
+  final apiService = ApiService();
+  final hasToken = await apiService.initializeSession();
+  runApp(LoomApp(apiService: apiService, hasToken: hasToken));
 }
 
 class LoomApp extends StatelessWidget {
-  const LoomApp({super.key});
+  final ApiService apiService;
+  final bool hasToken;
+
+  const LoomApp({super.key, required this.apiService, required this.hasToken});
 
   @override
   Widget build(BuildContext context) {
-    final ApiService apiService = ApiService();
-
     return MaterialApp(
       title: 'LOOM',
       debugShowCheckedModeBanner: false,
@@ -33,28 +44,9 @@ class LoomApp extends StatelessWidget {
           titleLarge: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.bold),
         ),
       ),
-      home: FutureBuilder<bool>(
-        future: apiService.initializeSession(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              body: Center(
-                child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation(Color(0xFF8A5BFF)),
-                ),
-              ),
-            );
-          }
-          
-          final bool isAlreadyPaired = snapshot.data ?? false;
-          
-          if (isAlreadyPaired) {
-            return DashboardScreen(apiService: apiService);
-          } else {
-            return const PairingScreen();
-          }
-        },
-      ),
+      home: hasToken
+          ? DashboardScreen(apiService: apiService)
+          : LoginScreen(apiService: apiService),
     );
   }
 }

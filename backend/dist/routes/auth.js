@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -6,8 +39,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = authRoutes;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const database_1 = __importDefault(require("../config/database"));
-const pairing_1 = require("../services/pairing");
-const crypto_1 = __importDefault(require("crypto"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const avatarsDir = path.resolve(__dirname, '../../../config/avatars');
+const AUTH_DEBUG_LOG = path.resolve(__dirname, '../../../config/settings_debug.log');
+function dbg(msg, data) {
+    const line = `[${new Date().toISOString()}] ${msg}${data !== undefined ? '\n' + JSON.stringify(data, null, 2) : ''}\n`;
+    fs.appendFileSync(AUTH_DEBUG_LOG, line);
+}
 async function authRoutes(fastify) {
     // 1. POST /api/auth/login
     fastify.post('/api/auth/login', async (request, reply) => {
@@ -44,162 +83,143 @@ async function authRoutes(fastify) {
             return reply.code(500).send({ error: 'Internal server error' });
         }
     });
-    // 2. POST /api/auth/pair/request
-    // Unauthenticated TV app requests a PIN code and Device ID
-    fastify.post('/api/auth/pair/request', async (request, reply) => {
-        // If the device doesn't have a deviceId, we'll generate one
-        const deviceId = request.body?.deviceId || crypto_1.default.randomUUID();
-        const result = pairing_1.pairingService.requestPairing(deviceId);
-        return reply.send({
-            code: result.code,
-            deviceId: result.deviceId,
-            expiresAt: result.expiresAt
-        });
+    // 2. GET /api/auth/profiles — public list of users for profile picker (no passwords)
+    fastify.get('/api/auth/profiles', async (_request, reply) => {
+        const rows = database_1.default.prepare(`SELECT id, username, full_name, role, avatar_path,
+              CASE WHEN pin_hash IS NOT NULL AND pin_hash != '' THEN 1 ELSE 0 END AS has_pin
+       FROM users ORDER BY username ASC`).all();
+        return reply.send(rows);
     });
-    // 3. GET /api/auth/pair/status
-    // TV app polls this endpoint to check if the user confirmed the code
-    fastify.get('/api/auth/pair/status', async (request, reply) => {
-        const { deviceId } = request.query;
-        if (!deviceId) {
-            return reply.code(400).send({ error: 'Query parameter deviceId is required' });
-        }
-        const status = pairing_1.pairingService.checkStatus(deviceId);
-        if (status.paired && status.userId) {
-            // Find the paired user in the DB to sign a JWT
-            try {
-                const user = database_1.default.prepare('SELECT id, username, role FROM users WHERE id = ?').all(status.userId)[0];
-                if (!user) {
-                    return reply.code(404).send({ error: 'Paired user not found' });
+    // 3. GET /api/auth/me — hämta inloggad användares profil
+    fastify.get('/api/auth/me', {
+        preValidation: [async (request, reply) => {
+                try {
+                    await request.jwtVerify();
                 }
-                const token = fastify.jwt.sign({
-                    id: user.id,
-                    username: user.username,
-                    role: user.role
-                });
-                return reply.send({
-                    paired: true,
-                    token,
-                    user: {
-                        id: user.id,
-                        username: user.username,
-                        role: user.role
-                    }
-                });
+                catch {
+                    reply.code(401).send({ error: 'Unauthorized' });
+                }
+            }]
+    }, async (request, reply) => {
+        const caller = request.user;
+        const row = database_1.default.prepare('SELECT id, username, full_name, role, avatar_path FROM users WHERE id = ?').get(caller.id);
+        if (!row)
+            return reply.code(404).send({ error: 'Användaren finns inte' });
+        dbg(`GET /api/auth/me — returnerar profil för user ${caller.id}`, row);
+        return reply.send(row);
+    });
+    // 4. PUT /api/auth/me — byta eget lösenord / namn / användarnamn / PIN
+    fastify.put('/api/auth/me', {
+        preValidation: [async (request, reply) => {
+                try {
+                    await request.jwtVerify();
+                }
+                catch {
+                    reply.code(401).send({ error: 'Unauthorized' });
+                }
+            }]
+    }, async (request, reply) => {
+        const caller = request.user;
+        const { currentPassword, newPassword, full_name, newUsername, pin } = request.body ?? {};
+        const row = database_1.default.prepare('SELECT password_hash FROM users WHERE id = ?').get(caller.id);
+        if (!row)
+            return reply.code(404).send({ error: 'Användaren finns inte' });
+        // Byta lösenord kräver currentPassword
+        if (newPassword !== undefined) {
+            if (!currentPassword)
+                return reply.code(400).send({ error: 'currentPassword krävs för att byta lösenord' });
+            if (!bcryptjs_1.default.compareSync(currentPassword, row.password_hash)) {
+                return reply.code(401).send({ error: 'Fel nuvarande lösenord' });
             }
-            catch (err) {
-                console.error(err);
-                return reply.code(500).send({ error: 'Internal server error pairing' });
-            }
+            if (newPassword.length < 6)
+                return reply.code(400).send({ error: 'Nytt lösenord måste vara minst 6 tecken' });
+            const newHash = bcryptjs_1.default.hashSync(newPassword, 10);
+            database_1.default.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, caller.id);
         }
-        return reply.send({ paired: false });
+        if (full_name !== undefined) {
+            database_1.default.prepare('UPDATE users SET full_name = ? WHERE id = ?').run(full_name || null, caller.id);
+        }
+        if (newUsername !== undefined) {
+            const conflict = database_1.default.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(newUsername, caller.id);
+            if (conflict)
+                return reply.code(409).send({ error: 'Användarnamnet är redan taget' });
+            database_1.default.prepare('UPDATE users SET username = ? WHERE id = ?').run(newUsername, caller.id);
+        }
+        if (pin !== undefined) {
+            const pinHash = pin ? bcryptjs_1.default.hashSync(pin, 10) : null;
+            const pinPlain = pin || null;
+            database_1.default.prepare('UPDATE users SET pin_hash = ?, pin_plain = ? WHERE id = ?').run(pinHash, pinPlain, caller.id);
+        }
+        // Return a fresh JWT so the frontend reflects any username change immediately
+        const updated = database_1.default.prepare('SELECT id, username, role, full_name, avatar_path FROM users WHERE id = ?').get(caller.id);
+        const newToken = fastify.jwt.sign({ id: updated.id, username: updated.username, role: updated.role });
+        dbg(`PUT /api/auth/me — sparade för user ${caller.id}`, { full_name: updated.full_name, username: updated.username });
+        return reply.send({ success: true, token: newToken });
     });
-    // 4. POST /api/auth/pair/confirm
-    // Authenticated user inputs code on device management screen
-    fastify.post('/api/auth/pair/confirm', {
+    // 4. POST /api/auth/me/avatar — ladda upp profilbild
+    fastify.post('/api/auth/me/avatar', {
         preValidation: [async (request, reply) => {
                 try {
                     await request.jwtVerify();
                 }
-                catch (err) {
-                    reply.code(401).send({ error: 'Unauthorized: Authentication required' });
+                catch {
+                    reply.code(401).send({ error: 'Unauthorized' });
                 }
             }]
     }, async (request, reply) => {
-        const { code, deviceName } = request.body;
-        const user = request.user;
-        if (!code) {
-            return reply.code(400).send({ error: 'Pairing code is required' });
-        }
-        const success = pairing_1.pairingService.confirmPairing(code, user.id, deviceName || 'TV App');
-        if (!success) {
-            return reply.code(400).send({ error: 'Invalid or expired pairing code' });
-        }
-        return reply.send({ success: true, message: 'Device paired successfully!' });
+        const caller = request.user;
+        const data = await request.file();
+        if (!data)
+            return reply.code(400).send({ error: 'Ingen fil skickades' });
+        const chunks = [];
+        for await (const chunk of data.file)
+            chunks.push(chunk);
+        const buf = Buffer.concat(chunks);
+        if (!fs.existsSync(avatarsDir))
+            fs.mkdirSync(avatarsDir, { recursive: true });
+        const filePath = path.join(avatarsDir, `${caller.id}.jpg`);
+        fs.writeFileSync(filePath, buf);
+        const avatarUrl = `/api/avatars/${caller.id}.jpg`;
+        database_1.default.prepare('UPDATE users SET avatar_path = ? WHERE id = ?').run(avatarUrl, caller.id);
+        return reply.send({ success: true, avatar_path: avatarUrl });
     });
-    // 5. POST /api/auth/pair/unpair
-    // Unpair/remove a device ID from the database
-    fastify.post('/api/auth/pair/unpair', async (request, reply) => {
-        const { deviceId } = request.body || {};
-        if (!deviceId) {
-            return reply.code(400).send({ error: 'Device ID is required' });
-        }
-        const success = pairing_1.pairingService.unpairDevice(deviceId);
-        if (!success) {
-            return reply.code(500).send({ error: 'Failed to unpair device' });
-        }
-        return reply.send({ success: true, message: 'Device unpaired successfully!' });
+    // 6. GET /api/avatars/:userId.jpg — servera profilbild
+    fastify.get('/api/avatars/:filename', async (request, reply) => {
+        const { filename } = request.params;
+        const filePath = path.join(avatarsDir, filename);
+        if (!fs.existsSync(filePath))
+            return reply.code(404).send({ error: 'Not found' });
+        const buf = fs.readFileSync(filePath);
+        reply.header('Content-Type', 'image/jpeg');
+        reply.header('Cache-Control', 'public, max-age=3600');
+        return reply.send(buf);
     });
-    // 6. GET /api/auth/devices
-    // Authenticated: List all paired/trusted devices
-    fastify.get('/api/auth/devices', {
-        preValidation: [async (request, reply) => {
-                try {
-                    await request.jwtVerify();
-                }
-                catch (err) {
-                    reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-                }
-            }]
-    }, async (request, reply) => {
-        try {
-            const devices = database_1.default.prepare('SELECT device_id, user_id, device_name, paired_at FROM paired_devices ORDER BY paired_at DESC').all();
-            return reply.send(devices);
-        }
-        catch (err) {
-            console.error('[Auth] Failed to retrieve devices:', err);
-            return reply.code(500).send({ error: 'Failed to retrieve devices' });
-        }
+    // 7. POST /api/auth/login-pin — logga in med userId + PIN, returnerar JWT
+    fastify.post('/api/auth/login-pin', async (request, reply) => {
+        const { userId, pin } = request.body ?? {};
+        if (!userId || !pin)
+            return reply.code(400).send({ error: 'userId och pin krävs' });
+        const user = database_1.default.prepare('SELECT id, username, role, pin_hash FROM users WHERE id = ?').get(userId);
+        if (!user)
+            return reply.code(404).send({ error: 'Användaren finns inte' });
+        if (!user.pin_hash)
+            return reply.code(400).send({ error: 'Ingen PIN satt för denna användare' });
+        if (!bcryptjs_1.default.compareSync(pin, user.pin_hash))
+            return reply.code(401).send({ error: 'Fel PIN' });
+        const token = fastify.jwt.sign({ id: user.id, username: user.username, role: user.role });
+        return reply.send({ token, user: { id: user.id, username: user.username, role: user.role } });
     });
-    // 7. PUT /api/auth/devices/rename
-    // Authenticated: Rename a paired device
-    fastify.put('/api/auth/devices/rename', {
-        preValidation: [async (request, reply) => {
-                try {
-                    await request.jwtVerify();
-                }
-                catch (err) {
-                    reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-                }
-            }]
-    }, async (request, reply) => {
-        const { deviceId, deviceName } = request.body || {};
-        if (!deviceId || !deviceName) {
-            return reply.code(400).send({ error: 'deviceId and deviceName are required' });
-        }
-        try {
-            database_1.default.prepare('UPDATE paired_devices SET device_name = ? WHERE device_id = ?').run(deviceName, deviceId);
-            console.log(`[Auth] Renamed device ${deviceId} to "${deviceName}"`);
-            return reply.send({ success: true, message: `Device renamed to "${deviceName}"` });
-        }
-        catch (err) {
-            console.error('[Auth] Failed to rename device:', err);
-            return reply.code(500).send({ error: 'Failed to rename device' });
-        }
-    });
-    // 8. DELETE /api/auth/devices/:deviceId
-    // Authenticated: Remove a specific paired device
-    fastify.delete('/api/auth/devices/:deviceId', {
-        preValidation: [async (request, reply) => {
-                try {
-                    await request.jwtVerify();
-                }
-                catch (err) {
-                    reply.code(401).send({ error: 'Unauthorized: Authentication required' });
-                }
-            }]
-    }, async (request, reply) => {
-        const { deviceId } = request.params;
-        if (!deviceId) {
-            return reply.code(400).send({ error: 'Device ID is required' });
-        }
-        try {
-            database_1.default.prepare('DELETE FROM paired_devices WHERE device_id = ?').run(deviceId);
-            console.log(`[Auth] Removed device ${deviceId}`);
-            return reply.send({ success: true, message: 'Device removed successfully' });
-        }
-        catch (err) {
-            console.error('[Auth] Failed to remove device:', err);
-            return reply.code(500).send({ error: 'Failed to remove device' });
-        }
+    // 8. POST /api/auth/verify-pin — kontrollera PIN (för profilväljaren)
+    fastify.post('/api/auth/verify-pin', async (request, reply) => {
+        const { userId, pin } = request.body ?? {};
+        if (!userId || !pin)
+            return reply.code(400).send({ error: 'userId och pin krävs' });
+        const row = database_1.default.prepare('SELECT pin_hash FROM users WHERE id = ?').get(userId);
+        if (!row)
+            return reply.code(404).send({ error: 'Användaren finns inte' });
+        if (!row.pin_hash)
+            return reply.code(200).send({ valid: true }); // ingen PIN satt = tillåt
+        const valid = bcryptjs_1.default.compareSync(pin, row.pin_hash);
+        return reply.send({ valid });
     });
 }

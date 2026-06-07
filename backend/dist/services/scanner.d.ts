@@ -12,6 +12,26 @@ export declare class ScannerService {
      */
     processMovieFile(filePath: string, preferLocalNfo?: boolean): Promise<'added' | 'updated' | 'skipped'>;
     /**
+     * Parse season+episode numbers from a filename.
+     * Supports: S01E01, s1e1, 1x01, Season 1 Episode 1, etc.
+     */
+    private parseEpisodeNumbers;
+    /**
+     * Determine the show's root folder relative to the library scan path.
+     * Example: libraryPath="C:/Shows", filePath="C:/Shows/Breaking Bad/Season 1/ep.mkv"
+     *   → showDir = "C:/Shows/Breaking Bad"
+     */
+    private getShowDirectory;
+    /**
+     * Search TMDB for a TV show by title and optional year.
+     */
+    private searchTVShow;
+    /**
+     * Process a single TV episode file.
+     * Creates/updates the parent show in media_items and the episode in episodes.
+     */
+    processEpisodeFile(filePath: string, libraryPath: string, preferLocalNfo?: boolean): Promise<'added' | 'updated' | 'skipped'>;
+    /**
      * Helper to parse release versions/editions from filename
      */
     private parseEditionFromFilename;
@@ -25,6 +45,7 @@ export declare class ScannerService {
     private parseYearFromFilename;
     /**
      * Skip non-primary movie assets (trailers, samples, extras) so they are not imported as standalone films.
+     * Optionally also checks user-configured extra skip words.
      */
     private isSupplementalVideo;
     private normalizeRatingValue;

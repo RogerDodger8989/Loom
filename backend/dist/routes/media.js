@@ -42,7 +42,26 @@ const axios_1 = __importDefault(require("axios"));
 const tmdb_1 = require("../services/tmdb");
 const uuid_1 = require("uuid");
 const path_1 = __importDefault(require("path"));
+const fs_1 = __importDefault(require("fs"));
+const child_process_1 = require("child_process");
+const ffprobe_1 = __importDefault(require("@ffprobe-installer/ffprobe"));
 const rating_sync_1 = require("../services/rating_sync");
+function computeTrashPath(filePath) {
+    const libraryPaths = database_1.default.prepare('SELECT path FROM library_paths').all();
+    let libraryBase = '';
+    for (const lp of libraryPaths) {
+        const normalizedLp = lp.path.replace(/[/\\]+$/, '');
+        if (filePath.startsWith(normalizedLp + path_1.default.sep) || filePath.startsWith(normalizedLp + '/')) {
+            libraryBase = normalizedLp;
+            break;
+        }
+    }
+    if (!libraryBase) {
+        libraryBase = path_1.default.dirname(path_1.default.dirname(filePath));
+    }
+    const relative = filePath.substring(libraryBase.length).replace(/^[/\\]/, '');
+    return path_1.default.join(libraryBase, '.trash', relative);
+}
 function normalizeRatingValue(value) {
     if (value === undefined || value === null)
         return null;
@@ -182,26 +201,19 @@ async function fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType) {
     return extractTraktRatings(traktData);
 }
 async function mediaRoutes(fastify) {
-    // Set up auth guard hook for all media routes
-    fastify.addHook('preValidation', async (request, reply) => {
-        try {
-            await request.jwtVerify();
-        }
-        catch (err) {
-            reply.code(401).send({ error: 'Unauthorized: Access token required' });
-        }
-    });
+    const anonymousUser = { id: 'public', username: 'guest', role: 'user' };
     // GET /api/media/movies
     // Retrieves movies with automatic SQL-level content filtering based on user restrictions
     fastify.get('/api/media/movies', async (request, reply) => {
-        const user = request.user;
+        const user = request.user ?? anonymousUser;
         const mergeVersions = request.query.mergeVersions !== 'false'; // Default to true (merged mode)
         try {
             // Query to get all movies that are NOT restricted for this user
             // Excludes matches on GENRE, RATING, or KEYWORD restriction patterns completely at the DB layer
             const moviesQuery = `
-          SELECT mi.*, (SELECT MAX(updated_at) FROM watch_history wh WHERE wh.media_item_id = mi.id) as last_watched_at FROM media_items mi
+          SELECT mi.*, (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'last_watched_at') as last_watched_at FROM media_items mi
           WHERE mi.type = 'Movie'
+          AND mi.deleted_at IS NULL
           AND mi.id NOT IN (
             SELECT mm.media_item_id 
             FROM media_metadata mm
@@ -227,7 +239,7 @@ async function mediaRoutes(fastify) {
                 return {
                     ...movie,
                     metadata,
-                    resolution: metadata.resolution || '1080p'
+                    resolution: metadata.resolution || metadata.video_resolution || null
                 };
             });
             if (mergeVersions) {
@@ -279,11 +291,11 @@ async function mediaRoutes(fastify) {
     // POST /api/media/items/:id/metadata
     // Upsert a metadata key/value for a given media item (used to save user-specific state like ratings)
     fastify.post('/api/media/items/:id/metadata', async (request, reply) => {
-        const user = request.user;
+        const user = request.user ?? anonymousUser;
         const { id } = request.params;
         const { key, value } = request.body;
         try {
-            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
+            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!movie)
                 return reply.code(404).send({ error: 'Media item not found' });
             // Upsert into media_metadata (use JSON-stringified value for complex objects)
@@ -308,7 +320,7 @@ async function mediaRoutes(fastify) {
     fastify.get('/api/media/items/:id/metadata-state', async (request, reply) => {
         const { id } = request.params;
         try {
-            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item)
                 return reply.code(404).send({ error: 'Media item not found' });
             const rows = database_1.default.prepare(`
@@ -341,7 +353,7 @@ async function mediaRoutes(fastify) {
             return reply.code(400).send({ error: 'metadata key is required' });
         }
         try {
-            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item)
                 return reply.code(404).send({ error: 'Media item not found' });
             const existing = database_1.default.prepare(`
@@ -373,7 +385,7 @@ async function mediaRoutes(fastify) {
         const { id } = request.params;
         const body = request.body || {};
         try {
-            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item)
                 return reply.code(404).send({ error: 'Media item not found' });
             const allowed = ['title', 'original_title', 'plot', 'genre', 'year', 'poster_path', 'fanart_path', 'director', 'collection_name', 'collection_id', 'imdb_id', 'tmdb_id'];
@@ -405,12 +417,12 @@ async function mediaRoutes(fastify) {
     // POST /api/media/items/:id/seen
     // Toggle seen status for a given media item, update DB (media_metadata & watch_history) and sync to Trakt/Simkl
     fastify.post('/api/media/items/:id/seen', async (request, reply) => {
-        const user = request.user;
+        const user = request.user ?? anonymousUser;
         const { id } = request.params;
         const { watched, isWatched } = request.body || {};
         const isWatchedBool = watched !== undefined ? watched : (isWatched ?? true);
         try {
-            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
+            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!movie)
                 return reply.code(404).send({ error: 'Media item not found' });
             const statusStr = isWatchedBool ? 'watched' : 'unwatched';
@@ -452,7 +464,7 @@ async function mediaRoutes(fastify) {
     // POST /api/media/items/:id/progress
     // Save play progress (heartbeat/scrobbling) and toggle watched state if progress is >= 90%
     fastify.post('/api/media/items/:id/progress', async (request, reply) => {
-        const user = request.user;
+        const user = request.user ?? anonymousUser;
         const { id } = request.params;
         const { position, duration, positionSeconds, durationSeconds } = request.body || {};
         const posSec = positionSeconds !== undefined ? positionSeconds : (position ?? 0);
@@ -461,17 +473,25 @@ async function mediaRoutes(fastify) {
             return reply.code(400).send({ error: 'Duration must be greater than 0' });
         }
         try {
-            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
+            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!movie)
                 return reply.code(404).send({ error: 'Media item not found' });
             const progressPercent = posSec / durSec;
             const autoWatch = progressPercent >= 0.90;
             // 1. Update playback_progress and duration in media_metadata
             database_1.default.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
           VALUES (?, ?, 'playback_progress', ?)
           ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
         `).run((0, uuid_1.v4)(), movie.id, posSec.toString());
+            // Track last_watched_at only once user has watched ≥ 60 seconds
+            if (posSec >= 60) {
+                database_1.default.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'last_watched_at', datetime('now'))
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run((0, uuid_1.v4)(), movie.id);
+            }
             if (durSec > 0) {
                 database_1.default.prepare(`
             INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
@@ -479,33 +499,44 @@ async function mediaRoutes(fastify) {
             ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
           `).run((0, uuid_1.v4)(), movie.id, durSec.toString());
             }
-            // 2. If >= 90%, update watch_status in media_metadata to 'watched'
+            // 2. If >= 90%, update watch_status and record exact completion time
             let currentStatus = 'unwatched';
             if (autoWatch) {
                 currentStatus = 'watched';
                 database_1.default.prepare(`
-            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
             VALUES (?, ?, 'watch_status', 'watched')
             ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
           `).run((0, uuid_1.v4)(), movie.id);
-            }
-            // 3. Update watch_history
-            const existingHistory = database_1.default.prepare(`
-          SELECT id FROM watch_history 
-          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
-        `).get(user.id, movie.id);
-            if (existingHistory) {
+                // watch_completed_at = when the film was finished; used to sort "Nyligen sedda"
                 database_1.default.prepare(`
-            UPDATE watch_history 
-            SET last_position_seconds = ?, total_duration_seconds = ?, is_watched = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(posSec, durSec, autoWatch ? 1 : 0, existingHistory.id);
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'watch_completed_at', datetime('now'))
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run((0, uuid_1.v4)(), movie.id);
             }
-            else {
-                database_1.default.prepare(`
-            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run((0, uuid_1.v4)(), user.id, movie.id, posSec, durSec, autoWatch ? 1 : 0);
+            // 3. Update watch_history (best-effort — may fail for anonymous users lacking a users row)
+            try {
+                const existingHistory = database_1.default.prepare(`
+            SELECT id FROM watch_history
+            WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+          `).get(user.id, movie.id);
+                if (existingHistory) {
+                    database_1.default.prepare(`
+              UPDATE watch_history
+              SET last_position_seconds = ?, total_duration_seconds = ?, is_watched = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(posSec, durSec, autoWatch ? 1 : 0, existingHistory.id);
+                }
+                else {
+                    database_1.default.prepare(`
+              INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run((0, uuid_1.v4)(), user.id, movie.id, posSec, durSec, autoWatch ? 1 : 0);
+                }
+            }
+            catch (histErr) {
+                request.log.warn(`[Progress] watch_history skipped: ${histErr.message}`);
             }
             // 4. Sync to Trakt/Simkl if threshold met
             if (autoWatch) {
@@ -523,7 +554,7 @@ async function mediaRoutes(fastify) {
     // GET /api/media/items/:id
     // Retrieves full details for a specific media item (Loom Media Details page)
     fastify.get('/api/media/items/:id', async (request, reply) => {
-        const user = request.user;
+        const user = request.user ?? anonymousUser;
         const { id } = request.params;
         try {
             if (id.startsWith('external_')) {
@@ -547,7 +578,7 @@ async function mediaRoutes(fastify) {
                     const isInWatchlist = !!watchlistRow;
                     const watchlistStatus = watchlistRow?.status || null;
                     // Check if we already have it in the library
-                    const localItem = database_1.default.prepare(`SELECT id FROM media_items WHERE tmdb_id = ?`).get(tmdbId);
+                    const localItem = database_1.default.prepare(`SELECT id FROM media_items WHERE tmdb_id = ? AND deleted_at IS NULL`).get(tmdbId);
                     // Local metadata (if movie already exists in library)
                     const localMetaRows = localItem
                         ? database_1.default.prepare(`
@@ -625,6 +656,25 @@ async function mediaRoutes(fastify) {
                             console.error('[External Media Details] Trakt ratings fetch failed:', traktErr);
                         }
                     }
+                    let imdbRating = null;
+                    let imdbVotes = null;
+                    const omdbKey = tmdb_1.tmdbService.getSetting('OMDB_API_KEY');
+                    if (omdbKey && imdbId) {
+                        try {
+                            const omdbRes = await axios_1.default.get(`http://www.omdbapi.com/`, {
+                                params: { apikey: omdbKey, i: imdbId }
+                            });
+                            if (omdbRes.data?.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
+                                imdbRating = omdbRes.data.imdbRating;
+                            }
+                            if (omdbRes.data?.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
+                                imdbVotes = omdbRes.data.imdbVotes;
+                            }
+                        }
+                        catch (omdbErr) {
+                            console.error('[External Media Details] OMDb ratings fetch failed:', omdbErr);
+                        }
+                    }
                     const mergedMyRating = localMeta.my_rating ?? externalState?.my_rating ?? '0';
                     const mergedWatchStatus = localMeta.watch_status ?? externalState?.watch_status ?? 'unwatched';
                     const mergedProgress = localMeta.playback_progress ?? '0';
@@ -638,7 +688,7 @@ async function mediaRoutes(fastify) {
                             origin_country: c.origin_country || null
                         })),
                         production_countries: (tmdbData.production_countries || []),
-                        director: directorItem?.name || '',
+                        director: directorItem ? { name: directorItem.name, id: directorItem.id?.toString() ?? null } : null,
                         writer: crewList.find((c) => c.department === 'Writing')?.name || '',
                         cast: castList,
                         crew: crewList,
@@ -652,7 +702,8 @@ async function mediaRoutes(fastify) {
                             trakt: traktRating,
                             trakt_votes: traktVotes,
                         },
-                        imdb_rating: tmdbData.vote_average ? tmdbData.vote_average.toFixed(1) : 'N/A',
+                        imdb_rating: imdbRating,
+                        imdb_votes: imdbVotes,
                         simkl_rating: simklRating ?? 'N/A',
                         simkl_votes: simklVotes,
                         trakt_rating: traktRating ?? 'N/A',
@@ -677,7 +728,7 @@ async function mediaRoutes(fastify) {
                         imdb_id: imdbId,
                         collection_name: tmdbData.belongs_to_collection?.name || null,
                         collection_id: tmdbData.belongs_to_collection?.id?.toString() || null,
-                        director: directorItem?.name || null,
+                        director: directorItem ? { name: directorItem.name, id: directorItem.id?.toString() ?? null } : null,
                         original_title: tmdbData.original_title || tmdbData.original_name || null,
                         file_path: null, // Signals not in library
                         added_at: new Date().toISOString(),
@@ -693,8 +744,8 @@ async function mediaRoutes(fastify) {
                     return reply.code(500).send({ error: 'Failed to fetch external media details', details: error.message });
                 }
             }
-            // Fetch base media item
-            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ?`).get(id);
+            // Fetch base media item (exclude soft-deleted)
+            const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!movie) {
                 return reply.code(404).send({ error: 'Media item not found' });
             }
@@ -926,17 +977,37 @@ async function mediaRoutes(fastify) {
                 file_path: movie.file_path,
                 added_at: movie.added_at,
                 metadata: metadata, // includes 'cast', 'ratings' etc
+                episodes: movie.type === 'Show'
+                    ? database_1.default.prepare(`
+                SELECT id, season_number, episode_number, title, file_path
+                FROM episodes
+                WHERE show_id = ?
+                ORDER BY season_number ASC, episode_number ASC
+              `).all(movie.id)
+                    : undefined,
                 versions: (() => {
                     try {
                         const sameItems = movie.tmdb_id
-                            ? database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE tmdb_id = ?`).all(movie.tmdb_id)
-                            : database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE title = ?`).all(movie.title);
+                            ? database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE tmdb_id = ? AND deleted_at IS NULL`).all(movie.tmdb_id)
+                            : database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE title = ? AND deleted_at IS NULL`).all(movie.title);
                         return sameItems.map((item) => {
                             const resRow = database_1.default.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'resolution'`).get(item.id);
+                            const verRow = database_1.default.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'release_version'`).get(item.id);
+                            const subRow = database_1.default.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'subtitle_tracks'`).get(item.id);
+                            const audRow = database_1.default.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'audio_tracks'`).get(item.id);
+                            const parseTracks = (row) => { try {
+                                return row ? JSON.parse(row.metadata_value) : [];
+                            }
+                            catch {
+                                return [];
+                            } };
                             return {
                                 id: item.id,
                                 file_path: item.file_path,
-                                resolution: resRow?.metadata_value || '1080p'
+                                resolution: resRow?.metadata_value || '1080p',
+                                release_version: verRow?.metadata_value || '',
+                                subtitle_tracks: parseTracks(subRow),
+                                audio_tracks: parseTracks(audRow),
                             };
                         });
                     }
@@ -944,7 +1015,10 @@ async function mediaRoutes(fastify) {
                         return [{
                                 id: movie.id,
                                 file_path: movie.file_path,
-                                resolution: metadata.resolution || '1080p'
+                                resolution: metadata.resolution || metadata.video_resolution || null,
+                                release_version: metadata.release_version || '',
+                                subtitle_tracks: metadata.subtitle_tracks || [],
+                                audio_tracks: metadata.audio_tracks || [],
                             }];
                     }
                 })()
@@ -958,11 +1032,12 @@ async function mediaRoutes(fastify) {
     // GET /api/media/shows
     // Retrieves shows with SQL-level restriction filters applied
     fastify.get('/api/media/shows', async (request, reply) => {
-        const user = request.user;
+        const user = request.user ?? anonymousUser;
         try {
             const showsQuery = `
           SELECT mi.* FROM media_items mi
           WHERE mi.type = 'Show'
+          AND mi.deleted_at IS NULL
           AND mi.id NOT IN (
             SELECT mm.media_item_id 
             FROM media_metadata mm
@@ -1048,7 +1123,7 @@ async function mediaRoutes(fastify) {
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'duration') as duration,
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'runtime') as runtime
           FROM media_items mi
-          WHERE mi.type = 'Movie'
+          WHERE mi.type = 'Movie' AND mi.deleted_at IS NULL
         `).all();
             const watchlistRows = database_1.default.prepare(`SELECT tmdb_id FROM watchlist`).all();
             const watchlistTmdbIds = new Set(watchlistRows.map(r => r.tmdb_id.toString()));
@@ -1373,30 +1448,248 @@ async function mediaRoutes(fastify) {
             return reply.code(500).send({ error: 'Failed to manual-match media item', details: err.message });
         }
     });
-    // DELETE /api/media/items/:id
+    // DELETE /api/media/items/:id — soft-delete: moves file(s) to .trash, sets deleted_at
     fastify.delete('/api/media/items/:id', async (request, reply) => {
         const { id } = request.params;
         try {
-            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id, type, file_path FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item) {
                 return reply.code(404).send({ error: 'Media item not found' });
             }
-            // Remove related metadata
-            database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ?`).run(id);
-            // Remove item from database (Note: file on disk is NOT physically deleted!)
-            database_1.default.prepare(`DELETE FROM media_items WHERE id = ?`).run(id);
-            return reply.send({ success: true });
+            const moveErrors = [];
+            if (item.type === 'Show') {
+                const episodes = database_1.default.prepare(`SELECT file_path FROM episodes WHERE show_id = ?`).all(id);
+                for (const ep of episodes) {
+                    if (ep.file_path && fs_1.default.existsSync(ep.file_path)) {
+                        try {
+                            const dest = computeTrashPath(ep.file_path);
+                            fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
+                            fs_1.default.renameSync(ep.file_path, dest);
+                        }
+                        catch (e) {
+                            moveErrors.push(ep.file_path + ': ' + e.message);
+                        }
+                    }
+                }
+            }
+            else if (item.file_path && fs_1.default.existsSync(item.file_path)) {
+                const dest = computeTrashPath(item.file_path);
+                fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
+                fs_1.default.renameSync(item.file_path, dest);
+            }
+            database_1.default.prepare(`UPDATE media_items SET deleted_at = datetime('now') WHERE id = ?`).run(id);
+            return reply.send({ success: true, moveErrors: moveErrors.length ? moveErrors : undefined });
         }
         catch (err) {
             console.error(err);
             return reply.code(500).send({ error: 'Failed to delete media item', details: err.message });
         }
     });
+    // DELETE /api/media/episodes/:id — soft-delete a single episode
+    fastify.delete('/api/media/episodes/:id', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            const ep = database_1.default.prepare(`SELECT id, file_path, show_id FROM episodes WHERE id = ? AND deleted_at IS NULL`).get(id);
+            if (!ep)
+                return reply.code(404).send({ error: 'Episode not found' });
+            if (ep.file_path && fs_1.default.existsSync(ep.file_path)) {
+                const dest = computeTrashPath(ep.file_path);
+                fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
+                fs_1.default.renameSync(ep.file_path, dest);
+            }
+            database_1.default.prepare(`UPDATE episodes SET deleted_at = datetime('now') WHERE id = ?`).run(id);
+            // If show has no remaining episodes soft-delete it too
+            const remaining = database_1.default.prepare(`SELECT COUNT(*) as cnt FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).get(ep.show_id)?.cnt ?? 0;
+            if (remaining === 0) {
+                database_1.default.prepare(`UPDATE media_items SET deleted_at = datetime('now') WHERE id = ?`).run(ep.show_id);
+            }
+            return reply.send({ success: true });
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to delete episode', details: err.message });
+        }
+    });
+    // DELETE /api/media/seasons/:showId/:season — soft-delete all episodes in a season
+    fastify.delete('/api/media/seasons/:showId/:season', async (request, reply) => {
+        const { showId, season } = request.params;
+        const seasonNum = parseInt(season, 10);
+        try {
+            const episodes = database_1.default.prepare(`SELECT id, file_path FROM episodes WHERE show_id = ? AND season_number = ? AND deleted_at IS NULL`).all(showId, seasonNum);
+            if (episodes.length === 0)
+                return reply.code(404).send({ error: 'No episodes found for this season' });
+            const moveErrors = [];
+            for (const ep of episodes) {
+                if (ep.file_path && fs_1.default.existsSync(ep.file_path)) {
+                    try {
+                        const dest = computeTrashPath(ep.file_path);
+                        fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
+                        fs_1.default.renameSync(ep.file_path, dest);
+                    }
+                    catch (e) {
+                        moveErrors.push(ep.file_path + ': ' + e.message);
+                    }
+                }
+            }
+            database_1.default.prepare(`UPDATE episodes SET deleted_at = datetime('now') WHERE show_id = ? AND season_number = ?`).run(showId, seasonNum);
+            // Soft-delete the show if no active episodes remain
+            const remaining = database_1.default.prepare(`SELECT COUNT(*) as cnt FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).get(showId)?.cnt ?? 0;
+            if (remaining === 0) {
+                database_1.default.prepare(`UPDATE media_items SET deleted_at = datetime('now') WHERE id = ?`).run(showId);
+            }
+            return reply.send({ success: true, deleted: episodes.length, moveErrors: moveErrors.length ? moveErrors : undefined });
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to delete season', details: err.message });
+        }
+    });
+    // GET /api/trash — list all soft-deleted items
+    fastify.get('/api/trash', async (_request, reply) => {
+        try {
+            const items = database_1.default.prepare(`
+          SELECT mi.id, mi.title, mi.year, mi.type, mi.file_path, mi.poster_path,
+            mi.plot, mi.genre, mi.added_at, mi.deleted_at,
+            (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'resolution') as resolution
+          FROM media_items mi
+          WHERE mi.deleted_at IS NOT NULL
+          ORDER BY mi.deleted_at DESC
+        `).all();
+            const result = items.map(item => {
+                if (item.type === 'Show') {
+                    const episodes = database_1.default.prepare(`
+              SELECT id, season_number, episode_number, title, file_path FROM episodes WHERE show_id = ?
+              ORDER BY season_number ASC, episode_number ASC
+            `).all(item.id);
+                    return { ...item, episodes };
+                }
+                return item;
+            });
+            // Also include individually-deleted episodes (not part of a fully-deleted show)
+            const deletedEpisodes = database_1.default.prepare(`
+          SELECT e.id, e.file_path, e.season_number, e.episode_number, e.title as episode_title,
+                 e.deleted_at, m.id as show_id, m.title as show_title, m.poster_path
+          FROM episodes e
+          JOIN media_items m ON e.show_id = m.id
+          WHERE e.deleted_at IS NOT NULL AND m.deleted_at IS NULL
+          ORDER BY e.deleted_at DESC
+        `).all();
+            const episodeItems = deletedEpisodes.map(ep => ({
+                id: ep.id,
+                type: 'Episode',
+                title: ep.show_title,
+                episode_title: ep.episode_title,
+                season_number: ep.season_number,
+                episode_number: ep.episode_number,
+                file_path: ep.file_path,
+                poster_path: ep.poster_path,
+                show_id: ep.show_id,
+                deleted_at: ep.deleted_at,
+            }));
+            return reply.send([...result, ...episodeItems]);
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to fetch trash', details: err.message });
+        }
+    });
+    // POST /api/trash/:id/restore — move file back and clear deleted_at
+    fastify.post('/api/trash/:id/restore', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            // Check if it's an individually-deleted episode first
+            const episode = database_1.default.prepare(`SELECT id, file_path, show_id FROM episodes WHERE id = ? AND deleted_at IS NOT NULL`).get(id);
+            if (episode) {
+                if (episode.file_path) {
+                    const trashPath = computeTrashPath(episode.file_path);
+                    if (fs_1.default.existsSync(trashPath)) {
+                        fs_1.default.mkdirSync(path_1.default.dirname(episode.file_path), { recursive: true });
+                        fs_1.default.renameSync(trashPath, episode.file_path);
+                    }
+                }
+                database_1.default.prepare(`UPDATE episodes SET deleted_at = NULL WHERE id = ?`).run(id);
+                database_1.default.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`).run(episode.show_id);
+                return reply.send({ success: true });
+            }
+            const item = database_1.default.prepare(`SELECT id, type, file_path FROM media_items WHERE id = ? AND deleted_at IS NOT NULL`).get(id);
+            if (!item)
+                return reply.code(404).send({ error: 'Item not found in trash' });
+            const restoreErrors = [];
+            if (item.type === 'Show') {
+                const episodes = database_1.default.prepare(`SELECT file_path FROM episodes WHERE show_id = ?`).all(id);
+                for (const ep of episodes) {
+                    if (ep.file_path) {
+                        const trashPath = computeTrashPath(ep.file_path);
+                        if (fs_1.default.existsSync(trashPath)) {
+                            try {
+                                fs_1.default.mkdirSync(path_1.default.dirname(ep.file_path), { recursive: true });
+                                fs_1.default.renameSync(trashPath, ep.file_path);
+                            }
+                            catch (e) {
+                                restoreErrors.push(trashPath + ': ' + e.message);
+                            }
+                        }
+                    }
+                }
+            }
+            else if (item.file_path) {
+                const trashPath = computeTrashPath(item.file_path);
+                if (fs_1.default.existsSync(trashPath)) {
+                    fs_1.default.mkdirSync(path_1.default.dirname(item.file_path), { recursive: true });
+                    fs_1.default.renameSync(trashPath, item.file_path);
+                }
+            }
+            database_1.default.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ?`).run(id);
+            return reply.send({ success: true, restoreErrors: restoreErrors.length ? restoreErrors : undefined });
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to restore item', details: err.message });
+        }
+    });
+    // DELETE /api/trash/:id/permanent — permanently delete from disk + database
+    fastify.delete('/api/trash/:id/permanent', async (request, reply) => {
+        const { id } = request.params;
+        try {
+            const item = database_1.default.prepare(`SELECT id, type, file_path FROM media_items WHERE id = ? AND deleted_at IS NOT NULL`).get(id);
+            if (!item)
+                return reply.code(404).send({ error: 'Item not found in trash' });
+            if (item.type === 'Show') {
+                const episodes = database_1.default.prepare(`SELECT file_path FROM episodes WHERE show_id = ?`).all(id);
+                for (const ep of episodes) {
+                    if (ep.file_path) {
+                        const trashPath = computeTrashPath(ep.file_path);
+                        if (fs_1.default.existsSync(trashPath)) {
+                            try {
+                                fs_1.default.unlinkSync(trashPath);
+                            }
+                            catch (e) { }
+                        }
+                    }
+                }
+            }
+            else if (item.file_path) {
+                const trashPath = computeTrashPath(item.file_path);
+                if (fs_1.default.existsSync(trashPath)) {
+                    try {
+                        fs_1.default.unlinkSync(trashPath);
+                    }
+                    catch (e) { }
+                }
+            }
+            database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ?`).run(id);
+            database_1.default.prepare(`DELETE FROM watch_history WHERE media_item_id = ?`).run(id);
+            if (item.type === 'Show') {
+                database_1.default.prepare(`DELETE FROM episodes WHERE show_id = ?`).run(id);
+            }
+            database_1.default.prepare(`DELETE FROM media_items WHERE id = ?`).run(id);
+            return reply.send({ success: true });
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'Failed to permanently delete item', details: err.message });
+        }
+    });
     // POST /api/media/items/:id/refresh
     fastify.post('/api/media/items/:id/refresh', async (request, reply) => {
         const { id } = request.params;
         try {
-            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item) {
                 return reply.code(404).send({ error: 'Media item not found' });
             }
@@ -1415,7 +1708,7 @@ async function mediaRoutes(fastify) {
     fastify.post('/api/media/items/:id/unmatch', async (request, reply) => {
         const { id } = request.params;
         try {
-            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item) {
                 return reply.code(404).send({ error: 'Media item not found' });
             }
@@ -1442,7 +1735,7 @@ async function mediaRoutes(fastify) {
     fastify.post('/api/media/items/:id/analyze', async (request, reply) => {
         const { id } = request.params;
         try {
-            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ?`).get(id);
+            const item = database_1.default.prepare(`SELECT id, file_path FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!item) {
                 return reply.code(404).send({ error: 'Media item not found' });
             }
@@ -1460,31 +1753,54 @@ async function mediaRoutes(fastify) {
     fastify.get('/api/media/collections/:collectionId', async (request, reply) => {
         const { collectionId } = request.params;
         try {
-            const items = database_1.default.prepare(`
-          SELECT id, title, year, poster_path, collection_name, collection_id, type, file_path
+            // Library items in this collection
+            const libraryItems = database_1.default.prepare(`
+          SELECT id, title, year, poster_path, tmdb_id
           FROM media_items
-          WHERE collection_id = ?
-          ORDER BY COALESCE(year, 9999) ASC, title ASC
+          WHERE collection_id = ? AND deleted_at IS NULL
+          ORDER BY COALESCE(year, 9999) ASC
         `).all(collectionId);
-            const itemsWithMetadata = items.map(item => {
-                const metadataRows = database_1.default.prepare(`
-            SELECT metadata_key, metadata_value 
-            FROM media_metadata 
-            WHERE media_item_id = ?
-          `).all(item.id);
-                const metadata = {};
-                metadataRows.forEach(row => {
-                    metadata[row.metadata_key] = row.metadata_value;
-                });
+            const libraryByTmdbId = new Map(libraryItems.map(i => [i.tmdb_id?.toString(), i]));
+            // Fetch full collection from TMDB
+            const tmdbKey = database_1.default.prepare(`SELECT value FROM system_settings WHERE key='TMDB_API_KEY'`).get()?.value;
+            let allParts = [];
+            let collectionName = '';
+            if (tmdbKey) {
+                try {
+                    const axios = require('axios');
+                    const tmdbResp = await axios.get(`https://api.themoviedb.org/3/collection/${collectionId}`, {
+                        params: { api_key: tmdbKey, language: 'sv-SE' },
+                    });
+                    collectionName = tmdbResp.data.name ?? '';
+                    allParts = (tmdbResp.data.parts ?? []).sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''));
+                }
+                catch { }
+            }
+            // If TMDB failed, fall back to library items only
+            if (allParts.length === 0) {
+                allParts = libraryItems.map(i => ({
+                    id: i.tmdb_id,
+                    title: i.title,
+                    release_date: i.year ? `${i.year}-01-01` : '',
+                    poster_path: i.poster_path?.startsWith('http') ? null : i.poster_path,
+                }));
+            }
+            const items = allParts.map((part) => {
+                const tmdbId = part.id?.toString();
+                const libItem = libraryByTmdbId.get(tmdbId);
+                const posterPath = libItem?.poster_path
+                    ?? (part.poster_path ? `https://image.tmdb.org/t/p/w200${part.poster_path}` : null);
                 return {
-                    ...item,
-                    metadata,
+                    id: libItem?.id ?? null,
+                    tmdb_id: tmdbId,
+                    title: part.title ?? libItem?.title ?? '',
+                    year: part.release_date ? new Date(part.release_date).getFullYear() : (libItem?.year ?? null),
+                    poster_path: posterPath,
+                    in_library: !!libItem,
+                    release_date: part.release_date ?? null,
                 };
             });
-            return reply.send({
-                collectionId,
-                items: itemsWithMetadata,
-            });
+            return reply.send({ collectionId, collectionName, items });
         }
         catch (error) {
             request.log.error(error);
@@ -1495,7 +1811,7 @@ async function mediaRoutes(fastify) {
     fastify.get('/api/media/:id/similar', async (request, reply) => {
         const { id } = request.params;
         try {
-            const movie = database_1.default.prepare(`SELECT tmdb_id, title FROM media_items WHERE id = ?`).get(id);
+            const movie = database_1.default.prepare(`SELECT tmdb_id, title FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!movie || !movie.tmdb_id) {
                 return reply.code(404).send({ error: 'Movie not found or no TMDB ID' });
             }
@@ -1530,6 +1846,7 @@ async function mediaRoutes(fastify) {
             const libraryRows = database_1.default.prepare(`
           SELECT id, title, year, poster_path, tmdb_id
           FROM media_items
+          WHERE deleted_at IS NULL
           ORDER BY year DESC
         `).all();
             const libraryItems = libraryRows.filter((row) => {
@@ -1642,5 +1959,135 @@ async function mediaRoutes(fastify) {
         catch (err) {
             return reply.code(500).send({ error: 'Failed to remove from watchlist', details: err.message });
         }
+    });
+    // GET /api/media/items/:id/tech-info — Run ffprobe on-demand and return structured technical info
+    fastify.get('/api/media/items/:id/tech-info', async (request, reply) => {
+        const { id } = request.params;
+        const item = database_1.default.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id);
+        if (!item)
+            return reply.code(404).send({ error: 'Media item not found' });
+        try {
+            const info = await probeTechInfo(item.file_path);
+            return reply.send(info);
+        }
+        catch (err) {
+            return reply.code(500).send({ error: 'ffprobe failed', details: err.message });
+        }
+    });
+}
+function probeTechInfo(filePath) {
+    return new Promise((resolve, reject) => {
+        const escaped = filePath.replace(/"/g, '\\"');
+        const cmd = `"${ffprobe_1.default.path}" -v quiet -print_format json -show_streams -show_format "${escaped}"`;
+        (0, child_process_1.exec)(cmd, { timeout: 20000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+            if (err)
+                return reject(err);
+            try {
+                const probe = JSON.parse(stdout);
+                const streams = probe.streams || [];
+                const format = probe.format || {};
+                const coverArtCodecs = ['mjpeg', 'png', 'bmp', 'gif', 'tiff', 'webp'];
+                const videoStream = streams.find((s) => s.codec_type === 'video' && !coverArtCodecs.includes((s.codec_name || '').toLowerCase()));
+                const audioStream = streams.find((s) => s.codec_type === 'audio');
+                // Frame rate fraction → decimal string (e.g. "24000/1001" → "23.976")
+                let frameRate = null;
+                if (videoStream?.r_frame_rate) {
+                    const parts = videoStream.r_frame_rate.split('/');
+                    if (parts.length === 2) {
+                        const fps = parseFloat(parts[0]) / parseFloat(parts[1]);
+                        frameRate = fps.toFixed(3).replace(/\.?0+$/, '');
+                    }
+                }
+                // Chroma subsampling from pix_fmt
+                const pixFmt = videoStream?.pix_fmt || '';
+                let chromaSubsampling = null;
+                if (pixFmt.includes('420'))
+                    chromaSubsampling = '4:2:0';
+                else if (pixFmt.includes('422'))
+                    chromaSubsampling = '4:2:2';
+                else if (pixFmt.includes('444'))
+                    chromaSubsampling = '4:4:4';
+                else if (pixFmt.includes('400'))
+                    chromaSubsampling = '4:0:0';
+                // Resolution label
+                const w = videoStream?.width || 0;
+                const h = videoStream?.height || 0;
+                let resolution = null;
+                if (w >= 3200 || h >= 2000)
+                    resolution = '4K';
+                else if (w >= 1900 || h >= 1000)
+                    resolution = '1080p';
+                else if (w >= 1100 || h >= 650)
+                    resolution = '720p';
+                else if (w >= 700 || h >= 420)
+                    resolution = '480p';
+                else if (h > 0)
+                    resolution = `${h}p`;
+                // Container name
+                const fmtName = (format.format_name || '').split(',')[0];
+                const containerMap = {
+                    matroska: 'MKV', webm: 'WebM', mov: 'MOV', mp4: 'MP4',
+                    avi: 'AVI', mpeg: 'MPEG', mpegts: 'TS', flv: 'FLV', ogg: 'OGG',
+                };
+                const container = containerMap[fmtName] || fmtName.toUpperCase();
+                // Video level (e.g. 41 → "4.1")
+                let level = null;
+                if (videoStream?.level != null) {
+                    const lvl = parseInt(String(videoStream.level), 10);
+                    if (!isNaN(lvl) && lvl > 0)
+                        level = `${Math.floor(lvl / 10)}.${lvl % 10}`;
+                }
+                // Aspect ratio as decimal (e.g. 1920/1040 → "1.85")
+                let aspectRatio = null;
+                if (w > 0 && h > 0)
+                    aspectRatio = (w / h).toFixed(2).replace(/\.?0+$/, '');
+                // Duration
+                const durationSec = parseFloat(format.duration || '0');
+                const durH = Math.floor(durationSec / 3600);
+                const durM = Math.floor((durationSec % 3600) / 60);
+                const durS = Math.floor(durationSec % 60);
+                const durationStr = durH > 0
+                    ? `${durH}:${String(durM).padStart(2, '0')}:${String(durS).padStart(2, '0')}`
+                    : `${durM}:${String(durS).padStart(2, '0')}`;
+                resolve({
+                    filename: path_1.default.basename(filePath),
+                    file_path: filePath,
+                    file_size_bytes: parseInt(format.size || '0', 10),
+                    duration_str: durationStr,
+                    duration_seconds: Math.floor(durationSec),
+                    total_bitrate_kbps: Math.round(parseInt(format.bit_rate || '0', 10) / 1000),
+                    container,
+                    resolution,
+                    video: videoStream ? {
+                        codec: (videoStream.codec_name || '').toUpperCase(),
+                        profile: videoStream.profile || null,
+                        level,
+                        width: videoStream.width || null,
+                        height: videoStream.height || null,
+                        coded_width: videoStream.coded_width || null,
+                        coded_height: videoStream.coded_height || null,
+                        frame_rate: frameRate,
+                        bitrate_kbps: Math.round(parseInt(videoStream.bit_rate || '0', 10) / 1000) || null,
+                        bit_depth: parseInt(String(videoStream.bits_per_raw_sample || '0'), 10) || null,
+                        pix_fmt: pixFmt || null,
+                        chroma_subsampling: chromaSubsampling,
+                        chroma_location: videoStream.chroma_location || null,
+                        aspect_ratio: aspectRatio,
+                    } : null,
+                    audio: streams
+                        .filter((s) => s.codec_type === 'audio')
+                        .map((s) => ({
+                        codec: (s.codec_name || '').toUpperCase(),
+                        profile: s.profile || (s.codec_name || '').toUpperCase(),
+                        language: s.tags?.language || 'und',
+                        channels: s.channels || 2,
+                        bitrate_kbps: Math.round(parseInt(s.bit_rate || '0', 10) / 1000) || null,
+                    })),
+                });
+            }
+            catch (e) {
+                reject(e);
+            }
+        });
     });
 }

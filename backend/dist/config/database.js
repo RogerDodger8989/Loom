@@ -40,15 +40,30 @@ const node_sqlite_1 = require("node:sqlite");
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const isTest = process.env.NODE_ENV === 'test';
 const configDir = path.resolve(__dirname, '../../../config');
-if (!fs.existsSync(configDir)) {
+if (!isTest && !fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
 }
-const dbPath = path.join(configDir, 'loom.db');
-console.log(`[Database] Initializing native SQLite database at: ${dbPath}`);
+const dbPath = process.env.DB_PATH ?? (isTest ? ':memory:' : path.join(configDir, 'loom.db'));
+const restorePath = path.join(configDir, 'loom.db.restore');
+// If a restore file exists, swap it in before opening (skip for in-memory/test)
+if (!isTest && dbPath !== ':memory:' && fs.existsSync(restorePath)) {
+    try {
+        fs.copyFileSync(restorePath, dbPath);
+        fs.unlinkSync(restorePath);
+        console.log('[Database] Restored database from loom.db.restore');
+    }
+    catch (e) {
+        console.error('[Database] Failed to apply restore file:', e);
+    }
+}
+if (!isTest)
+    console.log(`[Database] Initializing native SQLite database at: ${dbPath}`);
 const db = new node_sqlite_1.DatabaseSync(dbPath);
-// Enable WAL-mode (Write-Ahead Logging) and foreign keys using standard SQLite PRAGMAs
-db.exec('PRAGMA journal_mode = WAL;');
+// Enable WAL-mode only for file-based databases (not supported in :memory:)
+if (dbPath !== ':memory:')
+    db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 // Initialize database schema
 db.exec(`
@@ -98,7 +113,8 @@ db.exec(`
       director TEXT,
       original_title TEXT,
       file_path TEXT,
-      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      deleted_at DATETIME DEFAULT NULL
   );
   
 
@@ -108,7 +124,8 @@ db.exec(`
       season_number INTEGER NOT NULL,
       episode_number INTEGER NOT NULL,
       title TEXT,
-      file_path TEXT NOT NULL
+      file_path TEXT NOT NULL,
+      air_date TEXT
   );
 
   CREATE TABLE IF NOT EXISTS episode_markers (
@@ -188,6 +205,32 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_external_media_state_imdb_id ON external_media_state (imdb_id);
+
+  -- Markörer för intro/outro/kapitel (stöder både filmer och avsnitt)
+  CREATE TABLE IF NOT EXISTS media_markers (
+      id TEXT PRIMARY KEY,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE CASCADE,
+      episode_id TEXT REFERENCES episodes(id) ON DELETE CASCADE,
+      marker_type TEXT NOT NULL,
+      start_time_seconds REAL NOT NULL,
+      end_time_seconds REAL NOT NULL,
+      title TEXT,
+      source TEXT DEFAULT 'manual'
+  );
+  CREATE INDEX IF NOT EXISTS idx_media_markers_media_item ON media_markers(media_item_id);
+  CREATE INDEX IF NOT EXISTS idx_media_markers_episode ON media_markers(episode_id);
+
+  -- Ljudfingeravtryck för auto-intro-detektion (Goertzel-baserat)
+  CREATE TABLE IF NOT EXISTS audio_fingerprints (
+      id TEXT PRIMARY KEY,
+      episode_id TEXT REFERENCES episodes(id) ON DELETE CASCADE,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE CASCADE,
+      fingerprint_data TEXT NOT NULL,
+      duration_seconds REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_audio_fingerprints_episode ON audio_fingerprints(episode_id);
+  CREATE INDEX IF NOT EXISTS idx_audio_fingerprints_show ON audio_fingerprints(media_item_id);
 `);
 console.log('[Database] Database tables initialized successfully.');
 // Seed a default admin user if the table is empty
@@ -222,7 +265,8 @@ const columnsToAdd = [
     'collection_name TEXT',
     'collection_id TEXT',
     'director TEXT',
-    'original_title TEXT'
+    'original_title TEXT',
+    'deleted_at DATETIME DEFAULT NULL'
 ];
 for (const col of columnsToAdd) {
     try {
@@ -232,4 +276,44 @@ for (const col of columnsToAdd) {
         // Ignorera fel om kolumnen redan finns
     }
 }
+try {
+    db.exec('ALTER TABLE episodes ADD COLUMN air_date TEXT;');
+}
+catch (e) {
+    // Ignorera om kolumnen redan finns
+}
+try {
+    db.exec('ALTER TABLE episodes ADD COLUMN deleted_at TEXT DEFAULT NULL;');
+}
+catch (e) {
+    // Ignorera om kolumnen redan finns
+}
+try {
+    db.exec('ALTER TABLE media_items ADD COLUMN release_date TEXT;');
+}
+catch (e) {
+    // Ignorera om kolumnen redan finns
+}
+try {
+    db.exec('ALTER TABLE library_paths ADD COLUMN watch_for_changes INTEGER DEFAULT 0;');
+}
+catch (e) {
+    // Ignorera om kolumnen redan finns
+}
+try {
+    db.exec('ALTER TABLE users ADD COLUMN full_name TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE users ADD COLUMN pin_hash TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE users ADD COLUMN avatar_path TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE users ADD COLUMN pin_plain TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
 exports.default = db;

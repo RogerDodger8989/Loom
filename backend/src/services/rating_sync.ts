@@ -1,6 +1,49 @@
 import axios from 'axios';
 import { tmdbService } from './tmdb';
 
+// Refresh Trakt access token using stored refresh_token.
+// Returns new access token on success, null on failure.
+async function refreshTraktToken(): Promise<string | null> {
+  const clientId     = tmdbService.getSetting('TRAKT_API_KEY');
+  const clientSecret = tmdbService.getSetting('TRAKT_CLIENT_SECRET');
+  const refreshToken = tmdbService.getSetting('TRAKT_REFRESH_TOKEN');
+  if (!clientId || !clientSecret || !refreshToken) return null;
+  try {
+    const res = await fetch('https://api.trakt.tv/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Loom-Media-Server/1.0.0' },
+      body: JSON.stringify({ refresh_token: refreshToken, client_id: clientId, client_secret: clientSecret, grant_type: 'refresh_token' }),
+    });
+    if (!res.ok) { console.error('[Trakt] Token refresh failed:', res.status); return null; }
+    const data = await res.json() as { access_token: string; refresh_token: string };
+    tmdbService.setSetting('TRAKT_ACCESS_TOKEN', data.access_token);
+    if (data.refresh_token) tmdbService.setSetting('TRAKT_REFRESH_TOKEN', data.refresh_token);
+    console.log('[Trakt] Access token refreshed successfully.');
+    return data.access_token;
+  } catch (e) {
+    console.error('[Trakt] Token refresh error:', e);
+    return null;
+  }
+}
+
+// Make a Trakt API GET request, auto-refreshing token on 401.
+async function traktGet(url: string, headers: Record<string, string>): Promise<any> {
+  try {
+    const res = await axios.get(url, { headers });
+    return res.data;
+  } catch (err: any) {
+    if (err?.response?.status === 401) {
+      console.log('[Trakt] 401 received — attempting token refresh...');
+      const newToken = await refreshTraktToken();
+      if (!newToken) throw err;
+      const newHeaders = { ...headers, Authorization: `Bearer ${newToken}` };
+      const res = await axios.get(url, { headers: newHeaders });
+      return res.data;
+    }
+    throw err;
+  }
+}
+
 export let syncStatus = {
   isSyncing: false,
   progress: 0,
@@ -295,9 +338,8 @@ export async function importRatingsFromTrakt(): Promise<number> {
       Authorization: `Bearer ${traktAccessToken}`,
     };
 
-    // Fetch rated movies from Trakt
-    const response = await axios.get('https://api.trakt.tv/sync/ratings/movies', { headers });
-    const ratedMovies = response.data as Array<{ rating: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
+    // Fetch rated movies from Trakt (auto-refreshes token on 401)
+    const ratedMovies = await traktGet('https://api.trakt.tv/sync/ratings/movies', headers) as Array<{ rating: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
 
     if (!Array.isArray(ratedMovies)) return 0;
 
@@ -437,8 +479,7 @@ export async function importWatchHistoryFromTrakt(): Promise<number> {
       Authorization: `Bearer ${traktAccessToken}`,
     };
 
-    const response = await axios.get('https://api.trakt.tv/sync/watched/movies', { headers });
-    const watchedMovies = response.data as Array<{ movie: { ids: { imdb?: string; tmdb?: number } } }>;
+    const watchedMovies = await traktGet('https://api.trakt.tv/sync/watched/movies', headers) as Array<{ movie: { ids: { imdb?: string; tmdb?: number } } }>;
 
     if (!Array.isArray(watchedMovies)) return 0;
 

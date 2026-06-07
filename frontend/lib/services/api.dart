@@ -1,29 +1,40 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:html' as html;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 
 class ApiService {
   // Configured to point to the Fastify local server.
   final String baseUrl = 'http://localhost:8080';
-  
+
   String? _token;
 
   String? get token => _token;
 
-  // ---- Local Storage helpers (direct browser localStorage) ----
+  // Remembers the last-used statistics tab across settings sessions (in-memory only).
+  int lastStatsTabIndex = 0;
+
+  // ---- Local Storage helpers (shared_preferences) ----
+
+  SharedPreferences? _prefs;
+
+  Future<void> initStorage() async {
+    _prefs = await SharedPreferences.getInstance();
+    // Load initial token if exists
+    _token = _readStorage('loom_token');
+  }
 
   String? _readStorage(String key) {
-    return html.window.localStorage[key];
+    return _prefs?.getString(key);
   }
 
-  void _writeStorage(String key, String value) {
-    html.window.localStorage[key] = value;
+  Future<void> _writeStorage(String key, String value) async {
+    await _prefs?.setString(key, value);
   }
 
-  void _removeStorage(String key) {
-    html.window.localStorage.remove(key);
+  Future<void> _removeStorage(String key) async {
+    await _prefs?.remove(key);
   }
 
   // ---- Device ID management ----
@@ -32,13 +43,13 @@ class ApiService {
     String? deviceId = _readStorage('loom_device_id');
     if (deviceId == null || deviceId.isEmpty) {
       deviceId = 'device_${DateTime.now().millisecondsSinceEpoch}_${1000 + (DateTime.now().microsecond % 9000)}';
-      _writeStorage('loom_device_id', deviceId);
+      unawaited(_writeStorage('loom_device_id', deviceId));
     }
     return deviceId;
   }
 
-  void saveDeviceId(String deviceId) {
-    _writeStorage('loom_device_id', deviceId);
+  Future<void> saveDeviceId(String deviceId) async {
+    await _writeStorage('loom_device_id', deviceId);
   }
 
   // ---- Token management ----
@@ -48,63 +59,39 @@ class ApiService {
     return _token != null;
   }
 
-  void saveToken(String token) {
+  Future<void> saveToken(String token) async {
     _token = token;
-    _writeStorage('loom_token', token);
+    await _writeStorage('loom_token', token);
   }
 
-  void clearToken() {
+  Future<void> clearToken() async {
     _token = null;
-    _removeStorage('loom_token');
+    await _removeStorage('loom_token');
   }
 
-  /// Unauthenticated: Request a temporary pairing PIN and unique Device ID
-  Future<Map<String, dynamic>> requestPairingCode({String? deviceId}) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/auth/pair/request'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        if (deviceId != null) 'deviceId': deviceId,
-      }),
-    );
-
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      throw Exception('Failed to request pairing code: ${response.body}');
-    }
+  Future<void> saveSettingsCache(Map<String, dynamic> settings) async {
+    await _writeStorage('loom_settings_cache', jsonEncode(settings));
   }
 
-  /// Unauthenticated: Poll pairing status for a given Device ID.
-  /// If pairing was approved by the admin, returns the user credentials and JWT.
-  Future<Map<String, dynamic>> checkPairingStatus(String deviceId) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/auth/pair/status?deviceId=$deviceId'),
-      headers: {'Content-Type': 'application/json'},
-    );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      if (data['paired'] == true && data['token'] != null) {
-        saveToken(data['token']);
+  Map<String, dynamic>? loadSettingsCache() {
+    final raw = _readStorage('loom_settings_cache');
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry(key.toString(), value));
       }
-      return data;
-    } else {
-      throw Exception('Failed to check pairing status: ${response.body}');
-    }
+    } catch (_) {}
+    return null;
   }
 
-  /// Authenticated: Trigger a folder scan for movies, shows, or music tracks.
+  /// Trigger a folder scan for movies, shows, or music tracks.
   Future<Map<String, dynamic>> triggerLibraryScan(String folderPath, String type, {bool preferLocalNfo = true}) async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.post(
       Uri.parse('$baseUrl/api/library/scan'),
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
       },
       body: jsonEncode({
         'path': folderPath,
@@ -120,18 +107,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Open server-side Windows Folder Browser Dialog to select a path
+  /// Open server-side Windows Folder Browser Dialog to select a path
   Future<Map<String, dynamic>> browseNativeDirectory() async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/library/browse-native'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -143,15 +123,9 @@ class ApiService {
 
   /// Authenticated: Fetch Global Settings
   Future<Map<String, dynamic>> getSettings() async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-    
     final response = await http.get(
       Uri.parse('$baseUrl/api/settings'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
     );
     
     if (response.statusCode == 200) {
@@ -162,15 +136,11 @@ class ApiService {
   }
 
   Future<void> updateSettings(Map<String, String> newSettings) async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-    
     final response = await http.put(
       Uri.parse('$baseUrl/api/settings'),
       headers: {
-        'Authorization': 'Bearer $_token',
         'Content-Type': 'application/json',
+        if (_token != null) 'Authorization': 'Bearer $_token',
       },
       body: jsonEncode(newSettings),
     );
@@ -180,17 +150,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Fetch movies library
+  /// Fetch movies library
   Future<List<dynamic>> fetchMovies({bool mergeVersions = true}) async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/movies?mergeVersions=$mergeVersions'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -201,15 +165,9 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> fetchMediaDetails(String id) async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/items/$id'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -219,15 +177,17 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> fetchTechInfo(String id) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/media/items/$id/tech-info'));
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to fetch tech info: ${response.body}');
+  }
+
   /// Authenticated: Upsert media metadata (general-purpose)
   Future<void> saveMediaMetadata(String id, String key, dynamic value) async {
-    if (_token == null) throw Exception('Not authenticated');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/metadata'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({'key': key, 'value': value}),
     );
     if (response.statusCode != 200) {
@@ -236,12 +196,9 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> fetchMediaMetadataState(String id) async {
-    if (_token == null) throw Exception('Not authenticated');
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/items/$id/metadata-state'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -250,13 +207,9 @@ class ApiService {
   }
 
   Future<void> setMediaMetadataLock(String id, String key, bool isLocked) async {
-    if (_token == null) throw Exception('Not authenticated');
     final response = await http.put(
       Uri.parse('$baseUrl/api/media/items/$id/metadata-lock'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({'key': key, 'isLocked': isLocked}),
     );
     if (response.statusCode != 200) {
@@ -265,13 +218,9 @@ class ApiService {
   }
 
   Future<void> updateMediaItemFields(String id, Map<String, dynamic> fields) async {
-    if (_token == null) throw Exception('Not authenticated');
     final response = await http.patch(
       Uri.parse('$baseUrl/api/media/items/$id'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode(fields),
     );
     if (response.statusCode != 200) {
@@ -286,13 +235,9 @@ class ApiService {
 
   /// Authenticated: Toggle seen/watched status for a media item
   Future<Map<String, dynamic>> toggleSeenStatus(String id, bool isWatched) async {
-    if (_token == null) throw Exception('Not authenticated');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/seen'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({'watched': isWatched}),
     );
     if (response.statusCode == 200) {
@@ -304,13 +249,9 @@ class ApiService {
 
   /// Authenticated: Report playback progress (heartbeat/scrobble)
   Future<Map<String, dynamic>> reportPlaybackProgress(String id, int positionSeconds, int durationSeconds) async {
-    if (_token == null) throw Exception('Not authenticated');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/progress'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({
         'position': positionSeconds,
         'duration': durationSeconds,
@@ -325,15 +266,9 @@ class ApiService {
 
 
   Future<Map<String, dynamic>> fetchCollectionItems(String collectionId) async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/collections/$collectionId'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -344,15 +279,9 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> fetchSimilarItems(String mediaId) async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/$mediaId/similar'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -363,15 +292,9 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> fetchPersonDetails(String id) async {
-    if (_token == null) {
-      throw Exception('Not authenticated');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/people/$id'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -381,18 +304,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Fetch shows library
+  /// Fetch shows library
   Future<List<dynamic>> fetchShows() async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/shows'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -402,18 +318,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Get library scanner status
+  /// Get library scanner status
   Future<Map<String, dynamic>> getLibraryStatus() async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/library/status'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -423,18 +332,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Fetch all configured library paths
+  /// Fetch all configured library paths
   Future<List<dynamic>> fetchLibraryPaths() async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.get(
       Uri.parse('$baseUrl/api/library/paths'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
     );
 
     if (response.statusCode == 200) {
@@ -444,18 +346,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Add a new configured library directory path
+  /// Add a new configured library directory path
   Future<Map<String, dynamic>> addLibraryPath(String folderPath, String type) async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.post(
       Uri.parse('$baseUrl/api/library/paths'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({
         'path': folderPath,
         'type': type,
@@ -469,18 +364,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Delete a configured library directory path
+  /// Delete a configured library directory path
   Future<Map<String, dynamic>> deleteLibraryPath(String id) async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.delete(
       Uri.parse('$baseUrl/api/library/paths'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({
         'id': id,
       }),
@@ -493,18 +381,11 @@ class ApiService {
     }
   }
 
-  /// Authenticated: Update a configured library directory path and bulk replace items
+  /// Update a configured library directory path and bulk replace items
   Future<Map<String, dynamic>> updateLibraryPath(String id, String newPath) async {
-    if (_token == null) {
-      throw Exception('Unauthorized: Log in or pair first.');
-    }
-
     final response = await http.put(
       Uri.parse('$baseUrl/api/library/paths'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({
         'id': id,
         'newPath': newPath,
@@ -518,119 +399,66 @@ class ApiService {
     }
   }
 
-  /// Unauthenticated: Request to unpair a device ID on the server
-  Future<Map<String, dynamic>> unpairDevice(String deviceId) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/auth/pair/unpair'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'deviceId': deviceId,
-      }),
-    );
+  /// POST /api/auth/login — sparar token, kastar vid fel lösenord.
+  // ── Saved credentials (remember password) ───────────────────────────────
 
+  Future<void> saveRememberedLogin(String username, String password) async {
+    await _prefs?.setString('saved_login_username', username);
+    await _prefs?.setString('saved_login_password', password);
+  }
+
+  Map<String, String>? loadRememberedLogin() {
+    final u = _prefs?.getString('saved_login_username');
+    final p = _prefs?.getString('saved_login_password');
+    if (u == null || p == null) return null;
+    return {'username': u, 'password': p};
+  }
+
+  Future<void> clearRememberedLogin() async {
+    await _prefs?.remove('saved_login_username');
+    await _prefs?.remove('saved_login_password');
+  }
+
+  // ── PIN login ────────────────────────────────────────────────────────────
+
+  Future<void> loginWithPin(String userId, String pin) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/login-pin'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'userId': userId, 'pin': pin}),
+    );
     if (response.statusCode == 200) {
-      return jsonDecode(response.body);
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      await saveToken(body['token'] as String);
     } else {
-      throw Exception('Failed to unpair device: ${response.body}');
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      throw Exception(body['error'] ?? 'Fel PIN');
     }
   }
 
-  /// Initialize user session:
-  /// 1. Try to load the local persisted token.
-  /// 2. If present, verify it by making a lightweight request (fetchLibraryPaths).
-  /// 3. If invalid or missing, check if the server already has this device ID paired.
+  Future<void> login(String username, String password) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/auth/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'username': username, 'password': password}),
+    );
+    if (response.statusCode == 200) {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      await saveToken(body['token'] as String);
+    } else {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      throw Exception(body['error'] ?? 'Inloggning misslyckades');
+    }
+  }
+
+  /// Initialize user session — returns true if a saved token exists.
   Future<bool> initializeSession() async {
     try {
+      await initStorage();
       _token = _readStorage('loom_token');
-      final savedDeviceId = _readStorage('loom_device_id');
-
-      debugPrint('[LOOM] initializeSession - token: ${_token != null ? "EXISTS" : "NULL"}, deviceId: $savedDeviceId');
-
-      if (_token != null) {
-        try {
-          await fetchLibraryPaths();
-          debugPrint('[LOOM] Token is VALID! Auto-logged in.');
-          return true;
-        } catch (e) {
-          debugPrint('[LOOM] Token invalid: $e. Clearing...');
-          clearToken();
-        }
-      }
-
-      // No valid local token - check if server remembers this device
-      final deviceId = getOrCreateDeviceId();
-      debugPrint('[LOOM] Checking server pairing for deviceId: $deviceId');
-      try {
-        final status = await checkPairingStatus(deviceId);
-        debugPrint('[LOOM] Server response: paired=${status['paired']}, hasToken=${status['token'] != null}');
-        if (status['paired'] == true && status['token'] != null) {
-          debugPrint('[LOOM] Device IS paired! Auto-logged in.');
-          return true;
-        }
-      } catch (e) {
-        debugPrint('[LOOM] Error querying pairing status: $e');
-      }
-
-      debugPrint('[LOOM] initializeSession -> FALSE (showing pairing screen)');
+      return _token != null && _token!.isNotEmpty;
+    } catch (_) {
       return false;
-    } catch (e) {
-      debugPrint('[LOOM] initializeSession EXCEPTION: $e');
-      return false;
-    }
-  }
-
-  /// Authenticated: Fetch all paired/trusted devices
-  Future<List<dynamic>> fetchDevices() async {
-    if (_token == null) throw Exception('Unauthorized');
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/auth/devices'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
-    );
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      throw Exception('Failed to fetch devices: ${response.body}');
-    }
-  }
-
-  /// Authenticated: Rename a paired device
-  Future<Map<String, dynamic>> renameDevice(String deviceId, String newName) async {
-    if (_token == null) throw Exception('Unauthorized');
-    final response = await http.put(
-      Uri.parse('$baseUrl/api/auth/devices/rename'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
-      body: jsonEncode({
-        'deviceId': deviceId,
-        'deviceName': newName,
-      }),
-    );
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      throw Exception('Failed to rename device: ${response.body}');
-    }
-  }
-
-  /// Authenticated: Remove a paired device
-  Future<Map<String, dynamic>> removeDevice(String deviceId) async {
-    if (_token == null) throw Exception('Unauthorized');
-    final response = await http.delete(
-      Uri.parse('$baseUrl/api/auth/devices/$deviceId'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
-    );
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      throw Exception('Failed to remove device: ${response.body}');
     }
   }
 
@@ -731,17 +559,46 @@ class ApiService {
     return jsonDecode(addResp.body);
   }
 
-  /// Authenticated: Delete media item from DB
+  /// Soft-delete media item (moves file to .trash, sets deleted_at)
   Future<void> deleteMediaItem(String id) async {
-    if (_token == null) throw Exception('Unauthorized');
     final response = await http.delete(
       Uri.parse('$baseUrl/api/media/items/$id'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to delete media item: ${response.body}');
+    }
+  }
+
+  Future<List<dynamic>> fetchImdbCalendar(String start, {int days = 90}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/calendar/imdb?start=$start&days=$days'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body) as List;
+    if (response.statusCode == 404 || response.statusCode == 401) return [];
+    throw Exception('IMDb calendar error: ${response.body}');
+  }
+
+  /// Soft-delete a single episode
+  Future<void> deleteEpisode(String id) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/media/episodes/$id'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete episode: ${response.body}');
+    }
+  }
+
+  /// Soft-delete all episodes in a season
+  Future<void> deleteSeason(String showId, int seasonNumber) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/media/seasons/$showId/$seasonNumber'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete season: ${response.body}');
     }
   }
 
@@ -796,6 +653,7 @@ class ApiService {
         'Authorization': 'Bearer $_token',
         'Content-Type': 'application/json',
       },
+      body: '{}',
     );
     if (response.statusCode == 202) {
       return jsonDecode(response.body);
@@ -818,6 +676,98 @@ class ApiService {
     } else {
       throw Exception('Failed to fetch sync status: ${response.body}');
     }
+  }
+
+  /// Authenticated: Fetch log entries, optionally only entries with id > sinceId
+  Future<Map<String, dynamic>> fetchLogs({int? sinceId}) async {
+    final uri = sinceId != null
+        ? Uri.parse('$baseUrl/api/logs?sinceId=$sinceId')
+        : Uri.parse('$baseUrl/api/logs');
+    final response = await http.get(
+      uri,
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('fetchLogs failed: ${response.statusCode}');
+  }
+
+  /// URL for downloading the full log file
+  String get logsDownloadUrl => '$baseUrl/api/logs/download';
+
+  /// Authenticated: Send a test Discord webhook notification
+  Future<Map<String, dynamic>> testDiscordWebhook() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/notifications/test/discord'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    return jsonDecode(response.body);
+  }
+
+  /// Authenticated: Send a test email via SMTP
+  Future<Map<String, dynamic>> testEmail() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/notifications/test/email'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    return jsonDecode(response.body);
+  }
+
+  /// Authenticated: Fetch server info (uptime, DB size, counts)
+  Future<Map<String, dynamic>> fetchServerInfo() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/server/info'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('fetchServerInfo failed: ${response.statusCode}');
+  }
+
+  /// Authenticated: Optimize the SQLite database
+  Future<Map<String, dynamic>> optimizeDatabase() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/server/db/optimize'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    return jsonDecode(response.body);
+  }
+
+  /// URL for downloading the database backup (use downloadBackup() on desktop)
+  String get dbBackupUrl => '$baseUrl/api/server/db/backup';
+
+  /// Download backup as bytes — for desktop where html.window.open doesn't work
+  Future<List<int>> downloadBackupBytes() async {
+    final response = await http.get(Uri.parse(dbBackupUrl));
+    if (response.statusCode == 200) return response.bodyBytes;
+    throw Exception('Backup misslyckades: ${response.statusCode}');
+  }
+
+  /// Download logs as bytes
+  Future<List<int>> downloadLogsBytes() async {
+    final response = await http.get(Uri.parse(logsDownloadUrl));
+    if (response.statusCode == 200) return response.bodyBytes;
+    throw Exception('Loggexport misslyckades: ${response.statusCode}');
+  }
+
+  /// Authenticated: Upload a database restore file (raw bytes)
+  Future<Map<String, dynamic>> restartServer() async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/server/restart'),
+      headers: {'Authorization': 'Bearer $_token'},
+    );
+    return jsonDecode(response.body);
+  }
+
+  Future<Map<String, dynamic>> restoreDatabase(List<int> fileBytes, String filename) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/api/server/db/restore'),
+    );
+    if (_token != null) request.headers['Authorization'] = 'Bearer $_token';
+    request.files.add(http.MultipartFile.fromBytes('file', fileBytes, filename: filename));
+    final streamed = await request.send();
+    final body = await streamed.stream.bytesToString();
+    return jsonDecode(body);
   }
 
   /// Authenticated: Fetch all watchlist items
@@ -879,5 +829,495 @@ class ApiService {
       throw Exception('Failed to remove from watchlist: ${response.body}');
     }
   }
-}
 
+
+  /// Fetch playback markers (Skip Intro/Outro)
+  Future<Map<String, dynamic>?> getPlaybackMarkers(String mediaId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/playback/markers/$mediaId'),
+        headers: {
+          'Authorization': 'Bearer $_token',
+        },
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+      return null;
+    } catch (e) {
+      print('Error fetching markers: $e');
+      return null;
+    }
+  }
+
+  /// Start stream (Trigger HLS Transcode)
+  Future<Map<String, dynamic>> startStream(String mediaId, {bool transcode = false, String bitrate = '4000k', String subtitleIndex = 'none'}) async {
+    final url = Uri.parse('$baseUrl/api/playback/stream/$mediaId?transcode=$transcode&bitrate=$bitrate&subtitleIndex=$subtitleIndex');
+    final response = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $_token',
+      },
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Failed to start stream: ${response.body}');
+  }
+
+  // ── Marker API ────────────────────────────────────────────────────────
+
+  /// Fetch all markers (chapters + intro/outro) for a media item or episode
+  Future<List<dynamic>> fetchMarkers(String id) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/markers/$id'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return (jsonDecode(response.body)['markers'] as List<dynamic>? ?? []);
+    }
+    throw Exception('Failed to fetch markers: ${response.body}');
+  }
+
+  /// Trigger chapter extraction for a movie/episode (background)
+  Future<void> scanChapters(String id) async {
+    await http.post(Uri.parse('$baseUrl/api/markers/scan-chapters/$id'),
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+  }
+
+  /// Trigger audio fingerprint computation for a single episode
+  Future<void> scanFingerprint(String episodeId) async {
+    await http.post(Uri.parse('$baseUrl/api/markers/scan-fingerprint/$episodeId'),
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+  }
+
+  /// Trigger fingerprinting for all episodes in a show + detect intro
+  Future<void> scanShowIntro(String showId) async {
+    await http.post(Uri.parse('$baseUrl/api/markers/scan-show/$showId'),
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+  }
+
+  /// Re-run intro detection using existing fingerprints
+  Future<Map<String, dynamic>> detectIntro(String showId) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/markers/detect-intro/$showId'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to detect intro: ${response.body}');
+  }
+
+  /// Delete a marker
+  Future<void> deleteMarker(String markerId) async {
+    await http.delete(
+      Uri.parse('$baseUrl/api/markers/$markerId'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+  }
+
+  /// Returns a file:// URI for direct local playback (mpv/media_kit on desktop).
+  /// Falls back to null on error so callers can use the HTTP stream URL instead.
+  Future<String?> fetchFileUrl(String id) async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/api/playback/file-path/$id'));
+      if (response.statusCode == 200) {
+        return (jsonDecode(response.body) as Map<String, dynamic>)['fileUrl'] as String?;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Fire-and-forget warmup: pre-generates the first HLS segments so playback starts instantly
+  void warmupStream(String mediaId) {
+    http.get(Uri.parse('$baseUrl/api/stream/warmup/$mediaId')).catchError((_) {});
+  }
+
+  /// Fetch all soft-deleted (trash) items
+  Future<List<dynamic>> fetchTrash() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/trash'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to fetch trash: ${response.body}');
+  }
+
+  /// Restore a soft-deleted item from trash
+  Future<void> restoreTrashItem(String id) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/trash/$id/restore'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to restore item: ${response.body}');
+    }
+  }
+
+  /// Permanently delete a trashed item (removes from disk + database)
+  Future<void> permanentlyDeleteTrashItem(String id) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/trash/$id/permanent'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to permanently delete item: ${response.body}');
+    }
+  }
+
+  // ── Calendar API ──────────────────────────────────────────────────────
+
+  /// Fetch calendar events from the local library for [start]..[end] (YYYY-MM-DD).
+  /// [type] = 'Show' | 'Movie' | 'all'
+  Future<List<dynamic>> fetchCalendar(String start, String end, {String type = 'all'}) async {
+    final uri = Uri.parse('$baseUrl/api/calendar').replace(
+      queryParameters: {'start': start, 'end': end, 'type': type},
+    );
+    final response = await http.get(uri,
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+    if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
+    throw Exception('Failed to fetch calendar: ${response.body}');
+  }
+
+  /// Fetch upcoming episodes from the user's personal Trakt watchlist calendar.
+  /// Requires Trakt OAuth to be connected in settings.
+  Future<List<dynamic>> fetchTraktCalendar(String start, {int days = 30}) async {
+    final uri = Uri.parse('$baseUrl/api/calendar/trakt').replace(
+      queryParameters: {'start': start, 'days': days.toString()},
+    );
+    final response = await http.get(uri,
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+    if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
+    final body = jsonDecode(response.body);
+    throw Exception(body['error'] ?? 'Failed to fetch Trakt calendar');
+  }
+
+  /// Fetch upcoming episodes from the user's personal Simkl watchlist calendar.
+  /// Requires Simkl OAuth to be connected in settings.
+  Future<List<dynamic>> fetchSimklCalendar(String start, {int days = 30}) async {
+    final uri = Uri.parse('$baseUrl/api/calendar/simkl').replace(
+      queryParameters: {'start': start, 'days': days.toString()},
+    );
+    final response = await http.get(uri,
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+    if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
+    final body = jsonDecode(response.body);
+    throw Exception(body['error'] ?? 'Failed to fetch Simkl calendar');
+  }
+
+  /// Returns the URL for downloading a .ics calendar export.
+  String calendarIcsUrl({String start = '2000-01-01', String end = '2099-12-31'}) {
+    return '$baseUrl/api/calendar/export.ics?start=$start&end=$end';
+  }
+
+  // ── Users API (Admin) ─────────────────────────────────────────────────────
+
+  Future<List<dynamic>> fetchUsers() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/users'),
+      headers: {'Authorization': 'Bearer $_token'},
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
+    throw Exception('Kunde inte hämta användare: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> createUser(String username, String password, String role) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/users'),
+      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      body: jsonEncode({'username': username, 'password': password, 'role': role}),
+    );
+    if (response.statusCode == 201) return jsonDecode(response.body) as Map<String, dynamic>;
+    final body = jsonDecode(response.body);
+    throw Exception(body['error'] ?? 'Kunde inte skapa användare');
+  }
+
+  Future<Map<String, dynamic>> updateUser(String id, {String? username, String? fullName, String? role, String? password, String? pin}) async {
+    final body = <String, dynamic>{};
+    if (username != null) body['username'] = username;
+    if (fullName != null) body['full_name'] = fullName;
+    if (role != null) body['role'] = role;
+    if (password != null) body['password'] = password;
+    if (pin != null) body['pin'] = pin; // empty string = remove PIN
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/users/$id'),
+      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    final resp = jsonDecode(response.body);
+    throw Exception(resp['error'] ?? 'Kunde inte uppdatera användare');
+  }
+
+  Future<void> deleteUser(String id) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/users/$id'),
+      headers: {'Authorization': 'Bearer $_token'},
+    );
+    if (response.statusCode != 200) {
+      final body = jsonDecode(response.body);
+      throw Exception(body['error'] ?? 'Kunde inte ta bort användare');
+    }
+  }
+
+  // ── RSS API ───────────────────────────────────────────────────────────────
+
+  Future<List<dynamic>> fetchRssFeeds() async {
+    final r = await http.get(Uri.parse('$baseUrl/api/rss/feeds'));
+    if (r.statusCode == 200) return jsonDecode(r.body) as List<dynamic>;
+    throw Exception('Kunde inte hämta RSS-flöden');
+  }
+
+  Future<Map<String, dynamic>> addRssFeed(String url) async {
+    final r = await http.post(Uri.parse('$baseUrl/api/rss/feeds'),
+        headers: {'Content-Type': 'application/json'}, body: jsonEncode({'url': url}));
+    if (r.statusCode == 201) return jsonDecode(r.body) as Map<String, dynamic>;
+    final body = jsonDecode(r.body); throw Exception(body['error'] ?? 'Kunde inte lägga till flöde');
+  }
+
+  Future<void> deleteRssFeed(String id) async {
+    final r = await http.delete(Uri.parse('$baseUrl/api/rss/feeds/$id'));
+    if (r.statusCode != 200) throw Exception('Kunde inte ta bort flöde');
+  }
+
+  Future<List<dynamic>> fetchRssItems() async {
+    final r = await http.get(Uri.parse('$baseUrl/api/rss/items'));
+    if (r.statusCode == 200) return jsonDecode(r.body) as List<dynamic>;
+    throw Exception('Kunde inte hämta RSS-poster');
+  }
+
+  Future<Map<String, dynamic>> refreshRssFeeds() async {
+    final r = await http.post(Uri.parse('$baseUrl/api/rss/refresh'));
+    if (r.statusCode == 200) return jsonDecode(r.body) as Map<String, dynamic>;
+    throw Exception('Kunde inte uppdatera flöden');
+  }
+
+  // ── Stats API ─────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> fetchStatsRealtime() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/stats/realtime'));
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('stats/realtime ${response.statusCode}: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> fetchStatsHistory({
+    String? userId,
+    int? days,
+    String? startDate,
+    String? endDate,
+    int limit = 50,
+  }) async {
+    final params = <String, String>{'limit': '$limit'};
+    if (userId != null) params['userId'] = userId;
+    if (startDate != null || endDate != null) {
+      if (startDate != null) params['startDate'] = startDate;
+      if (endDate != null) params['endDate'] = endDate;
+    } else if (days != null) {
+      params['days'] = '$days';
+    }
+    final uri = Uri.parse('$baseUrl/api/stats/history').replace(queryParameters: params);
+    final response = await http.get(uri);
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('stats/history ${response.statusCode}: ${response.body}');
+  }
+
+  Future<List<dynamic>> fetchStatsUsers() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/stats/users'));
+    if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
+    throw Exception('stats/users ${response.statusCode}: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> fetchStatsTops() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/stats/tops'));
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('stats/tops ${response.statusCode}: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> fetchMediaPlays(String mediaId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/stats/media/$mediaId/plays'));
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('stats/media/plays ${response.statusCode}: ${response.body}');
+  }
+
+  // ── Konto API ─────────────────────────────────────────────────────────────
+
+  Future<void> updateOwnPassword(String currentPassword, String newPassword) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/auth/me'),
+      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      body: jsonEncode({'currentPassword': currentPassword, 'newPassword': newPassword}),
+    );
+    if (response.statusCode != 200) {
+      final body = jsonDecode(response.body);
+      throw Exception(body['error'] ?? 'Kunde inte byta lösenord');
+    }
+  }
+
+  Future<void> uploadAvatar(List<int> imageBytes) async {
+    if (_token == null) throw Exception('Unauthorized');
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/api/auth/me/avatar'),
+    );
+    request.headers['Authorization'] = 'Bearer $_token';
+    request.files.add(http.MultipartFile.fromBytes('avatar', imageBytes, filename: 'avatar.jpg'));
+    final streamed = await request.send();
+    final body = await streamed.stream.bytesToString();
+    if (streamed.statusCode != 200) {
+      final resp = jsonDecode(body);
+      throw Exception(resp['error'] ?? 'Upload failed');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchCurrentUserProfile() async {
+    if (_token == null) throw Exception('Unauthorized');
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/auth/me'),
+      headers: {'Authorization': 'Bearer $_token'},
+    );
+    if (response.statusCode != 200) throw Exception('Kunde inte hämta profil');
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<void> updateOwnProfile({String? fullName, String? newUsername, String? pin}) async {
+    final payload = <String, dynamic>{};
+    if (fullName != null) payload['full_name'] = fullName;
+    if (newUsername != null) payload['newUsername'] = newUsername;
+    if (pin != null) payload['pin'] = pin;
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/auth/me'),
+      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      body: jsonEncode(payload),
+    );
+    if (response.statusCode != 200) {
+      final body = jsonDecode(response.body);
+      throw Exception(body['error'] ?? 'Kunde inte uppdatera profil');
+    }
+    // Store the fresh JWT returned by the backend so UI reflects changes immediately
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    if (body['token'] is String) {
+      await saveToken(body['token'] as String);
+    }
+  }
+
+  /// Decode JWT payload locally — returns {id, username, role} or null.
+  Map<String, dynamic>? get currentUserPayload {
+    final t = _token;
+    if (t == null || t.isEmpty) return null;
+    try {
+      final parts = t.split('.');
+      if (parts.length < 2) return null;
+      final padded = base64Url.normalize(parts[1]);
+      final decoded = jsonDecode(utf8.decode(base64Url.decode(padded)));
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return null;
+  }
+
+  // ── Export / Import ───────────────────────────────────────────────────────
+
+  Future<List<int>> exportBackup({
+    bool settings = true,
+    bool libraryPaths = true,
+    bool users = false,
+    bool watchHistory = false,
+    bool watchlist = false,
+    bool markers = false,
+  }) async {
+    final params = {
+      if (settings) 'settings': 'true',
+      if (libraryPaths) 'library_paths': 'true',
+      if (users) 'users': 'true',
+      if (watchHistory) 'watch_history': 'true',
+      if (watchlist) 'watchlist': 'true',
+      if (markers) 'markers': 'true',
+    };
+    final uri = Uri.parse('$baseUrl/api/export').replace(queryParameters: params);
+    final response = await http.get(uri,
+        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+    if (response.statusCode == 200) return response.bodyBytes;
+    throw Exception('Export misslyckades: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> importBackup(List<int> fileBytes, String filename) async {
+    final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/import'));
+    if (_token != null) request.headers['Authorization'] = 'Bearer $_token';
+    request.files.add(http.MultipartFile.fromBytes('file', fileBytes, filename: filename));
+    final streamed = await request.send();
+    final body = await streamed.stream.bytesToString();
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    if (streamed.statusCode != 200) throw Exception(decoded['error'] ?? 'Import misslyckades');
+    return decoded;
+  }
+
+  // ── Public user profiles (for profile picker) ────────────────────────────
+
+  Future<List<dynamic>> fetchProfiles() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/auth/profiles'));
+    if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
+    throw Exception('fetchProfiles failed: ${response.statusCode}');
+  }
+
+  // ── Scanner events (real-time polling) ───────────────────────────────────
+
+  Future<Map<String, dynamic>> fetchScanEvents({int? sinceId}) async {
+    final uri = Uri.parse('$baseUrl/api/library/scan-events')
+        .replace(queryParameters: sinceId != null ? {'sinceId': sinceId.toString()} : {});
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchScanEvents failed: ${response.statusCode}');
+  }
+
+  // ── Library path watch toggle ─────────────────────────────────────────────
+
+  Future<void> toggleWatchPath(String id, bool watch) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/library/paths/watch'),
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
+      body: jsonEncode({'id': id, 'watch': watch}),
+    );
+    if (response.statusCode != 200) throw Exception('toggleWatchPath failed');
+  }
+
+  // ── Watched status + ratings export ──────────────────────────────────────
+
+  Future<List<int>> exportWatched({String format = 'json'}) async {
+    final uri = Uri.parse('$baseUrl/api/library/export')
+        .replace(queryParameters: {'format': format});
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) return response.bodyBytes;
+    throw Exception('exportWatched failed: ${response.statusCode}');
+  }
+
+  Map<String, String> _authHeaders() =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : {};
+
+  // ── Disk Manager API ─────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> diskStats() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/disk/stats'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('diskStats failed: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> diskScan() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/disk/scan'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('diskScan failed: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> diskCleanup({List<String>? ids}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/disk/cleanup'),
+      headers: {..._authHeaders(), 'Content-Type': 'application/json'},
+      body: jsonEncode({'ids': ids}),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('diskCleanup failed: ${response.body}');
+  }
+}

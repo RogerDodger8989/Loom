@@ -4,7 +4,18 @@ import * as childProcess from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/database';
 import { tmdbService } from './tmdb';
+import { scanChaptersForItem } from './marker_service';
+import { emitScanEvent } from './scan_events';
 import axios from 'axios';
+
+function triggerChapterScan(filePath: string, mediaItemId: string | null, episodeId: string | null): void {
+  setImmediate(async () => {
+    try {
+      const count = await scanChaptersForItem(filePath, mediaItemId, episodeId);
+      if (count > 0) console.log(`[Scanner] Chapters: ${count} found in ${path.basename(filePath)}`);
+    } catch (_) {}
+  });
+}
 
 const ffprobe = require('@ffprobe-installer/ffprobe');
 
@@ -15,8 +26,20 @@ export class ScannerService {
   public async scanLibrary(libraryPath: string, type: 'Movie' | 'Show' | 'Music', preferLocalNfo?: boolean): Promise<{ added: number, updated: number }> {
     if (!fs.existsSync(libraryPath)) {
       console.error(`[Scanner] Path does not exist: ${libraryPath}`);
+      emitScanEvent('scan_error', `Sökväg finns ej: ${libraryPath}`, type);
       return { added: 0, updated: 0 };
     }
+
+    emitScanEvent('scan_start', `Startar skanning av ${path.basename(libraryPath)} (${type})`, type);
+
+    // Load user-configured skip words and min file size from settings
+    const skipWordsRaw = (db.prepare("SELECT value FROM system_settings WHERE key='SCAN_SKIP_WORDS'").get() as any)?.value || '';
+    const minSizeMb = parseFloat((db.prepare("SELECT value FROM system_settings WHERE key='SCAN_MIN_SIZE_MB'").get() as any)?.value || '0');
+    const minSizeBytes = minSizeMb > 0 ? minSizeMb * 1024 * 1024 : 0;
+    const extraSkipWords = skipWordsRaw
+      .split(',')
+      .map((w: string) => w.trim().toLowerCase())
+      .filter((w: string) => w.length > 0);
 
     let itemsAdded = 0;
     let itemsUpdated = 0;
@@ -27,21 +50,39 @@ export class ScannerService {
 
     for (const file of files) {
       const ext = path.extname(file).toLowerCase();
-      
+
       if (videoExts.includes(ext)) {
-        if (this.isSupplementalVideo(file)) {
+        // Check size filter
+        if (minSizeBytes > 0) {
+          try {
+            const stat = fs.statSync(file);
+            if (stat.size < minSizeBytes) {
+              emitScanEvent('item_skipped', `Hoppas över (för liten ${(stat.size / 1024 / 1024).toFixed(1)} MB): ${path.basename(file)}`, type);
+              continue;
+            }
+          } catch (_) {}
+        }
+
+        if (this.isSupplementalVideo(file, extraSkipWords)) {
+          emitScanEvent('item_skipped', `Hoppas över (tilläggsinnehåll): ${path.basename(file)}`, type);
           continue;
         }
+
+        emitScanEvent('file_found', `Hittade: ${path.basename(file)}`, type);
+
         if (type === 'Movie') {
           const result = await this.processMovieFile(file, preferLocalNfo);
           if (result === 'added') itemsAdded++;
           else if (result === 'updated') itemsUpdated++;
         } else if (type === 'Show') {
-          // TODO: Process TV Shows
+          const result = await this.processEpisodeFile(file, libraryPath, preferLocalNfo);
+          if (result === 'added') itemsAdded++;
+          else if (result === 'updated') itemsUpdated++;
         }
       }
     }
 
+    emitScanEvent('scan_complete', `Klar! Tillagda: ${itemsAdded}, Uppdaterade: ${itemsUpdated}`, type);
     return { added: itemsAdded, updated: itemsUpdated };
   }
 
@@ -125,7 +166,10 @@ export class ScannerService {
       if (tmdbData) {
         // TMDB overrides/complements
         if (!metadata.plot && tmdbData.overview) metadata.plot = tmdbData.overview;
-        if (!metadata.year && tmdbData.release_date) metadata.year = parseInt(tmdbData.release_date.substring(0, 4), 10);
+        if (tmdbData.release_date) {
+          if (!metadata.year) metadata.year = parseInt(tmdbData.release_date.substring(0, 4), 10);
+          (metadata as any).release_date = tmdbData.release_date;
+        }
         if (tmdbData.tagline) tmdbTagline = tmdbData.tagline;
         
         // Save genres as comma-separated values
@@ -356,6 +400,7 @@ export class ScannerService {
         if (!lockedKeys.includes('director')) { updateFields.push('director = ?'); params.push(directorName); }
 
         if (!lockedKeys.includes('original_title')) { updateFields.push('original_title = ?'); params.push(metadata.original_title || null); }
+        if ((metadata as any).release_date) { updateFields.push('release_date = ?'); params.push((metadata as any).release_date); }
 
         if (updateFields.length > 0) {
           params.push(filePath);
@@ -387,15 +432,21 @@ export class ScannerService {
           }
           if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
           if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
-          
+          // Always write resolution – bypass the user-lock since it is a file property.
+          if (probeResult.resolution) {
+            db.prepare('INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) VALUES (?,?,\'resolution\',?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value').run(uuidv4(), mediaId, probeResult.resolution);
+          }
+
           const edition = this.parseEditionFromFilename(fileNameWithoutExt);
           if (edition) {
             upsertMetadata(mediaId, 'release_version', edition);
           }
 
+          triggerChapterScan(filePath, mediaId, null);
+          emitScanEvent('item_updated', `Uppdaterad: ${metadata.title || path.basename(filePath)}`, 'Movie');
           return 'updated';
         }
-        
+
         if (tmdbRatings) upsertMetadata(mediaId, 'ratings', JSON.stringify(tmdbRatings));
         if (tmdbCast) upsertMetadata(mediaId, 'cast', JSON.stringify(tmdbCast));
         if (tmdbProviders) upsertMetadata(mediaId, 'watch_providers', JSON.stringify(tmdbProviders));
@@ -411,34 +462,40 @@ export class ScannerService {
         }
         if (probeResult.audioTracks.length > 0) upsertMetadata(mediaId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
         if (probeResult.subtitleTracks.length > 0) upsertMetadata(mediaId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
-        
+        if (probeResult.resolution) {
+          db.prepare('INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) VALUES (?,?,\'resolution\',?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value').run(uuidv4(), mediaId, probeResult.resolution);
+        }
+
         const edition = this.parseEditionFromFilename(fileNameWithoutExt);
         if (edition) {
           upsertMetadata(mediaId, 'release_version', edition);
         }
 
+        triggerChapterScan(filePath, mediaId, null);
+        emitScanEvent('item_updated', `Uppdaterad (metadata): ${metadata.title || path.basename(filePath)}`, 'Movie');
         return 'skipped';
       } else {
         // Insert new
         const id = uuidv4();
         db.prepare(`
-          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id, imdb_id, collection_name, collection_id, director, original_title, file_path)
-          VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id, imdb_id, collection_name, collection_id, director, original_title, file_path, release_date)
+          VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          id, 
-          metadata.title, 
-          metadata.plot, 
-          metadata.year, 
-          metadata.genre, 
-          metadata.poster_path, 
-          metadata.fanart_path, 
-          metadata.tmdb_id || null, 
-          metadata.imdb_id || null, 
-          metadata.collection_name || null, 
-          metadata.collection_id || null, 
-          directorName, 
+          id,
+          metadata.title,
+          metadata.plot,
+          metadata.year,
+          metadata.genre,
+          metadata.poster_path,
+          metadata.fanart_path,
+          metadata.tmdb_id || null,
+          metadata.imdb_id || null,
+          metadata.collection_name || null,
+          metadata.collection_id || null,
+          directorName,
           metadata.original_title || null,
-          filePath
+          filePath,
+          (metadata as any).release_date || null
         );
         
         if (tmdbRatings) upsertMetadata(id, 'ratings', JSON.stringify(tmdbRatings));
@@ -463,16 +520,221 @@ export class ScannerService {
         }
         if (probeResult.audioTracks.length > 0) upsertMetadata(id, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
         if (probeResult.subtitleTracks.length > 0) upsertMetadata(id, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
-        
+        if (probeResult.resolution) {
+          db.prepare('INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) VALUES (?,?,\'resolution\',?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value').run(uuidv4(), id, probeResult.resolution);
+        }
+
         const edition = this.parseEditionFromFilename(fileNameWithoutExt);
         if (edition) {
           upsertMetadata(id, 'release_version', edition);
         }
 
+        triggerChapterScan(filePath, id, null);
+        emitScanEvent('item_added', `Tillagd: ${metadata.title || path.basename(filePath)} ${metadata.year ? `(${metadata.year})` : ''}`, 'Movie');
         return 'added';
       }
     } catch (e) {
       console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
+      emitScanEvent('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Movie');
+      return 'skipped';
+    }
+  }
+
+  /**
+   * Parse season+episode numbers from a filename.
+   * Supports: S01E01, s1e1, 1x01, Season 1 Episode 1, etc.
+   */
+  private parseEpisodeNumbers(filename: string): { season: number; episode: number } | null {
+    const patterns = [
+      /[Ss](\d{1,3})[Ee](\d{1,3})/,          // S01E01
+      /(\d{1,2})x(\d{1,3})/,                   // 1x01
+      /[Ss]eason\s*(\d+)\s*[Ee]pisode\s*(\d+)/i,
+    ];
+    for (const re of patterns) {
+      const m = filename.match(re);
+      if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) };
+    }
+    return null;
+  }
+
+  /**
+   * Determine the show's root folder relative to the library scan path.
+   * Example: libraryPath="C:/Shows", filePath="C:/Shows/Breaking Bad/Season 1/ep.mkv"
+   *   → showDir = "C:/Shows/Breaking Bad"
+   */
+  private getShowDirectory(libraryPath: string, filePath: string): string {
+    const rel = path.relative(libraryPath, filePath);
+    const parts = rel.split(path.sep);
+    // The first segment is always the show folder
+    return path.join(libraryPath, parts[0]);
+  }
+
+  /**
+   * Search TMDB for a TV show by title and optional year.
+   */
+  private async searchTVShow(title: string, year?: number): Promise<any | null> {
+    const apiKey = (db.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get() as any)?.value;
+    if (!apiKey) return null;
+    const prefLang = (db.prepare("SELECT value FROM system_settings WHERE key='METADATA_LANGUAGE'").get() as any)?.value || 'sv-SE';
+    try {
+      const resp = await axios.get('https://api.themoviedb.org/3/search/tv', {
+        params: { api_key: apiKey, query: title, language: prefLang, first_air_date_year: year }
+      });
+      const results: any[] = resp.data?.results || [];
+      if (results.length === 0) return null;
+      // Prefer exact year match
+      if (year) {
+        const exact = results.find((r: any) => r.first_air_date?.startsWith(year.toString()));
+        if (exact) return exact;
+      }
+      return results[0];
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Process a single TV episode file.
+   * Creates/updates the parent show in media_items and the episode in episodes.
+   */
+  public async processEpisodeFile(
+    filePath: string,
+    libraryPath: string,
+    preferLocalNfo: boolean = true
+  ): Promise<'added' | 'updated' | 'skipped'> {
+    try {
+      const fileNameWithoutExt = path.parse(filePath).name;
+      const parsed = this.parseEpisodeNumbers(fileNameWithoutExt);
+      if (!parsed) {
+        console.log(`[Scanner] Could not parse S/E from: ${path.basename(filePath)}`);
+        emitScanEvent('item_skipped', `Kan inte tolka S/E: ${path.basename(filePath)}`, 'Show');
+        return 'skipped';
+      }
+      const { season, episode: episodeNum } = parsed;
+
+      // Determine show directory and title
+      const showDir = this.getShowDirectory(libraryPath, filePath);
+      const showDirName = path.basename(showDir);
+      const showTitle = this.parseTitleFromFilename(showDirName);
+      const showYear = this.parseYearFromFilename(showDirName) ?? undefined;
+
+      // ── 1. Find or create show in media_items ──────────────────
+      let showRow = db.prepare(`
+        SELECT id, title, tmdb_id FROM media_items WHERE type='Show' AND (
+          lower(title) = lower(?) OR lower(title) = lower(?)
+        ) AND deleted_at IS NULL LIMIT 1
+      `).get(showTitle, showDirName) as any;
+
+      let showId: string;
+      let tmdbShowId: string | null = null;
+
+      if (!showRow) {
+        // Look up TMDB
+        const tmdbShow = await this.searchTVShow(showTitle, showYear);
+        const posterUrl = tmdbShow?.poster_path ? tmdbService.getImageUrl(tmdbShow.poster_path, 'w500') : null;
+        const fanartUrl = tmdbShow?.backdrop_path ? tmdbService.getImageUrl(tmdbShow.backdrop_path, 'original') : null;
+        const genre = tmdbShow?.genres?.map((g: any) => g.name).join(', ') || null;
+        const plot = tmdbShow?.overview || null;
+        const year = tmdbShow?.first_air_date ? parseInt(tmdbShow.first_air_date.substring(0, 4), 10) : showYear ?? null;
+        const displayTitle = tmdbShow?.name || showTitle;
+        tmdbShowId = tmdbShow?.id?.toString() || null;
+
+        showId = uuidv4();
+        db.prepare(`
+          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id)
+          VALUES (?, ?, 'Show', ?, ?, ?, ?, ?, ?)
+        `).run(showId, displayTitle, plot, year, genre, posterUrl, fanartUrl, tmdbShowId);
+        console.log(`[Scanner] Created show: ${displayTitle}`);
+      } else {
+        showId = showRow.id;
+        tmdbShowId = showRow.tmdb_id;
+      }
+
+      // ── 2. Probe file for audio/subtitle tracks ────────────────
+      const probeResult = await this.probeMediaFile(filePath);
+
+      // ── 3. Look up TMDB episode title if available ─────────────
+      let episodeTitle: string | null = null;
+      let episodeAirDate: string | null = null;
+      if (tmdbShowId) {
+        try {
+          const apiKey = (db.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get() as any)?.value;
+          const prefLang = (db.prepare("SELECT value FROM system_settings WHERE key='METADATA_LANGUAGE'").get() as any)?.value || 'sv-SE';
+          if (apiKey) {
+            const epResp = await axios.get(
+              `https://api.themoviedb.org/3/tv/${tmdbShowId}/season/${season}/episode/${episodeNum}`,
+              { params: { api_key: apiKey, language: prefLang } }
+            );
+            episodeTitle = epResp.data?.name || null;
+            episodeAirDate = epResp.data?.air_date || null;
+          }
+        } catch (_) {}
+      }
+
+      // ── 4. Upsert episode ─────────────────────────────────────
+      const existing = db.prepare(`
+        SELECT id FROM episodes WHERE show_id = ? AND season_number = ? AND episode_number = ?
+      `).get(showId, season, episodeNum) as any;
+
+      let episodeId: string;
+      if (existing) {
+        db.prepare(`UPDATE episodes SET file_path = ?, title = COALESCE(?, title), air_date = COALESCE(?, air_date) WHERE id = ?`)
+          .run(filePath, episodeTitle, episodeAirDate, existing.id);
+        episodeId = existing.id;
+
+        // Update track metadata
+        if (probeResult.audioTracks.length > 0 || probeResult.subtitleTracks.length > 0) {
+          const upsertEpMeta = (key: string, val: string) => {
+            db.prepare(`
+              INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+            `).run(uuidv4(), showId, `ep_${episodeId}_${key}`, val);
+          };
+          if (probeResult.audioTracks.length > 0) upsertEpMeta('audio_tracks', JSON.stringify(probeResult.audioTracks));
+          if (probeResult.subtitleTracks.length > 0) upsertEpMeta('subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+        }
+
+        triggerChapterScan(filePath, null, episodeId);
+        emitScanEvent('item_updated', `Uppdaterad: ${showDirName} S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')}`, 'Show');
+        return 'updated';
+      } else {
+        episodeId = uuidv4();
+        db.prepare(`
+          INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate);
+        console.log(`[Scanner] Added S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')} of ${showDirName}`);
+
+        // Store track metadata on the show's media_item
+        const upsertEpMeta = (key: string, val: string) => {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), showId, `ep_${episodeId}_${key}`, val);
+        };
+        if (probeResult.audioTracks.length > 0) upsertEpMeta('audio_tracks', JSON.stringify(probeResult.audioTracks));
+        if (probeResult.subtitleTracks.length > 0) upsertEpMeta('subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+
+        // Mark show as having a season premiere if this is E01 of a new season (season > 1)
+        if (episodeNum === 1 && season > 1) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'has_season_premiere', '1')
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value='1'
+          `).run(uuidv4(), showId);
+          emitScanEvent('item_added', `🎬 Säsongspremiär! ${showDirName} S${String(season).padStart(2,'0')}E01`, 'Show');
+        } else {
+          emitScanEvent('item_added', `Tillagd: ${showDirName} S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')}`, 'Show');
+        }
+
+        triggerChapterScan(filePath, null, episodeId);
+        return 'added';
+      }
+    } catch (e) {
+      console.error(`[Scanner] Error processing episode ${filePath}:`, e);
+      emitScanEvent('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Show');
       return 'skipped';
     }
   }
@@ -521,10 +783,17 @@ export class ScannerService {
 
   /**
    * Skip non-primary movie assets (trailers, samples, extras) so they are not imported as standalone films.
+   * Optionally also checks user-configured extra skip words.
    */
-  private isSupplementalVideo(filePath: string): boolean {
+  private isSupplementalVideo(filePath: string, extraSkipWords: string[] = []): boolean {
     const name = path.parse(filePath).name.toLowerCase();
-    return /(\b|_|\.|-)(trailer|teaser|sample|featurette|behind.?the.?scenes|extras?)(\b|_|\.|-)/i.test(name);
+    if (/(\b|_|\.|-)(trailer|teaser|sample|featurette|behind.?the.?scenes|extras?)(\b|_|\.|-)/i.test(name)) {
+      return true;
+    }
+    for (const word of extraSkipWords) {
+      if (name.includes(word)) return true;
+    }
+    return false;
   }
 
   private normalizeRatingValue(value: any): string | null {
@@ -678,19 +947,46 @@ export class ScannerService {
   private probeMediaFile(filePath: string): Promise<{
     audioTracks: Array<{ index: number; language: string; codec: string; channels: number; label: string }>;
     subtitleTracks: Array<{ index: number; language: string; codec: string; label: string }>;
+    resolution: string | null;
   }> {
     return new Promise((resolve) => {
       const ffprobePath = ffprobe.path;
       const cmd = `"${ffprobePath}" -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
       childProcess.exec(cmd, { timeout: 15000 }, (err, stdout) => {
         if (err) {
-          // ffprobe not found or failed — return empty gracefully
-          resolve({ audioTracks: [], subtitleTracks: [] });
+          resolve({ audioTracks: [], subtitleTracks: [], resolution: null });
           return;
         }
         try {
           const probe = JSON.parse(stdout);
           const streams: any[] = probe.streams || [];
+
+          // Derive resolution from the primary video stream.
+          // Skip cover-art codecs (MJPEG etc.) and pick the stream with the largest height.
+          const coverArtCodecs = ['mjpeg', 'png', 'bmp', 'gif', 'tiff', 'webp'];
+          let bestVideo: any = null;
+          for (const s of streams) {
+            if (s.codec_type !== 'video') continue;
+            if (coverArtCodecs.includes((s.codec_name || '').toLowerCase())) continue;
+            if (bestVideo === null || (s.height || 0) > (bestVideo.height || 0)) {
+              bestVideo = s;
+            }
+          }
+          let resolution: string | null = null;
+          if (bestVideo) {
+            const h: number = bestVideo.height || 0;
+            const w: number = bestVideo.width || 0;
+            console.log(`[Scanner] ffprobe video stream: codec=${bestVideo.codec_name} w=${w} h=${h}`);
+            // Use width OR height — Scope films (e.g. 1920×800) must be 1080P not 720P.
+            // Use generous thresholds — many encoders produce non-standard widths
+            // e.g. 1916×820 is a Scope 1080P file, NOT 720P.
+            if (w >= 3200 || h >= 2000)      resolution = '4K';
+            else if (w >= 1900 || h >= 1000) resolution = '1080P';
+            else if (w >= 1100 || h >= 650)  resolution = '720P';
+            else if (w >= 700  || h >= 420)  resolution = '480P';
+            else if (h > 0)                  resolution = `${h}P`;
+            console.log(`[Scanner] Detected resolution: ${resolution}`);
+          }
 
           const audioTracks = streams
             .filter((s) => s.codec_type === 'audio')
@@ -698,7 +994,7 @@ export class ScannerService {
               const lang = (s.tags?.language || 'und').toUpperCase();
               const codec = (s.codec_name || 'unknown').toUpperCase();
               const channels = s.channels || 2;
-              const chLabel = channels >= 6 ? '5.1' : channels >= 8 ? '7.1' : 'Stereo';
+              const chLabel = channels >= 8 ? '7.1' : channels >= 6 ? '5.1' : 'Stereo';
               return {
                 index: s.index ?? i,
                 language: lang,
@@ -713,17 +1009,21 @@ export class ScannerService {
             .map((s, i) => {
               const lang = (s.tags?.language || 'und').toUpperCase();
               const codec = (s.codec_name || 'subrip').toUpperCase();
-              return {
+              const entry: any = {
                 index: s.index ?? i,
                 language: lang,
                 codec,
                 label: `${lang === 'SWE' ? 'Svenska' : lang === 'ENG' ? 'English' : lang} (${codec})`,
               };
+              // Store PGS canvas dimensions — tracks missing these fail to decode in mpv.
+              if (s.width) entry.width = s.width;
+              if (s.height) entry.height = s.height;
+              return entry;
             });
 
-          resolve({ audioTracks, subtitleTracks });
+          resolve({ audioTracks, subtitleTracks, resolution });
         } catch {
-          resolve({ audioTracks: [], subtitleTracks: [] });
+          resolve({ audioTracks: [], subtitleTracks: [], resolution: null });
         }
       });
     });

@@ -164,8 +164,9 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
         return reply.code(500).send(renderResponsePage('Token-utbyte misslyckades', `Trakt returnerade ett fel: ${response.status} ${response.statusText}. Vänligen kontrollera att ditt Client ID och Client Secret är korrekta och sparade i inställningarna.`, true));
       }
 
-      const data = await response.json() as { access_token: string };
+      const data = await response.json() as { access_token: string; refresh_token: string };
       saveSetting('TRAKT_ACCESS_TOKEN', data.access_token);
+      if (data.refresh_token) saveSetting('TRAKT_REFRESH_TOKEN', data.refresh_token);
 
       // Trigger automatic background rating and watch history import immediately
       importRatingsFromTrakt();
