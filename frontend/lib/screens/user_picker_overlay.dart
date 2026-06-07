@@ -320,9 +320,13 @@ class _UserPickerPageState extends State<_UserPickerPage> {
 
                       if (widget.canCancel) ...[
                         const SizedBox(height: 32),
-                        TextButton(
+                        OutlinedButton(
                           onPressed: () => Navigator.of(context).pop(),
-                          style: TextButton.styleFrom(foregroundColor: Colors.white30),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white54,
+                            side: const BorderSide(color: Colors.white12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
                           child: const Text('Avbryt  (ESC)'),
                         ),
                       ],
@@ -485,6 +489,15 @@ class _UserPickerPageState extends State<_UserPickerPage> {
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(8)],
                     autofocus: false,
                     style: const TextStyle(color: Colors.white, fontSize: 15, letterSpacing: 4),
+                    onChanged: (val) {
+                      if (val.length >= 4 && !_loggingIn) {
+                        Future.delayed(const Duration(milliseconds: 50), () {
+                          if (mounted && _pinCtrl.text.length >= 4 && !_loggingIn) {
+                            _loginWithPin(userId);
+                          }
+                        });
+                      }
+                    },
                     onSubmitted: (_) => _loginWithPin(userId),
                     contextMenuBuilder: (ctx, state) =>
                         AdaptiveTextSelectionToolbar.editableText(editableTextState: state),

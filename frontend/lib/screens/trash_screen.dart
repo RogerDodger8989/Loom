@@ -98,9 +98,14 @@ class _TrashScreenState extends State<TrashScreen> {
           style: const TextStyle(color: Colors.white70, height: 1.4),
         ),
         actions: [
-          TextButton(
+          OutlinedButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Avbryt'),
           ),
           ElevatedButton.icon(
             onPressed: () => Navigator.pop(ctx, true),
@@ -183,6 +188,15 @@ class _TrashScreenState extends State<TrashScreen> {
     } catch (_) {
       return iso;
     }
+  }
+
+  String _formatSize(dynamic bytes) {
+    if (bytes == null) return '—';
+    final b = (bytes is int) ? bytes : int.tryParse(bytes.toString());
+    if (b == null || b <= 0) return '—';
+    if (b >= 1024 * 1024 * 1024) return '${(b / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+    if (b >= 1024 * 1024) return '${(b / (1024 * 1024)).toStringAsFixed(0)} MB';
+    return '${(b / 1024).toStringAsFixed(0)} KB';
   }
 
   @override
@@ -357,6 +371,7 @@ class _TrashScreenState extends State<TrashScreen> {
     final year       = item['year']?.toString() ?? '—';
     final resolution = item['resolution'] ?? '—';
     final genre      = item['genre'] ?? '—';
+    final fileSize   = _formatSize(item['file_size']);
     final deletedAt  = _formatDate(item['deleted_at']?.toString());
     final addedAt    = _formatDate(item['added_at']?.toString());
     final filePath   = item['file_path'] ?? '—';
@@ -426,6 +441,7 @@ class _TrashScreenState extends State<TrashScreen> {
                                 _infoLine(Icons.calendar_today_outlined, 'År', year),
                                 _infoLine(Icons.movie_outlined, 'Genre', genre),
                                 _infoLine(Icons.hd_outlined, 'Upplösning', resolution),
+                                _infoLine(Icons.storage_outlined, 'Storlek', fileSize),
                                 _infoLine(Icons.library_add_outlined, 'Lades till', addedAt),
                                 _infoLine(Icons.delete_outline, 'Raderades', deletedAt),
                                 if ((item['delete_source'] as String?) == 'auto')
@@ -547,8 +563,9 @@ class _TrashScreenState extends State<TrashScreen> {
           const SizedBox(width: 52), // cover column
           Expanded(flex: 3, child: _headerCell('Titel', 'title')),
           SizedBox(width: 70, child: _headerCell('År', 'year')),
-          SizedBox(width: 90, child: _headerCell('Upplösning', 'resolution')),
-          SizedBox(width: 120, child: _headerCell('Raderad', 'deleted_at')),
+          SizedBox(width: 80, child: _headerCell('Upplösning', 'resolution')),
+          SizedBox(width: 80, child: _headerCell('Storlek', 'file_size')),
+          SizedBox(width: 110, child: _headerCell('Raderad', 'deleted_at')),
           const SizedBox(width: 100),
         ],
       ),
@@ -592,6 +609,7 @@ class _TrashScreenState extends State<TrashScreen> {
     final year       = item['year']?.toString() ?? '—';
     final resolution = item['resolution'] ?? '—';
     final deletedAt  = _formatDate(item['deleted_at']?.toString());
+    final fileSize   = _formatSize(item['file_size']);
     final posterPath = (item['poster_path'] as String?) ?? '';
 
     return GestureDetector(
@@ -641,11 +659,15 @@ class _TrashScreenState extends State<TrashScreen> {
             child: Text(year, style: const TextStyle(color: Colors.white54, fontSize: 13)),
           ),
           SizedBox(
-            width: 90,
+            width: 80,
             child: _resolutionBadge(resolution),
           ),
           SizedBox(
-            width: 120,
+            width: 80,
+            child: Text(fileSize, style: const TextStyle(color: Colors.white54, fontSize: 13)),
+          ),
+          SizedBox(
+            width: 110,
             child: Text(deletedAt, style: const TextStyle(color: Colors.white54, fontSize: 13)),
           ),
           SizedBox(
@@ -817,20 +839,8 @@ class _TrashScreenState extends State<TrashScreen> {
   }
 
   Widget _resolutionBadge(String res) {
-    if (res == '—' || res.isEmpty) return Text('—', style: const TextStyle(color: Colors.white38, fontSize: 13));
-    Color color = Colors.white38;
-    if (res.contains('4K') || res.contains('2160')) color = const Color(0xFF00E676);
-    else if (res.contains('1080')) color = const Color(0xFF8A5BFF);
-    else if (res.contains('720')) color = const Color(0xFFFFD65C);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(res, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700)),
-    );
+    if (res == '—' || res.isEmpty) return Text('—', style: const TextStyle(color: Colors.white54, fontSize: 13));
+    return Text(res, style: const TextStyle(color: Colors.white54, fontSize: 13));
   }
 
   Widget _actionBtn(String tooltip, IconData icon, Color color, VoidCallback onTap) {

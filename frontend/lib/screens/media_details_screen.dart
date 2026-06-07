@@ -1,10 +1,13 @@
-import 'package:flutter/gestures.dart';
+﻿import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import '../services/api.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 import 'package:universal_html/html.dart' as html;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'episode_details_screen.dart';
+import 'fix_match_dialog.dart';
 import 'media_info_dialog.dart';
 import 'person_details_screen.dart';
 import 'resume_playback_modal.dart';
@@ -15,6 +18,7 @@ class MediaDetailsScreen extends StatefulWidget {
   final ApiService apiService;
   final VoidCallback? onBack;
   final ValueChanged<String>? onGenreSelected;
+  final ValueChanged<String>? onShowGenreSelected;
   final ValueChanged<String>? onKeywordSelected;
   final ValueChanged<String>? onMediaSelected;
   final ValueChanged<String>? onPersonSelected;
@@ -29,6 +33,7 @@ class MediaDetailsScreen extends StatefulWidget {
     required this.apiService,
     this.onBack,
     this.onGenreSelected,
+    this.onShowGenreSelected,
     this.onKeywordSelected,
     this.onMediaSelected,
     this.onPersonSelected,
@@ -59,6 +64,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   bool _isCoverHovered = false;
   bool _isInWatchlist = false;
   bool _isWatchlistLoading = false;
+  bool _isFavorite = false;
+  final ScrollController _scrollController = ScrollController();
 
   // Playback settings — persisted across sessions
   String _selectedQuality = 'direct';
@@ -68,6 +75,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   // Version selection
   String? _selectedVersionId;
   String _versionPriority = '1080p,720p,4K'; // loaded from settings
+
+  // TV-serie avsnitt
+  int _selectedSeasonNumber = -1;
+  bool _episodeViewIsGrid = false;
+  bool _seasonOverviewMode = true; // true = show season cards, false = show episodes
+  bool _showUpcomingEpisodes = true;
 
   // ── Version helpers ──────────────────────────────────────────────────────
 
@@ -173,6 +186,17 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       });
   }
 
+  Future<void> _toggleFavorite() async {
+    if (widget.mediaId.startsWith('external_')) return;
+    final newVal = !_isFavorite;
+    setState(() => _isFavorite = newVal);
+    try {
+      await widget.apiService.toggleFavorite(widget.mediaId, isFavorite: newVal);
+    } catch (e) {
+      if (mounted) setState(() => _isFavorite = !newVal);
+    }
+  }
+
   Future<void> _toggleWatchlist() async {
     if (_mediaData == null) return;
     setState(() {
@@ -247,15 +271,21 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final savedQuality = prefs.getString('loom_player_quality_pref') ?? 'direct';
     final savedSubLang = prefs.getString('loom_player_subtitle_lang') ?? '';
     final savedAudioLang = prefs.getString('loom_player_audio_lang') ?? '';
+    final savedEpGrid = prefs.getBool('loom_episode_view_is_grid') ?? false;
     if (!mounted) return;
     setState(() {
       _selectedQuality = savedQuality;
-      // Track indices will be resolved once media data loads (in _applyLanguageDefaults)
       _selectedSubtitleIndex = 'none';
       _selectedAudioIndex = null;
       _pendingSubtitleLang = savedSubLang;
       _pendingAudioLang = savedAudioLang;
+      _episodeViewIsGrid = savedEpGrid;
     });
+  }
+
+  Future<void> _saveEpisodeViewPref(bool isGrid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('loom_episode_view_is_grid', isGrid);
   }
 
   // Resolved once tracks are known
@@ -305,6 +335,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   @override
   void dispose() {
     _ratingFlashTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -336,6 +367,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         }
         if (settings.containsKey('VERSION_PRIORITY')) {
           versionPriority = settings['VERSION_PRIORITY'];
+        }
+        if (mounted) {
+          setState(() => _showUpcomingEpisodes = settings['SHOW_UPCOMING_EPISODES'] != 'false');
         }
         // Apply default language preferences from settings (overrides empty SharedPreferences)
         final defaultSubLang = settings['DEFAULT_SUBTITLE_LANG'] as String? ?? '';
@@ -374,6 +408,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         _savedProgressSeconds = progress;
         _titleDisplayStyle = titleStyle;
         _isInWatchlist = isInWatchlist;
+        _isFavorite = data['is_favorite'] as bool? ?? false;
         _isLoading = false;
         _versionPriority = versionPriority;
         _selectedVersionId = bestVersionId ?? widget.mediaId;
@@ -508,11 +543,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       context: context,
       barrierDismissible: true,
       builder: (context) {
-        return _FixMatchDialog(
+        return FixMatchDialog(
           mediaId: widget.mediaId,
           apiService: widget.apiService,
           currentTitle: _mediaData?['title'] ?? '',
           currentYear: _mediaData?['year']?.toString() ?? '',
+          isShow: _mediaData?['type']?.toString() == 'Show',
           onMatchSuccess: () {
             _fetchDetails();
           },
@@ -945,6 +981,108 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     );
   }
 
+  Widget _buildShowStatusBadge(String status, {Map<String, dynamic>? nextEpisodeToAir}) {
+    final String label;
+    final Color color;
+    final IconData icon;
+    String? returnDate;
+
+    switch (status.toLowerCase()) {
+      case 'returning series':
+        color = const Color(0xFF4CAF50);
+        icon = Icons.fiber_manual_record;
+        if (nextEpisodeToAir != null) {
+          final airDate = nextEpisodeToAir['air_date']?.toString() ?? '';
+          if (airDate.isNotEmpty) {
+            returnDate = airDate;
+            label = 'Återkommer $airDate';
+          } else {
+            label = 'Pågående';
+          }
+        } else {
+          label = 'Pågående';
+        }
+        break;
+      case 'ended':
+        label = 'Avslutat';
+        color = Colors.white38;
+        icon = Icons.stop_circle_outlined;
+        break;
+      case 'canceled':
+      case 'cancelled':
+        label = 'Inställt';
+        color = Colors.redAccent;
+        icon = Icons.cancel_outlined;
+        break;
+      case 'in production':
+        label = 'Under produktion';
+        color = const Color(0xFFFFAB40);
+        icon = Icons.construction_outlined;
+        break;
+      case 'planned':
+        label = 'Planerad';
+        color = const Color(0xFF64B5F6);
+        icon = Icons.schedule_outlined;
+        break;
+      default:
+        label = status;
+        color = Colors.white38;
+        icon = Icons.info_outline;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.4), width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(returnDate != null ? Icons.calendar_today_outlined : icon, color: color, size: 12),
+          const SizedBox(width: 5),
+          Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.3)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCrewRow(String label, List<Map<String, dynamic>> people) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12, letterSpacing: 0.5),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: people.map((person) {
+            final name = person['name'] as String? ?? '';
+            final id = person['id']?.toString();
+            return ActionChip(
+              backgroundColor: Colors.white.withValues(alpha: 0.06),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              label: Text(name, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+              onPressed: id != null ? () {
+                if (widget.onPersonSelected != null) {
+                  widget.onPersonSelected!(id);
+                } else {
+                  Navigator.push(context, MaterialPageRoute(
+                    builder: (context) => PersonDetailsScreen(personId: id, apiService: widget.apiService),
+                  ));
+                }
+              } : null,
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
   String _buildTrailerSearchUrl(String title, String year) {
     return 'https://www.youtube.com/results?search_query=${Uri.encodeComponent("$title $year Official Trailer")}';
   }
@@ -974,10 +1112,14 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               child: const Text('Ny flik',
                   style: TextStyle(color: Colors.white70)),
             ),
-            TextButton(
+            OutlinedButton(
               onPressed: () => Navigator.pop(dialogContext, 'cancel'),
-              child:
-                  const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
             ),
           ],
         );
@@ -1065,6 +1207,34 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
             : null;
     final directorName = directorData?['name'] as String?;
     final directorId = directorData?['id']?.toString();
+
+    List<Map<String, dynamic>> parseCrewList(dynamic raw) {
+      if (raw is List) return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      if (raw is String) {
+        try { return (jsonDecode(raw) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList(); } catch (_) {}
+      }
+      return [];
+    }
+    final producers = parseCrewList(metadata['producers']);
+    final writers = parseCrewList(metadata['writers']);
+    final composers = parseCrewList(metadata['composers']);
+
+    // TV-serie specifik data
+    final isShow = (media['type']?.toString() ?? '') == 'Show';
+    final showStatus = metadata['status']?.toString();
+    final nextEpisodeRaw = metadata['next_episode_to_air'];
+    final nextEpisodeToAir = nextEpisodeRaw is Map<String, dynamic>
+        ? nextEpisodeRaw
+        : (nextEpisodeRaw is String && nextEpisodeRaw.isNotEmpty)
+            ? (() { try { return Map<String, dynamic>.from(jsonDecode(nextEpisodeRaw) as Map); } catch (_) { return null; } })()
+            : null;
+    final createdBy = parseCrewList(metadata['created_by']);
+    final networks = (metadata['networks'] is List)
+        ? (metadata['networks'] as List<dynamic>).map((n) => n.toString()).toList()
+        : metadata['networks'] is String
+            ? [metadata['networks'].toString()]
+            : <String>[];
+
     final logoPath = metadata['logo_path'] as String?;
     final providers = (metadata['watch_providers'] is Map &&
             metadata['watch_providers']['SE'] is Map)
@@ -1093,6 +1263,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         elevation: 0,
       ),
       body: SingleChildScrollView(
+        controller: _scrollController,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1219,6 +1390,44 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 ),
                               ),
                             ),
+                            // Runtime (speltid) under poster
+                            Builder(builder: (context) {
+                              final meta = _mediaData?['metadata'] ?? {};
+                              int durationSec = int.tryParse(meta['duration']?.toString() ?? '') ?? 0;
+                              if (durationSec == 0) {
+                                final runtimeMinutes = int.tryParse(meta['runtime']?.toString() ?? '') ?? 0;
+                                durationSec = runtimeMinutes * 60;
+                              }
+                              if (durationSec == 0) return const SizedBox.shrink();
+                              final totalMin = (durationSec / 60).round();
+                              final h = totalMin ~/ 60;
+                              final m = totalMin % 60;
+                              final label = h > 0 ? '${h}h ${m}min' : '${m}min';
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 10),
+                                child: Container(
+                                  width: 220,
+                                  padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.4),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.schedule, color: Colors.white38, size: 13),
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        label,
+                                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+
                             // Progress bar and minutes-left when in-progress
                             if (_savedProgressSeconds > 0) ...[
                               const SizedBox(height: 12),
@@ -1344,6 +1553,35 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            // Favorite star + Title row
+                            if (!widget.mediaId.startsWith('external_'))
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Tooltip(
+                                      message: _isFavorite ? 'Ta bort favorit' : 'Markera som favorit',
+                                      child: MouseRegion(
+                                        cursor: SystemMouseCursors.click,
+                                        child: GestureDetector(
+                                          onTap: _toggleFavorite,
+                                          child: AnimatedSwitcher(
+                                            duration: const Duration(milliseconds: 200),
+                                            child: Icon(
+                                              _isFavorite ? Icons.star : Icons.star_border,
+                                              key: ValueKey(_isFavorite),
+                                              color: _isFavorite ? const Color(0xFFFFD65C) : Colors.white38,
+                                              size: 28,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
                             // Title (Year) with translated/original logic
                             Builder(
                               builder: (context) {
@@ -1447,56 +1685,42 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               },
                             ),
 
-                            if (directorName != null) ...[
-                              const SizedBox(height: 8),
-                              MouseRegion(
-                                cursor: SystemMouseCursors.click,
-                                child: GestureDetector(
-                                  onTap: () {
-                                    if (directorId != null) {
-                                      if (widget.onPersonSelected != null) {
-                                        widget.onPersonSelected!(directorId);
-                                      } else {
-                                        Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (context) =>
-                                                PersonDetailsScreen(
-                                              personId: directorId,
-                                              apiService: widget.apiService,
-                                            ),
-                                          ),
-                                        );
-                                      }
-                                    }
-                                  },
-                                  child: Stack(
-                                    children: [
-                                      Text(
-                                        'Regi: $directorName',
-                                        style: TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.normal,
-                                          foreground: Paint()
-                                            ..style = PaintingStyle.stroke
-                                            ..strokeWidth = 1.8
-                                            ..color = Colors.black,
-                                        ),
-                                      ),
-                                      Text(
-                                        'Regi: $directorName',
-                                        style: TextStyle(
-                                          color: Colors.white.withValues(
-                                              alpha: 0.70), // elegant white70
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.normal,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                            // Show status badge
+                            if (isShow && showStatus != null && showStatus.isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              _buildShowStatusBadge(showStatus, nextEpisodeToAir: nextEpisodeToAir),
                             ],
+
+                            // Skapare (Creator/Showrunner) for shows
+                            if (isShow && createdBy.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              _buildCrewRow('Skapare', createdBy),
+                            ],
+
+                            // Director for movies
+                            if (!isShow && directorName != null) ...[
+                              const SizedBox(height: 8),
+                              _buildCrewRow('Regi', [{'name': directorName, 'id': directorId}]),
+                            ],
+
+                            // Producers (Producent)
+                            if (producers.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              _buildCrewRow('Producent', producers),
+                            ],
+
+                            // Writers (Manus)
+                            if (writers.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              _buildCrewRow('Manus', writers),
+                            ],
+
+                            // Composers (Musik)
+                            if (composers.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              _buildCrewRow('Musik', composers),
+                            ],
+
                             const SizedBox(height: 12),
 
                             // Subtitle Metadata details with highly legible high-contrast outlines
@@ -1691,7 +1915,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                       style: const TextStyle(
                                           color: Colors.white70, fontSize: 12)),
                                   onPressed: () {
-                                    if (widget.onGenreSelected != null) {
+                                    final isShow = _mediaData?['type']?.toString() == 'Show';
+                                    if (isShow && widget.onShowGenreSelected != null) {
+                                      widget.onShowGenreSelected!(g);
+                                    } else if (widget.onGenreSelected != null) {
                                       widget.onGenreSelected!(g);
                                     } else {
                                       Navigator.pop(context, g);
@@ -1992,9 +2219,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                                   ],
                                                 ),
                                                 actions: [
-                                                  TextButton(
-                                                      onPressed: () => Navigator.pop(ctx, false),
-                                                      child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+                                                  OutlinedButton(
+                                                    onPressed: () => Navigator.pop(ctx, false),
+                                                    style: OutlinedButton.styleFrom(
+                                                      foregroundColor: Colors.white70,
+                                                      side: const BorderSide(color: Colors.white24),
+                                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                                    ),
+                                                    child: const Text('Avbryt'),
+                                                  ),
                                                   ElevatedButton.icon(
                                                     onPressed: () => Navigator.pop(ctx, true),
                                                     icon: const Icon(Icons.delete_outline, size: 18),
@@ -3119,33 +3352,72 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       Rect.fromPoints(globalPos, globalPos),
       Offset.zero & overlay.size,
     );
+    final label = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
     final selected = await showMenu<String>(
       context: ctx,
       color: const Color(0xFF11151D),
       position: rel,
       items: [
         PopupMenuItem(
+          value: 'mark_watched',
+          child: Row(children: [
+            const Icon(Icons.check_circle_outline, size: 16, color: Color(0xFF4CAF50)),
+            const SizedBox(width: 8),
+            Text('Markera $label som sedd'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'mark_unwatched',
+          child: Row(children: [
+            const Icon(Icons.radio_button_unchecked, size: 16, color: Colors.white54),
+            const SizedBox(width: 8),
+            Text('Markera $label som osedd'),
+          ]),
+        ),
+        const PopupMenuDivider(),
+        if (_isAdmin) PopupMenuItem(
           value: 'delete_season',
           child: Row(children: [
             const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
             const SizedBox(width: 8),
             Text(
-              'Radera ${seasonNum == 0 ? "Specials" : "Säsong $seasonNum"} (${eps.length} avsnitt)',
+              'Radera $label (${eps.length} avsnitt)',
               style: const TextStyle(color: Colors.redAccent),
             ),
           ]),
         ),
       ],
     );
+
+    if (!mounted) return;
+
+    if (selected == 'mark_watched' || selected == 'mark_unwatched') {
+      try {
+        await widget.apiService.markSeasonSeen(widget.mediaId, seasonNum, selected == 'mark_watched');
+        if (mounted) setState(() => _mediaData = null);
+        _fetchDetails();
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Fel: $e')));
+      }
+      return;
+    }
+
     if (selected == 'delete_season' && mounted) {
-      final label = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
       final ok = await showDialog<bool>(
         context: context,
         builder: (d) => AlertDialog(
           title: const Text('Flytta till papperskorgen?'),
           content: Text('Ska $label (${eps.length} avsnitt) flyttas till papperskorgen?'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Avbryt')),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(d, false),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
+            ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
               onPressed: () => Navigator.pop(d, true),
@@ -3171,7 +3443,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   Future<void> _showEpisodeContextMenu(
-      BuildContext ctx, Offset globalPos, String epId, String label) async {
+      BuildContext ctx, Offset globalPos, String epId, String label, {bool isWatched = false, int progress = 0}) async {
     final overlay = Overlay.of(ctx).context.findRenderObject() as RenderBox;
     final rel = RelativeRect.fromRect(
       Rect.fromPoints(globalPos, globalPos),
@@ -3190,15 +3462,35 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
             Text('Spela $label'),
           ]),
         ),
+        if (progress > 60)
+          PopupMenuItem(
+            value: 'resume',
+            child: Row(children: [
+              const Icon(Icons.play_circle_outline, size: 16, color: Color(0xFF8A5BFF)),
+              const SizedBox(width: 8),
+              Text('Fortsätt $label'),
+            ]),
+          ),
         const PopupMenuDivider(),
         PopupMenuItem(
-          value: 'delete',
+          value: isWatched ? 'mark_unwatched' : 'mark_watched',
           child: Row(children: [
-            const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+            Icon(isWatched ? Icons.radio_button_unchecked : Icons.check_circle_outline, size: 16, color: isWatched ? Colors.white54 : const Color(0xFF4CAF50)),
             const SizedBox(width: 8),
-            Text('Radera $label', style: const TextStyle(color: Colors.redAccent)),
+            Text(isWatched ? 'Markera som osedd' : 'Markera som sedd'),
           ]),
         ),
+        if (_isAdmin) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem(
+            value: 'delete',
+            child: Row(children: [
+              const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+              const SizedBox(width: 8),
+              Text('Radera $label', style: const TextStyle(color: Colors.redAccent)),
+            ]),
+          ),
+        ],
       ],
     );
     if (!mounted) return;
@@ -3210,6 +3502,22 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
           startFromSeconds: 0,
         ),
       ));
+    } else if (selected == 'resume') {
+      Navigator.push(context, MaterialPageRoute(
+        builder: (_) => VideoPlayerScreen(
+          mediaId: epId,
+          apiService: widget.apiService,
+          startFromSeconds: progress,
+        ),
+      ));
+    } else if (selected == 'mark_watched' || selected == 'mark_unwatched') {
+      try {
+        await widget.apiService.toggleEpisodeSeenStatus(epId, selected == 'mark_watched');
+        if (mounted) setState(() => _mediaData = null);
+        _fetchDetails();
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Fel: $e')));
+      }
     } else if (selected == 'delete') {
       final ok = await showDialog<bool>(
         context: context,
@@ -3217,7 +3525,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
           title: const Text('Flytta till papperskorgen?'),
           content: Text('Ska $label flyttas till papperskorgen?'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Avbryt')),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(d, false),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
+            ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
               onPressed: () => Navigator.pop(d, true),
@@ -3243,116 +3559,1020 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   Widget _buildSeasonsSection(List<dynamic> episodes) {
-    final Map<int, List<Map<String, dynamic>>> seasons = {};
+    // Build local seasons map
+    final Map<int, List<Map<String, dynamic>>> localSeasons = {};
     for (final ep in episodes) {
       final episode = Map<String, dynamic>.from(ep as Map);
       final season = int.tryParse(episode['season_number']?.toString() ?? '0') ?? 0;
-      seasons.putIfAbsent(season, () => []).add(episode);
+      localSeasons.putIfAbsent(season, () => []).add(episode);
     }
-    final sortedSeasons = seasons.keys.toList()..sort();
+    if (localSeasons.isEmpty) return const SizedBox.shrink();
 
+    // Parse TMDB seasons metadata
+    final metadata = _mediaData?['metadata'];
+    List<Map<String, dynamic>> tmdbSeasons = [];
+    if (metadata is Map) {
+      final seasonsRaw = metadata['seasons_json']?.toString() ?? '';
+      if (seasonsRaw.isNotEmpty) {
+        for (final e in _parseJsonList(seasonsRaw)) {
+          if (e is Map) tmdbSeasons.add(Map<String, dynamic>.from(e));
+        }
+      }
+    }
+
+    // Build merged season list: TMDB seasons (sorted) + any local-only seasons not in TMDB
+    final Set<int> tmdbSeasonNums = tmdbSeasons.map((s) => (s['season_number'] as num?)?.toInt() ?? 0).toSet();
+    final List<int> localOnly = localSeasons.keys.where((n) => !tmdbSeasonNums.contains(n)).toList()..sort();
+
+    // Compose display list: TMDB seasons first (in order), then local-only ones
+    final List<Map<String, dynamic>> displaySeasons = [
+      ...tmdbSeasons.where((s) {
+        final n = (s['season_number'] as num?)?.toInt() ?? 0;
+        return n >= 0; // include specials (0)
+      }),
+      ...localOnly.map<Map<String, dynamic>>((n) => <String, dynamic>{
+        'season_number': n,
+        'name': n == 0 ? 'Specials' : 'Säsong $n',
+        'episode_count': localSeasons[n]!.length,
+        'poster_path': null,
+      }),
+    ];
+
+    if (displaySeasons.isEmpty) {
+      for (final n in localSeasons.keys.toList()..sort()) {
+        displaySeasons.add(<String, dynamic>{
+          'season_number': n,
+          'name': n == 0 ? 'Specials' : 'Säsong $n',
+          'episode_count': localSeasons[n]!.length,
+          'poster_path': null,
+        });
+      }
+    }
+
+    // Auto-select season for episode view
+    if (_selectedSeasonNumber == -1) {
+      final lastEpId = metadata is Map ? metadata['last_watched_episode_id']?.toString() : null;
+      int autoSeason = (displaySeasons.firstWhere(
+        (s) => localSeasons.containsKey((s['season_number'] as num?)?.toInt() ?? -1),
+        orElse: () => displaySeasons.first,
+      )['season_number'] as num?)?.toInt() ?? 1;
+      if (lastEpId != null) {
+        for (final ep in episodes) {
+          if (ep['id']?.toString() == lastEpId) {
+            autoSeason = int.tryParse(ep['season_number']?.toString() ?? '') ?? autoSeason;
+            break;
+          }
+        }
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedSeasonNumber == -1) {
+          setState(() => _selectedSeasonNumber = autoSeason);
+        }
+      });
+    }
+
+    if (_seasonOverviewMode) {
+      return _buildSeasonOverview(displaySeasons, localSeasons);
+    } else {
+      return _buildSeasonEpisodeView(localSeasons, displaySeasons);
+    }
+  }
+
+  // ── Season overview ──────────────────────────────────────────────────────
+
+  Widget _buildSeasonOverview(
+    List<Map<String, dynamic>> displaySeasons,
+    Map<int, List<Map<String, dynamic>>> localSeasons,
+  ) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(40, 0, 40, 30),
+      padding: const EdgeInsets.fromLTRB(40, 0, 40, 40),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Avsnitt',
-            style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 12),
-          ...sortedSeasons.map((seasonNum) {
-            final eps = seasons[seasonNum]!;
-            final seasonLabel = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
-            return Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.02),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-              ),
-              child: Theme(
-                data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                child: ExpansionTile(
-                  initiallyExpanded: sortedSeasons.length == 1,
-                  collapsedIconColor: Colors.white38,
-                  iconColor: const Color(0xFF8A5BFF),
-                  // Höger-musknapp på säsongstiteln (admin only)
-                  title: GestureDetector(
-                    onSecondaryTapUp: _isAdmin
-                        ? (d) => _showSeasonContextMenu(context, d.globalPosition, seasonNum, eps)
-                        : null,
-                    child: Text(
-                      '$seasonLabel  ·  ${eps.length} avsnitt',
-                      style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15),
+          const Text('Säsonger', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 180,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              childAspectRatio: 0.62,
+            ),
+            itemCount: displaySeasons.length,
+            itemBuilder: (context, index) {
+              final s = displaySeasons[index];
+              final sNum = (s['season_number'] as num?)?.toInt() ?? 0;
+              final hasLocal = localSeasons.containsKey(sNum);
+              final sEps = localSeasons[sNum] ?? [];
+              final watched = sEps.where((e) => e['is_watched'] == 1 || e['is_watched'] == true).length;
+              final total = sEps.length;
+              final tmdbTotal = (s['episode_count'] as num?)?.toInt() ?? total;
+              final allWatched = total > 0 && watched == total;
+              final poster = s['poster_path']?.toString();
+              final sName = s['name']?.toString() ?? (sNum == 0 ? 'Specials' : 'Säsong $sNum');
+              final airDate = s['air_date']?.toString() ?? '';
+              final year = airDate.length >= 4 ? airDate.substring(0, 4) : '';
+
+              // Find next to watch in this season
+              Map<String, dynamic>? nextEp;
+              if (hasLocal) {
+                for (final ep in sEps) {
+                  if (ep['is_watched'] != 1 && ep['is_watched'] != true) {
+                    nextEp = ep;
+                    break;
+                  }
+                }
+              }
+
+              return MouseRegion(
+                cursor: hasLocal ? SystemMouseCursors.click : SystemMouseCursors.basic,
+                child: GestureDetector(
+                onTap: hasLocal
+                    ? () => setState(() {
+                          _selectedSeasonNumber = sNum;
+                          _seasonOverviewMode = false;
+                        })
+                    : null,
+                onSecondaryTapUp: hasLocal
+                    ? (d) => _showSeasonContextMenu(context, d.globalPosition, sNum, sEps)
+                    : null,
+                child: AnimatedOpacity(
+                  opacity: hasLocal ? 1.0 : 0.38,
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Poster
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                if (poster != null && poster.isNotEmpty)
+                                  Image.network(poster, fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(
+                                          color: Colors.white.withValues(alpha: 0.05),
+                                          child: const Icon(Icons.tv, color: Colors.white24, size: 32)))
+                                else
+                                  Container(
+                                    color: Colors.white.withValues(alpha: 0.05),
+                                    child: const Icon(Icons.tv, color: Colors.white24, size: 32),
+                                  ),
+                                // Not-local overlay
+                                if (!hasLocal)
+                                  Container(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    child: const Center(
+                                      child: Icon(Icons.lock_outline, color: Colors.white38, size: 28),
+                                    ),
+                                  ),
+                                // Watched overlay
+                                if (allWatched)
+                                  Container(color: Colors.black.withValues(alpha: 0.35)),
+                                // "Next" banner
+                                if (nextEp != null && !allWatched)
+                                  Positioned(
+                                    top: 6,
+                                    left: 6,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF8A5BFF),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        'E${(nextEp['episode_number'] as num?)?.toInt() ?? 1}',
+                                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                  ),
+                                // Watched check
+                                if (allWatched)
+                                  Positioned(
+                                    top: 6,
+                                    right: 6,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(3),
+                                      decoration: const BoxDecoration(color: Color(0xFF4CAF50), shape: BoxShape.circle),
+                                      child: const Icon(Icons.check, color: Colors.white, size: 10),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        // Info
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(sName,
+                                  style: TextStyle(
+                                      color: hasLocal ? Colors.white : Colors.white54,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis),
+                              const SizedBox(height: 2),
+                              Text(
+                                hasLocal ? '$total av $tmdbTotal avsnitt' : '$tmdbTotal avsnitt${year.isNotEmpty ? ' · $year' : ''}',
+                                style: TextStyle(color: Colors.white.withValues(alpha: 0.40), fontSize: 10),
+                              ),
+                              if (hasLocal && total > 0) ...[
+                                const SizedBox(height: 5),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(3),
+                                  child: LinearProgressIndicator(
+                                    value: watched / total,
+                                    minHeight: 3,
+                                    color: allWatched ? const Color(0xFF4CAF50) : const Color(0xFF8A5BFF),
+                                    backgroundColor: Colors.white.withValues(alpha: 0.12),
+                                  ),
+                                ),
+                              ],
+                              if (!hasLocal)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text('Ej tillgänglig',
+                                      style: TextStyle(color: Colors.white.withValues(alpha: 0.30), fontSize: 10)),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  children: eps.map((ep) {
-                    final epNum = int.tryParse(ep['episode_number']?.toString() ?? '0') ?? 0;
-                    final epTitle = ep['title']?.toString() ?? 'Avsnitt $epNum';
-                    final epId = ep['id']?.toString();
-                    final label =
-                        'S${seasonNum.toString().padLeft(2, '0')}E${epNum.toString().padLeft(2, '0')}';
-                    return Material(
-                      type: MaterialType.transparency,
-                      // Höger-musknapp på enskilt avsnitt (admin only)
-                      child: GestureDetector(
-                        onSecondaryTapUp: (_isAdmin && epId != null)
-                            ? (d) => _showEpisodeContextMenu(
-                                context, d.globalPosition, epId, label)
-                            : null,
-                        child: ListTile(
-                          contentPadding:
-                              const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                          leading: Container(
-                            width: 52,
-                            height: 32,
-                            alignment: Alignment.center,
+                ),
+              ),  // GestureDetector (child of MouseRegion)
+              );  // MouseRegion
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Episode view (after selecting a season) ──────────────────────────────
+
+  Widget _buildSeasonEpisodeView(
+    Map<int, List<Map<String, dynamic>>> localSeasons,
+    List<Map<String, dynamic>> displaySeasons,
+  ) {
+    final sortedLocal = localSeasons.keys.toList()..sort();
+    final activeSeason = _selectedSeasonNumber == -1 ? sortedLocal.first : _selectedSeasonNumber;
+    final localActiveEps = List<Map<String, dynamic>>.from(localSeasons[activeSeason] ?? localSeasons[sortedLocal.first]!);
+
+    // Build combined list with upcoming placeholder episodes if enabled
+    List<Map<String, dynamic>> activeEps = localActiveEps;
+    if (_showUpcomingEpisodes) {
+      final tmdbSeason = displaySeasons.firstWhere(
+        (s) => (s['season_number'] as num?)?.toInt() == activeSeason,
+        orElse: () => {},
+      );
+      final tmdbCount = (tmdbSeason['episode_count'] as num?)?.toInt() ?? 0;
+      if (tmdbCount > localActiveEps.length) {
+        final localEpNums = localActiveEps.map((e) => int.tryParse(e['episode_number']?.toString() ?? '0') ?? 0).toSet();
+        final placeholders = <Map<String, dynamic>>[];
+        for (int n = 1; n <= tmdbCount; n++) {
+          if (!localEpNums.contains(n)) {
+            placeholders.add({
+              'episode_number': n,
+              'season_number': activeSeason,
+              'title': 'Avsnitt $n',
+              'file_path': null,
+              'id': null,
+              '_is_upcoming': true,
+            });
+          }
+        }
+        activeEps = [...localActiveEps, ...placeholders]
+          ..sort((a, b) => (int.tryParse(a['episode_number']?.toString() ?? '0') ?? 0)
+              .compareTo(int.tryParse(b['episode_number']?.toString() ?? '0') ?? 0));
+      }
+    }
+
+    // Find next unwatched episode (from local only)
+    Map<String, dynamic>? nextEp;
+    for (final ep in localActiveEps) {
+      if (ep['is_watched'] != 1 && ep['is_watched'] != true) { nextEp = ep; break; }
+    }
+
+    final watchedCount = localActiveEps.where((e) => e['is_watched'] == 1 || e['is_watched'] == true).length;
+    final totalCount = localActiveEps.length;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(40, 0, 40, 40),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Header row ───────────────────────────────────────────────────
+          Row(
+            children: [
+              // Back to season overview
+              InkWell(
+                onTap: () => setState(() => _seasonOverviewMode = true),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF8A5BFF), size: 14),
+                      const SizedBox(width: 4),
+                      Text('Säsonger', style: TextStyle(color: const Color(0xFF8A5BFF), fontSize: 13)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  activeSeason == 0 ? 'Specials' : 'Säsong $activeSeason',
+                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // Grid / List toggle
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildViewToggleBtn(Icons.view_list_rounded, !_episodeViewIsGrid, () { setState(() => _episodeViewIsGrid = false); _saveEpisodeViewPref(false); }, tooltip: 'Lista'),
+                    _buildViewToggleBtn(Icons.grid_view_rounded, _episodeViewIsGrid, () { setState(() => _episodeViewIsGrid = true); _saveEpisodeViewPref(true); }, tooltip: 'Rutnät'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // ── Season chips (quick jump) ────────────────────────────────────
+          if (sortedLocal.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: sortedLocal.map((sNum) {
+                    final isActive = sNum == activeSeason;
+                    final sLabel = sNum == 0 ? 'Specials' : 'S$sNum';
+                    final sEps = localSeasons[sNum]!;
+                    final sWatched = sEps.where((e) => e['is_watched'] == 1 || e['is_watched'] == true).length;
+                    final allWatched = sWatched == sEps.length && sEps.isNotEmpty;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                        onTap: () => setState(() => _selectedSeasonNumber = sNum),
+                        onSecondaryTapUp: (d) => _showSeasonContextMenu(context, d.globalPosition, sNum, sEps),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: isActive ? const Color(0xFF8A5BFF).withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.04),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isActive ? const Color(0xFF8A5BFF) : Colors.white.withValues(alpha: 0.12),
+                              width: isActive ? 1.5 : 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (allWatched) ...[
+                                const Icon(Icons.check_circle, color: Color(0xFF4CAF50), size: 12),
+                                const SizedBox(width: 4),
+                              ],
+                              Text(sLabel,
+                                  style: TextStyle(
+                                      color: isActive ? Colors.white : Colors.white60,
+                                      fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                                      fontSize: 12)),
+                              const SizedBox(width: 4),
+                              Text('$sWatched/${sEps.length}',
+                                  style: TextStyle(
+                                      color: isActive ? const Color(0xFFB593FF) : Colors.white30,
+                                      fontSize: 10)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      ),  // GestureDetector
+                    ),    // MouseRegion
+                  );
+                }).toList(),
+                ),
+              ),
+            ),
+
+          // ── Season progress bar ──────────────────────────────────────────
+          if (totalCount > 0) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: watchedCount / totalCount,
+                      minHeight: 5,
+                      color: const Color(0xFF8A5BFF),
+                      backgroundColor: Colors.white.withValues(alpha: 0.08),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text('$watchedCount av $totalCount sedda',
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          // ── Nästa att titta ──────────────────────────────────────────────
+          if (nextEp != null) ...[
+            _buildNextEpisodeBanner(nextEp, activeSeason),
+            const SizedBox(height: 12),
+          ],
+
+          // ── Episode list / grid ──────────────────────────────────────────
+          _episodeViewIsGrid
+              ? _buildEpisodeGrid(activeEps, activeSeason)
+              : _buildEpisodeList(activeEps, activeSeason),
+        ],
+      ),
+    );
+  }
+
+  // JSON helper (avoids importing dart:convert separately)
+  List<dynamic> _parseJsonList(String raw) {
+    try {
+      // ignore: avoid_dynamic_calls
+      return (raw.isEmpty || raw == '[]') ? [] : (jsonDecode(raw) as List);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Widget _buildViewToggleBtn(IconData icon, bool active, VoidCallback onTap, {String tooltip = ''}) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(7),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.all(7),
+          decoration: BoxDecoration(
+            color: active ? const Color(0xFF8A5BFF).withValues(alpha: 0.18) : Colors.transparent,
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Icon(icon, color: active ? const Color(0xFF8A5BFF) : Colors.white38, size: 18),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNextEpisodeBanner(Map<String, dynamic> ep, int seasonNum) {
+    final epNum = int.tryParse(ep['episode_number']?.toString() ?? '0') ?? 0;
+    final epTitle = ep['title']?.toString() ?? 'Avsnitt $epNum';
+    final epId = ep['id']?.toString();
+    final label = 'S${seasonNum.toString().padLeft(2, '0')}E${epNum.toString().padLeft(2, '0')}';
+    final progress = int.tryParse(ep['playback_progress']?.toString() ?? '0') ?? 0;
+
+    return GestureDetector(
+      onTap: epId != null
+          ? () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => VideoPlayerScreen(
+                mediaId: epId,
+                apiService: widget.apiService,
+                startFromSeconds: progress > 60 ? progress : 0,
+              )))
+          : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [const Color(0xFF8A5BFF).withValues(alpha: 0.15), const Color(0xFF8A5BFF).withValues(alpha: 0.05)],
+          ),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF8A5BFF).withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.play_arrow_rounded, color: Color(0xFF8A5BFF), size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Nästa att titta', style: TextStyle(color: Color(0xFFB593FF), fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+                  const SizedBox(height: 2),
+                  Text('$label  ·  $epTitle', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  if (progress > 60) ...[
+                    const SizedBox(height: 4),
+                    Text('${(progress ~/ 60)} min in', style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11)),
+                  ],
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: Colors.white.withValues(alpha: 0.4)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEpisodeList(List<Map<String, dynamic>> eps, int seasonNum) {
+    return Column(
+      children: eps.map((ep) {
+        final epNum = int.tryParse(ep['episode_number']?.toString() ?? '0') ?? 0;
+        final epTitle = ep['title']?.toString() ?? 'Avsnitt $epNum';
+        final epId = ep['id']?.toString();
+        final label = 'S${seasonNum.toString().padLeft(2, '0')}E${epNum.toString().padLeft(2, '0')}';
+        final isWatched = ep['is_watched'] == 1 || ep['is_watched'] == true;
+        final progress = int.tryParse(ep['playback_progress']?.toString() ?? '0') ?? 0;
+        final duration = int.tryParse(ep['duration']?.toString() ?? '0') ?? 0;
+        final hasProgress = progress > 60 && !isWatched;
+        final airDate = ep['air_date']?.toString() ?? '';
+        final stillPath = ep['still_path']?.toString();
+        final overview = ep['overview']?.toString() ?? '';
+        final isUpcoming = ep['_is_upcoming'] == true;
+
+        Widget leadingWidget;
+        if (stillPath != null && stillPath.isNotEmpty) {
+          leadingWidget = ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+              width: 96,
+              height: 54,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.network(
+                    stillPath,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      child: const Icon(Icons.tv, color: Colors.white24, size: 20),
+                    ),
+                  ),
+                  if (isWatched)
+                    Container(color: Colors.black.withValues(alpha: 0.45)),
+                  Positioned(
+                    left: 4,
+                    bottom: 4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.65),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(label,
+                          style: TextStyle(
+                              color: isWatched ? Colors.white38 : const Color(0xFF8A5BFF),
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        } else {
+          leadingWidget = Container(
+            width: 56,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            child: Text(label,
+                style: TextStyle(
+                    color: isWatched ? Colors.white30 : const Color(0xFF8A5BFF),
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold)),
+          );
+        }
+
+        return Material(
+          type: MaterialType.transparency,
+          child: GestureDetector(
+            onSecondaryTapUp: (epId != null)
+                ? (d) => _showEpisodeContextMenu(context, d.globalPosition, epId, label,
+                    isWatched: isWatched, progress: progress)
+                : null,
+            child: InkWell(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => EpisodeDetailsScreen(
+                    episode: ep,
+                    showTitle: _mediaData?['title']?.toString() ?? '',
+                    showFanartPath: _mediaData?['fanart_path']?.toString(),
+                    apiService: widget.apiService,
+                    onStatusChanged: () {
+                      if (mounted) setState(() => _mediaData = null);
+                      _fetchDetails();
+                    },
+                  ),
+                ),
+              ),
+              borderRadius: BorderRadius.circular(10),
+              child: Opacity(
+                opacity: isUpcoming ? 0.40 : 1.0,
+                child: Container(
+                margin: const EdgeInsets.only(bottom: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: isWatched ? 0.01 : 0.03),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                ),
+                child: Column(
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.fromLTRB(
+                          12, stillPath != null && stillPath.isNotEmpty ? 8 : 6, 8,
+                          stillPath != null && stillPath.isNotEmpty ? 8 : 6),
+                      leading: leadingWidget,
+                      title: Text(
+                        epTitle,
+                        style: TextStyle(color: isWatched ? Colors.white38 : Colors.white, fontSize: 14),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: airDate.isNotEmpty
+                          ? Text(airDate,
+                              style: TextStyle(color: Colors.white.withValues(alpha: 0.28), fontSize: 11))
+                          : null,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Watched toggle
+                          Tooltip(
+                            message: isWatched ? 'Markera som osedd' : 'Markera som sedd',
+                            child: InkWell(
+                              onTap: epId != null
+                                  ? () async {
+                                      try {
+                                        await widget.apiService.toggleEpisodeSeenStatus(epId, !isWatched);
+                                        if (mounted) setState(() => _mediaData = null);
+                                        _fetchDetails();
+                                      } catch (_) {}
+                                    }
+                                  : null,
+                              borderRadius: BorderRadius.circular(20),
+                              child: Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Icon(
+                                  isWatched ? Icons.check_circle : Icons.radio_button_unchecked,
+                                  color: isWatched ? const Color(0xFF4CAF50) : Colors.white24,
+                                  size: 20,
+                                ),
+                              ),
+                            ),
+                          ),
+                          // Play button
+                          if (epId != null)
+                            IconButton(
+                              icon: Icon(
+                                hasProgress ? Icons.play_circle_outline : Icons.play_arrow_rounded,
+                                color: hasProgress ? const Color(0xFFB593FF) : const Color(0xFF8A5BFF),
+                                size: 28,
+                              ),
+                              tooltip: hasProgress ? 'Fortsätt' : 'Spela',
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (_) => VideoPlayerScreen(
+                                          mediaId: epId,
+                                          apiService: widget.apiService,
+                                          startFromSeconds: hasProgress ? progress : 0,
+                                        )),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    // Progress bar for in-progress episodes
+                    if (hasProgress && duration > 0)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: LinearProgressIndicator(
+                            value: (progress / duration).clamp(0.0, 1.0),
+                            minHeight: 3,
+                            color: const Color(0xFF8A5BFF),
+                            backgroundColor: Colors.white.withValues(alpha: 0.08),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              ),  // Opacity
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  void _showEpisodeDetailDialog(
+    BuildContext context, {
+    String? epId,
+    required String label,
+    required String title,
+    required String airDate,
+    required String overview,
+    String? stillPath,
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => Dialog(
+        backgroundColor: const Color(0xFF0E1219),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.45,
+            maxHeight: MediaQuery.of(context).size.height * 0.75,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Still image
+              if (stillPath != null && stillPath.isNotEmpty)
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Image.network(
+                      stillPath,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        color: Colors.white.withValues(alpha: 0.05),
+                        child: const Icon(Icons.tv, color: Colors.white24, size: 40),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Container(
+                      color: Colors.white.withValues(alpha: 0.04),
+                      child: const Icon(Icons.tv, color: Colors.white12, size: 48),
+                    ),
+                  ),
+                ),
+
+              // Content
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Label chip + close
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.06),
+                              color: const Color(0xFF8A5BFF).withValues(alpha: 0.18),
                               borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.08)),
+                              border: Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.4)),
                             ),
                             child: Text(label,
                                 style: const TextStyle(
-                                    color: Color(0xFF8A5BFF),
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold)),
+                                    color: Color(0xFF8A5BFF), fontSize: 12, fontWeight: FontWeight.bold)),
                           ),
-                          title: Text(epTitle,
-                              style: const TextStyle(color: Colors.white, fontSize: 14),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          trailing: epId != null
-                              ? IconButton(
-                                  icon: const Icon(Icons.play_circle_outline,
-                                      color: Color(0xFF8A5BFF), size: 28),
-                                  onPressed: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => VideoPlayerScreen(
-                                          mediaId: epId,
-                                          apiService: widget.apiService,
-                                          startFromSeconds: 0,
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                )
-                              : null,
-                        ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
                       ),
-                    );
-                  }).toList(),
+                      const SizedBox(height: 10),
+
+                      // Title
+                      Text(title,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+
+                      // Air date
+                      if (airDate.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Text(airDate,
+                            style: TextStyle(color: Colors.white.withValues(alpha: 0.40), fontSize: 12)),
+                      ],
+
+                      // Overview
+                      if (overview.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        Text(overview,
+                            style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.75),
+                                fontSize: 13,
+                                height: 1.5)),
+                      ] else ...[
+                        const SizedBox(height: 14),
+                        Text('Ingen beskrivning tillgänglig.',
+                            style: TextStyle(color: Colors.white.withValues(alpha: 0.30), fontSize: 13)),
+                      ],
+                    ],
+                  ),
                 ),
               ),
-            );
-          }),
-        ],
+            ],
+          ),
+        ),
       ),
+    );
+  }
+
+  Widget _buildEpisodeGrid(List<Map<String, dynamic>> eps, int seasonNum) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 220,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 1.55,
+      ),
+      itemCount: eps.length,
+      itemBuilder: (context, index) {
+        final ep = eps[index];
+        final epNum = int.tryParse(ep['episode_number']?.toString() ?? '0') ?? 0;
+        final epTitle = ep['title']?.toString() ?? 'Avsnitt $epNum';
+        final epId = ep['id']?.toString();
+        final label = 'S${seasonNum.toString().padLeft(2, '0')}E${epNum.toString().padLeft(2, '0')}';
+        final isWatched = ep['is_watched'] == 1 || ep['is_watched'] == true;
+        final progress = int.tryParse(ep['playback_progress']?.toString() ?? '0') ?? 0;
+        final duration = int.tryParse(ep['duration']?.toString() ?? '0') ?? 0;
+        final hasProgress = progress > 60 && !isWatched;
+        final stillPath = ep['still_path']?.toString();
+        final overview = ep['overview']?.toString() ?? '';
+        final airDate = ep['air_date']?.toString() ?? '';
+        final isUpcoming = ep['_is_upcoming'] == true;
+
+        return Opacity(
+          opacity: isUpcoming ? 0.40 : 1.0,
+          child: GestureDetector(
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => EpisodeDetailsScreen(
+                episode: ep,
+                showTitle: _mediaData?['title']?.toString() ?? '',
+                showFanartPath: _mediaData?['fanart_path']?.toString(),
+                apiService: widget.apiService,
+                onStatusChanged: () {
+                  if (mounted) setState(() => _mediaData = null);
+                  _fetchDetails();
+                },
+              ),
+            ),
+          ),
+          onDoubleTap: epId != null
+              ? () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => VideoPlayerScreen(
+                    mediaId: epId,
+                    apiService: widget.apiService,
+                    startFromSeconds: hasProgress ? progress : 0,
+                  )))
+              : null,
+          onSecondaryTapUp: epId != null
+              ? (d) => _showEpisodeContextMenu(context, d.globalPosition, epId, label, isWatched: isWatched, progress: progress)
+              : null,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: isWatched ? 0.02 : 0.04),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Still image background
+                if (stillPath != null && stillPath.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      stillPath,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    ),
+                  ),
+                // Watched overlay
+                if (isWatched)
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                // Bottom gradient + label + title
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.bottomCenter,
+                        end: Alignment.topCenter,
+                        colors: [Colors.black.withValues(alpha: 0.88), Colors.transparent],
+                      ),
+                      borderRadius: const BorderRadius.only(
+                          bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (hasProgress && duration > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(2),
+                              child: LinearProgressIndicator(
+                                value: (progress / duration).clamp(0.0, 1.0),
+                                minHeight: 3,
+                                color: const Color(0xFF8A5BFF),
+                                backgroundColor: Colors.white12,
+                              ),
+                            ),
+                          ),
+                        Text(label,
+                            style: const TextStyle(
+                                color: Color(0xFFB593FF), fontSize: 10, fontWeight: FontWeight.bold)),
+                        Text(epTitle,
+                            style: const TextStyle(color: Colors.white, fontSize: 11),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis),
+                      ],
+                    ),
+                  ),
+                ),
+                // Watched check top-left
+                if (isWatched)
+                  Positioned(
+                    top: 6,
+                    left: 6,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: const BoxDecoration(color: Color(0xFF4CAF50), shape: BoxShape.circle),
+                      child: const Icon(Icons.check, color: Colors.white, size: 10),
+                    ),
+                  ),
+                // Play hint center
+                Center(
+                  child: Icon(
+                    isWatched ? Icons.replay_rounded : Icons.play_circle_outline_rounded,
+                    color: Colors.white.withValues(alpha: stillPath != null && stillPath.isNotEmpty ? 0.0 : 0.30),
+                    size: 28,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ),  // Opacity
+        );
+      },
     );
   }
 
@@ -3716,563 +4936,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 extension FilterList<T> on List<T> {
   List<T> filter(bool Function(T) test) {
     return where(test).toList();
-  }
-}
-
-class _FixMatchDialog extends StatefulWidget {
-  final String mediaId;
-  final ApiService apiService;
-  final String currentTitle;
-  final String currentYear;
-  final VoidCallback onMatchSuccess;
-
-  const _FixMatchDialog({
-    required this.mediaId,
-    required this.apiService,
-    required this.currentTitle,
-    required this.currentYear,
-    required this.onMatchSuccess,
-  });
-
-  @override
-  State<_FixMatchDialog> createState() => _FixMatchDialogState();
-}
-
-class _FixMatchDialogState extends State<_FixMatchDialog> {
-  final TextEditingController _searchController = TextEditingController();
-  final TextEditingController _yearController = TextEditingController();
-  final TextEditingController _directIdController = TextEditingController();
-
-  bool _searching = false;
-  bool _matching = false;
-  String? _error;
-  List<dynamic> _candidates = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _searchController.text = widget.currentTitle;
-    _yearController.text = widget.currentYear;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _searchCandidates();
-    });
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    _yearController.dispose();
-    _directIdController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _searchCandidates() async {
-    if (_searchController.text.trim().isEmpty) return;
-    setState(() {
-      _searching = true;
-      _error = null;
-    });
-    try {
-      final results = await widget.apiService.searchTmdbCandidates(
-        widget.mediaId,
-        _searchController.text.trim(),
-        year: _yearController.text.trim(),
-      );
-      setState(() {
-        _candidates = results;
-        _searching = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = 'Kunde inte söka: ${e.toString()}';
-        _searching = false;
-      });
-    }
-  }
-
-  Future<void> _applyMatch(String tmdbId) async {
-    setState(() {
-      _matching = true;
-      _error = null;
-    });
-    try {
-      await widget.apiService.fixMatch(widget.mediaId, tmdbId);
-      widget.onMatchSuccess();
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Matchningen uppdaterades och mediauppgifterna har laddats om!'),
-            backgroundColor: Color(0xFF8A5BFF),
-          ),
-        );
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'Kunde inte korrigera matchning: ${e.toString()}';
-        _matching = false;
-      });
-    }
-  }
-
-  void _applyDirectMatch() {
-    String input = _directIdController.text.trim();
-    if (input.isEmpty) return;
-
-    String tmdbId = input;
-    final movieRegExp = RegExp(r'themoviedb\.org/movie/(\d+)');
-    final tvRegExp = RegExp(r'themoviedb\.org/tv/(\d+)');
-    if (movieRegExp.hasMatch(input)) {
-      tmdbId = movieRegExp.firstMatch(input)!.group(1)!;
-    } else if (tvRegExp.hasMatch(input)) {
-      tmdbId = tvRegExp.firstMatch(input)!.group(1)!;
-    }
-
-    _applyMatch(tmdbId);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: Container(
-          width: 700,
-          height: 600,
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F0B1E).withValues(alpha: 0.95),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.5),
-                blurRadius: 30,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Korrigera matchning',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close,
-                          color: Colors.white60, size: 18),
-                      label: const Text(
-                        'Stäng',
-                        style: TextStyle(
-                            color: Colors.white60, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(color: Colors.white10, height: 1),
-
-              // Body
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (_error != null) ...[
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.redAccent.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                                color: Colors.redAccent.withValues(alpha: 0.3)),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.error_outline,
-                                  color: Colors.redAccent),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  _error!,
-                                  style:
-                                      const TextStyle(color: Colors.redAccent),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                      ],
-
-                      // Match Direct Section
-                      const Text(
-                        'Matcha med TMDB ID eller Länk direkt',
-                        style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _directIdController,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                hintText:
-                                    'T.ex. 272 eller https://www.themoviedb.org/movie/272-batman-begins',
-                                hintStyle:
-                                    const TextStyle(color: Colors.white30),
-                                filled: true,
-                                fillColor: Colors.white.withValues(alpha: 0.04),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08)),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08)),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: const BorderSide(
-                                      color: Color(0xFF8A5BFF)),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 14),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Tooltip(
-                            message:
-                                'Matcha den här titeln direkt mot en TMDB-post',
-                            child: ElevatedButton.icon(
-                              onPressed: _matching ? null : _applyDirectMatch,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF9A75FF),
-                                foregroundColor: Colors.white,
-                                minimumSize: const Size(176, 50),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 20, vertical: 14),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12)),
-                              ),
-                              icon: _matching
-                                  ? const SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2, color: Colors.white))
-                                  : const Icon(Icons.link, size: 18),
-                              label: _matching
-                                  ? const Text('Matchar...',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w800,
-                                          fontSize: 15))
-                                  : const Text('Matcha direkt',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w800,
-                                          fontSize: 15)),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 20.0),
-                        child: Row(
-                          children: [
-                            Expanded(child: Divider(color: Colors.white10)),
-                            Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 16.0),
-                              child: Text('ELLER SÖK PÅ TMDB',
-                                  style: TextStyle(
-                                      color: Colors.white30,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold)),
-                            ),
-                            Expanded(child: Divider(color: Colors.white10)),
-                          ],
-                        ),
-                      ),
-
-                      // Search Inputs
-                      Row(
-                        children: [
-                          Expanded(
-                            flex: 3,
-                            child: TextField(
-                              controller: _searchController,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                labelText: 'Sökord (Titel)',
-                                labelStyle:
-                                    const TextStyle(color: Colors.white60),
-                                hintText: 'Sök efter filmtitel...',
-                                hintStyle:
-                                    const TextStyle(color: Colors.white30),
-                                filled: true,
-                                fillColor: Colors.white.withValues(alpha: 0.04),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08)),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08)),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: const BorderSide(
-                                      color: Color(0xFF8A5BFF)),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            flex: 1,
-                            child: TextField(
-                              controller: _yearController,
-                              keyboardType: TextInputType.number,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                labelText: 'År',
-                                labelStyle:
-                                    const TextStyle(color: Colors.white60),
-                                hintText: 'T.ex. 2008',
-                                hintStyle:
-                                    const TextStyle(color: Colors.white30),
-                                filled: true,
-                                fillColor: Colors.white.withValues(alpha: 0.04),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08)),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08)),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: const BorderSide(
-                                      color: Color(0xFF8A5BFF)),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          ElevatedButton.icon(
-                            onPressed: _searching ? null : _searchCandidates,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF8A5BFF),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 20, vertical: 18),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12)),
-                            ),
-                            icon: _searching
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2, color: Colors.white))
-                                : const Icon(Icons.search, size: 18),
-                            label: Text(
-                              _searching ? 'Söker...' : 'Sök',
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold, fontSize: 15),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Results List
-                      const Text(
-                        'Sökresultat',
-                        style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 12),
-
-                      if (_searching)
-                        const Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(40.0),
-                            child: CircularProgressIndicator(
-                                color: Color(0xFF8A5BFF)),
-                          ),
-                        )
-                      else if (_candidates.isEmpty)
-                        Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(40.0),
-                            child: Text(
-                              _searchController.text.isEmpty
-                                  ? 'Skriv in sökord för att hitta kandidater.'
-                                  : 'Inga matchande filmer hittades.',
-                              style: const TextStyle(color: Colors.white38),
-                            ),
-                          ),
-                        )
-                      else
-                        ListView.separated(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: _candidates.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final candidate = _candidates[index];
-                            final title = candidate['title'] ?? 'Okänd titel';
-                            final originalTitle = candidate['original_title'];
-                            final releaseDate = candidate['release_date'] ?? '';
-                            final releaseYear = releaseDate.split('-').first;
-                            final posterPath = candidate['poster_path'];
-                            final candidateId =
-                                candidate['id']?.toString() ?? '';
-
-                            return MouseRegion(
-                              cursor: SystemMouseCursors.click,
-                              child: GestureDetector(
-                                onTap: _matching
-                                    ? null
-                                    : () => _applyMatch(candidateId),
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.02),
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(
-                                        color: Colors.white
-                                            .withValues(alpha: 0.06)),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      // Poster Thumbnail
-                                      Container(
-                                        width: 45,
-                                        height: 65,
-                                        decoration: BoxDecoration(
-                                          color: Colors.white12,
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                          image: posterPath != null
-                                              ? DecorationImage(
-                                                  image: NetworkImage(
-                                                      'https://image.tmdb.org/t/p/w200$posterPath'),
-                                                  fit: BoxFit.cover,
-                                                )
-                                              : null,
-                                        ),
-                                        child: posterPath == null
-                                            ? const Icon(Icons.movie,
-                                                color: Colors.white30, size: 20)
-                                            : null,
-                                      ),
-                                      const SizedBox(width: 16),
-
-                                      // Metadata
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              title,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 4),
-                                            Row(
-                                              children: [
-                                                if (releaseYear.isNotEmpty) ...[
-                                                  Text(
-                                                    releaseYear,
-                                                    style: const TextStyle(
-                                                        color: Colors.white38,
-                                                        fontSize: 13),
-                                                  ),
-                                                  const SizedBox(width: 10),
-                                                ],
-                                                if (originalTitle != null &&
-                                                    originalTitle != title) ...[
-                                                  Expanded(
-                                                    child: Text(
-                                                      '($originalTitle)',
-                                                      style: const TextStyle(
-                                                          color: Colors.white38,
-                                                          fontSize: 13,
-                                                          fontStyle:
-                                                              FontStyle.italic),
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-
-                                      // Select Button / Icon
-                                      const Icon(Icons.chevron_right,
-                                          color: Colors.white38),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
 

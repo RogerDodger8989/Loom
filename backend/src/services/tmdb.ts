@@ -272,6 +272,30 @@ export class TMDBService {
   }
 
   /**
+   * Search candidate TV shows from TMDB (returns all candidate matches)
+   */
+  public async searchTvCandidates(title: string, year?: number): Promise<any[]> {
+    const apiKey = this.getApiKey();
+    if (!apiKey) return [];
+
+    const prefLang = this.getSetting('METADATA_LANGUAGE') || 'sv-SE';
+    try {
+      const response = await axios.get(`${TMDB_BASE_URL}/search/tv`, {
+        params: {
+          api_key: apiKey,
+          query: title,
+          first_air_date_year: year,
+          language: prefLang
+        }
+      });
+      return response.data?.results || [];
+    } catch (e) {
+      console.error(`[TMDB] Failed to search TV candidates for ${title}:`, e);
+      return [];
+    }
+  }
+
+  /**
    * Fetch full movie details directly by TMDB ID
    */
   public async fetchMovieById(id: string): Promise<any> {

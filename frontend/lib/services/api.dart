@@ -247,6 +247,30 @@ class ApiService {
     }
   }
 
+  /// Authenticated: Toggle favorite/protected status for a media item
+  Future<Map<String, dynamic>> toggleFavorite(String id, {bool? isFavorite}) async {
+    final body = isFavorite != null ? jsonEncode({'is_favorite': isFavorite}) : '{}';
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$id/favorite'),
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
+      body: body,
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to toggle favorite: ${response.body}');
+  }
+
+  /// Authenticated: Toggle favorite for a specific season of a TV show
+  Future<Map<String, dynamic>> toggleSeasonFavorite(String showId, int season, {bool? isFavorite}) async {
+    final body = isFavorite != null ? jsonEncode({'is_favorite': isFavorite}) : '{}';
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$showId/season/$season/favorite'),
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
+      body: body,
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to toggle season favorite: ${response.body}');
+  }
+
   /// Authenticated: Report playback progress (heartbeat/scrobble)
   Future<Map<String, dynamic>> reportPlaybackProgress(String id, int positionSeconds, int durationSeconds) async {
     final response = await http.post(
@@ -578,6 +602,49 @@ class ApiService {
     if (response.statusCode == 200) return jsonDecode(response.body) as List;
     if (response.statusCode == 404 || response.statusCode == 401) return [];
     throw Exception('IMDb calendar error: ${response.body}');
+  }
+
+  /// Report playback progress for a single episode (heartbeat)
+  Future<Map<String, dynamic>> reportEpisodeProgress(String episodeId, int positionSeconds, int durationSeconds) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/episodes/$episodeId/progress'),
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
+      body: jsonEncode({'positionSeconds': positionSeconds, 'durationSeconds': durationSeconds}),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to report episode progress: ${response.body}');
+  }
+
+  /// Fetch watched/progress status for a single episode
+  Future<Map<String, dynamic>> fetchEpisodeStatus(String episodeId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/episodes/$episodeId/status'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to fetch episode status: ${response.body}');
+  }
+
+  /// Toggle watched status for a single episode
+  Future<Map<String, dynamic>> toggleEpisodeSeenStatus(String episodeId, bool isWatched) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/episodes/$episodeId/seen'),
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
+      body: jsonEncode({'watched': isWatched}),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to toggle episode seen: ${response.body}');
+  }
+
+  /// Mark all episodes in a season as watched or unwatched
+  Future<Map<String, dynamic>> markSeasonSeen(String showId, int season, bool isWatched) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$showId/season/$season/seen'),
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
+      body: jsonEncode({'watched': isWatched}),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to mark season seen: ${response.body}');
   }
 
   /// Soft-delete a single episode

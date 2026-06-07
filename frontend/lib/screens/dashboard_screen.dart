@@ -9,6 +9,7 @@ import 'dart:ui' as ui;
 import 'package:window_manager/window_manager.dart';
 import '../utils/platform_view_registry.dart' as ui_web;
 import '../services/api.dart';
+import 'fix_match_dialog.dart';
 import 'media_details_screen.dart';
 import 'media_info_dialog.dart';
 import 'person_details_screen.dart';
@@ -489,8 +490,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           style: TextStyle(color: Colors.white70, height: 1.5),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Avbryt'),
+          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.orangeAccent.withValues(alpha: 0.85),
@@ -652,8 +660,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       context,
       widget.apiService,
       onSuccess: () {
-        // Reload everything with the new user's token
-        setState(() {});
+        // Reload settings + media with the new user's token/avatar/preferences
+        _loadSettings();
         _loadAllMedia();
       },
     );
@@ -807,7 +815,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     return [
       {'id': 'continue_watching', 'title': 'Fortsätt titta', 'visible': true, 'comingSoon': false, 'days': 365},
       {'id': 'recent_movies', 'title': 'Nyligen tillagda Filmer', 'visible': true, 'comingSoon': false},
+      {'id': 'recent_shows', 'title': 'Nyligen tillagda Serier', 'visible': true, 'comingSoon': false},
       {'id': 'recent_watched_movies', 'title': 'Nyligen sedda Filmer', 'visible': true, 'comingSoon': false},
+      {'id': 'recent_watched_shows', 'title': 'Nyligen sedda Serier', 'visible': true, 'comingSoon': false},
       {'id': 'recent_shows', 'title': 'Nyligen tillagda Serier', 'visible': false, 'comingSoon': true},
       {'id': 'recent_images', 'title': 'Nyligen tillagda Bilder', 'visible': false, 'comingSoon': true},
       {'id': 'recent_music', 'title': 'Nyligen tillagda Musik', 'visible': false, 'comingSoon': true},
@@ -983,9 +993,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 ),
               ),
               actions: [
-                TextButton(
+                OutlinedButton(
                   onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Avbryt', style: TextStyle(color: Colors.white70)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Avbryt'),
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF)),
@@ -1228,9 +1243,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 ),
               ),
               actions: [
-                TextButton(
+                OutlinedButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Avbryt'),
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
@@ -1423,6 +1443,16 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         _tabController.animateTo(1);
                                       } catch (_) {}
                                     },
+                                    onShowGenreSelected: (g) {
+                                      setState(() {
+                                        _selectedMediaId = null;
+                                        _genreFilter = g;
+                                        _keywordFilter = null;
+                                      });
+                                      try {
+                                        _tabController.animateTo(2);
+                                      } catch (_) {}
+                                    },
                                     onKeywordSelected: (k) {
                                       setState(() {
                                         _selectedMediaId = null;
@@ -1541,6 +1571,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         letterSpacing: 0.5,
                                       ),
                                     ),
+                                  Text(
+                                    _currentUsername(),
+                                    style: TextStyle(
+                                      color: const Color(0xFFB593FF),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ],
@@ -1585,7 +1624,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           _buildSidebarItem(3, Icons.calendar_month_outlined, Icons.calendar_month, 'Kalender'),
 
           const Spacer(),
-          _buildUserProfileCard(),
+          
           const SizedBox(height: 16),
         ],
       ),
@@ -1704,6 +1743,41 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildSwitchUserButton() {
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 6),
+      child: InkWell(
+        onTap: _openUserPicker,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: _isSidebarExpanded ? 16 : 0,
+            vertical: 12,
+          ),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.03),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+          ),
+          child: Row(
+            mainAxisAlignment: _isSidebarExpanded ? MainAxisAlignment.start : MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.people_outline, color: Colors.white38, size: 20),
+              if (_isSidebarExpanded) ...[
+                const SizedBox(width: 12),
+                const Text(
+                  'Byt användare',
+                  style: TextStyle(color: Colors.white54, fontSize: 14, fontWeight: FontWeight.w500),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1873,6 +1947,52 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     return filtered;
   }
 
+  // Returns shows with in-progress episodes, sorted by most recently watched.
+  List<dynamic> _getContinueWatchingShows(List<dynamic> shows, int? days) {
+    final filtered = shows.where((show) {
+      final metadata = show['metadata'];
+      if (metadata is! Map) return false;
+      final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
+      if (progress <= 0) return false;
+      final lastAt = metadata['last_watched_at']?.toString() ?? show['last_watched_at']?.toString();
+      return _isWithinDays(lastAt, days);
+    }).toList();
+
+    filtered.sort((a, b) {
+      final metaA = a['metadata'] is Map ? a['metadata'] as Map : <String, dynamic>{};
+      final metaB = b['metadata'] is Map ? b['metadata'] as Map : <String, dynamic>{};
+      final aTime = DateTime.tryParse(metaA['last_watched_at']?.toString() ?? '') ??
+          DateTime.tryParse(a['last_watched_at']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = DateTime.tryParse(metaB['last_watched_at']?.toString() ?? '') ??
+          DateTime.tryParse(b['last_watched_at']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+
+    return filtered;
+  }
+
+  // Returns a label like "S01E03 · Avsnitt titel" for the current in-progress episode of a show.
+  String? _continueWatchingEpisodeLabel(dynamic show) {
+    final metadata = show['metadata'];
+    if (metadata is! Map) return null;
+    final episodeId = metadata['last_watched_episode_id']?.toString();
+    if (episodeId == null || episodeId.isEmpty) return null;
+    final episodes = show['episodes'];
+    if (episodes is! List) return null;
+    for (final ep in episodes) {
+      if (ep['id']?.toString() == episodeId) {
+        final s = int.tryParse(ep['season_number']?.toString() ?? '0') ?? 0;
+        final e = int.tryParse(ep['episode_number']?.toString() ?? '0') ?? 0;
+        final epTitle = ep['title']?.toString() ?? '';
+        final label = 'S${s.toString().padLeft(2, '0')}E${e.toString().padLeft(2, '0')}';
+        return epTitle.isNotEmpty ? '$label · $epTitle' : label;
+      }
+    }
+    return null;
+  }
+
   List<dynamic> _getRecentlyWatchedMovies(List<dynamic> movies) {
     final watched = movies.where((movie) {
       final metadata = movie['metadata'];
@@ -1912,7 +2032,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildHomePosterStrip(List<dynamic> items) {
-    // Card width (115) × 1.5 (2:3 ratio) + 48px for text section (title + year/resolution + padding)
     final stripHeight = 115.0 * _posterScale * 1.5 + 48;
     return SizedBox(
       height: stripHeight,
@@ -1920,6 +2039,36 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         scrollDirection: Axis.horizontal,
         itemCount: items.length,
         itemBuilder: (context, index) => _buildHomeCard(items[index]),
+      ),
+    );
+  }
+
+  // Continue-watching strip — shows an episode label below show titles.
+  Widget _buildHomeContinueStrip(List<dynamic> items) {
+    // Extra height for the episode label line
+    final stripHeight = 115.0 * _posterScale * 1.5 + 62;
+    return SizedBox(
+      height: stripHeight,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          final item = items[index];
+          final isShow = (item['type']?.toString() ?? '') == 'Show';
+          final epLabel = isShow ? _continueWatchingEpisodeLabel(item) : null;
+          return _buildContinueWatchingCard(item, episodeLabel: epLabel);
+        },
+      ),
+    );
+  }
+
+  Widget _buildContinueWatchingCard(dynamic item, {String? episodeLabel}) {
+    final cardWidth = 115 * _posterScale;
+    return SizedBox(
+      width: cardWidth,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 14),
+        child: _buildUnifiedPosterCard(item, isHomeCard: true, posterPrefix: 'home', continueEpisodeLabel: episodeLabel),
       ),
     );
   }
@@ -2200,7 +2349,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           title: Text(title, style: const TextStyle(color: Colors.white)),
           content: Text(message, style: const TextStyle(color: Colors.white70)),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Avbryt')),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
+            ),
             ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Ja')),
           ],
         );
@@ -2226,7 +2383,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Avbryt')),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
+            ),
             ElevatedButton(onPressed: () => Navigator.pop(dialogContext, controller.text), child: const Text('OK')),
           ],
         );
@@ -2243,6 +2408,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     final metadata = (item['metadata'] is Map ? Map<String, dynamic>.from(item['metadata'] as Map) : <String, dynamic>{});
     final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
     final watched = metadata['watch_status']?.toString() == 'watched';
+    final isShow = (item['type']?.toString() ?? '') == 'Show';
+    final isFavorite = item['is_favorite'] == true || item['is_favorite'] == 1;
 
     RelativeRect effectivePosition = position ?? RelativeRect.fromLTRB(MediaQuery.of(context).size.width / 2 - 10, MediaQuery.of(context).size.height / 2 - 10, 0, 0);
     if (globalPos != null) {
@@ -2259,10 +2426,22 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       items: [
         if (progress > 0)
           const PopupMenuItem(value: 'clear_continue', child: Text('Ta bort från fortsätt titta')),
+        PopupMenuItem(
+          value: isFavorite ? 'unfavorite' : 'favorite',
+          child: Row(children: [
+            Icon(isFavorite ? Icons.star : Icons.star_border, size: 16, color: const Color(0xFFFFD700)),
+            const SizedBox(width: 8),
+            Text(isFavorite ? 'Ta bort från favoriter' : 'Lägg till i favoriter'),
+          ]),
+        ),
         const PopupMenuItem(value: 'playlist', child: Text('Lägg till på spellista')),
-        PopupMenuItem(value: watched ? 'mark_unwatched' : 'mark_watched', child: Text('Markera som visad/osedd')),
+        PopupMenuItem(value: watched ? 'mark_unwatched' : 'mark_watched', child: Text(watched ? 'Markera som osedd' : 'Markera som sedd')),
+        if (isShow) ...[
+          const PopupMenuItem(value: 'mark_all_seasons_watched', child: Text('Markera alla säsonger som sedda')),
+          const PopupMenuItem(value: 'mark_all_seasons_unwatched', child: Text('Markera alla säsonger som osedda')),
+        ],
         const PopupMenuItem(value: 'refresh', child: Text('Uppdatera metadata')),
-        const PopupMenuItem(value: 'analyze', child: Text('Analysera')),
+        if (!isShow) const PopupMenuItem(value: 'analyze', child: Text('Analysera')),
         const PopupMenuItem(value: 'edit', child: Text('Redigera')),
         const PopupMenuItem(value: 'fix_match', child: Text('Fixa matchning')),
         const PopupMenuItem(value: 'unmatch', child: Text('Ta bort matchning')),
@@ -2303,6 +2482,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         case 'clear_continue':
           await widget.apiService.saveMediaMetadata(itemId, 'playback_progress', '0');
           break;
+        case 'favorite':
+          await widget.apiService.toggleFavorite(itemId, isFavorite: true);
+          break;
+        case 'unfavorite':
+          await widget.apiService.toggleFavorite(itemId, isFavorite: false);
+          break;
         case 'playlist':
           final playlistName = await _promptText('Lägg till på spellista', 'Spellistnamn');
           if (playlistName != null && playlistName.trim().isNotEmpty) {
@@ -2315,6 +2500,28 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         case 'mark_unwatched':
           await widget.apiService.toggleSeenStatus(itemId, false);
           break;
+        case 'mark_all_seasons_watched':
+          final episodes = (item['episodes'] as List? ?? []);
+          final seasons = <int>{};
+          for (final ep in episodes) {
+            final s = int.tryParse(ep['season_number']?.toString() ?? '');
+            if (s != null) seasons.add(s);
+          }
+          for (final s in seasons) {
+            await widget.apiService.markSeasonSeen(itemId, s, true);
+          }
+          break;
+        case 'mark_all_seasons_unwatched':
+          final episodes = (item['episodes'] as List? ?? []);
+          final seasons = <int>{};
+          for (final ep in episodes) {
+            final s = int.tryParse(ep['season_number']?.toString() ?? '');
+            if (s != null) seasons.add(s);
+          }
+          for (final s in seasons) {
+            await widget.apiService.markSeasonSeen(itemId, s, false);
+          }
+          break;
         case 'refresh':
           await widget.apiService.refreshMediaMetadata(itemId);
           break;
@@ -2322,10 +2529,19 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           await widget.apiService.analyzeMediaItem(itemId);
           break;
         case 'fix_match':
-          final tmdbId = await _promptText('Fixa matchning', 'TMDB ID');
-          if (tmdbId != null && tmdbId.trim().isNotEmpty) {
-            await widget.apiService.fixMatch(itemId, tmdbId.trim());
-          }
+          if (!context.mounted) break;
+          await showDialog(
+            context: context,
+            barrierDismissible: true,
+            builder: (_) => FixMatchDialog(
+              mediaId: itemId,
+              apiService: widget.apiService,
+              currentTitle: item['title']?.toString() ?? '',
+              currentYear: item['year']?.toString() ?? '',
+              isShow: isShow,
+              onMatchSuccess: () {},
+            ),
+          );
           break;
         case 'unmatch':
           await widget.apiService.unmatchMediaItem(itemId);
@@ -3549,18 +3765,24 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
 
   Widget _buildHomeView() {
-    // Newest-added movies first
     final recentMovies = (List<dynamic>.from(_movies)
           ..sort((a, b) {
-            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ??
-                DateTime.fromMillisecondsSinceEpoch(0);
-            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ??
-                DateTime.fromMillisecondsSinceEpoch(0);
+            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return bTime.compareTo(aTime);
+          }))
+        .take(12)
+        .toList();
+    final recentShows = (List<dynamic>.from(_shows)
+          ..sort((a, b) {
+            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
             return bTime.compareTo(aTime);
           }))
         .take(12)
         .toList();
     final watchedMovies = _getRecentlyWatchedMovies(_movies).take(12).toList();
+    final watchedShows = _getRecentlyWatchedMovies(_shows).take(12).toList();
 
     return SingleChildScrollView(
       child: Column(
@@ -3576,7 +3798,18 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   final days = section['days'] as int?;
 
                   if (sectionId == 'continue_watching') {
-                    final continueWatching = _getContinueWatchingMovies(_movies, days).take(8).toList();
+                    final continueMovies = _getContinueWatchingMovies(_movies, days).take(8).toList();
+                    final continueShows = _getContinueWatchingShows(_shows, days).take(8).toList();
+                    // Merge and re-sort by last watched
+                    final allContinue = [...continueMovies, ...continueShows];
+                    allContinue.sort((a, b) {
+                      final metaA = a['metadata'] is Map ? a['metadata'] as Map : <String, dynamic>{};
+                      final metaB = b['metadata'] is Map ? b['metadata'] as Map : <String, dynamic>{};
+                      final aTime = DateTime.tryParse(metaA['last_watched_at']?.toString() ?? '') ?? DateTime.tryParse(a['last_watched_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+                      final bTime = DateTime.tryParse(metaB['last_watched_at']?.toString() ?? '') ?? DateTime.tryParse(b['last_watched_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+                      return bTime.compareTo(aTime);
+                    });
+                    final continueWatching = allContinue.take(12).toList();
                     if (continueWatching.isEmpty) return const SizedBox.shrink();
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 32),
@@ -3584,7 +3817,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _buildHomeSectionHeader(title, subtitle: days == null ? 'Ingen begränsning' : 'Senaste $days dagar'),
-                          _buildHomePosterStrip(continueWatching),
+                          _buildHomeContinueStrip(continueWatching),
                         ],
                       ),
                     );
@@ -3604,6 +3837,20 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     );
                   }
 
+                  if (sectionId == 'recent_shows') {
+                    if (recentShows.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildHomeSectionHeader(title),
+                          _buildHomePosterStrip(recentShows),
+                        ],
+                      ),
+                    );
+                  }
+
                   if (sectionId == 'recent_watched_movies') {
                     if (watchedMovies.isEmpty) return const SizedBox.shrink();
                     return Padding(
@@ -3613,6 +3860,20 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         children: [
                           _buildHomeSectionHeader(title),
                           _buildHomePosterStrip(watchedMovies),
+                        ],
+                      ),
+                    );
+                  }
+
+                  if (sectionId == 'recent_watched_shows') {
+                    if (watchedShows.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildHomeSectionHeader(title),
+                          _buildHomePosterStrip(watchedShows),
                         ],
                       ),
                     );
@@ -3695,6 +3956,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     required bool isHomeCard,
     int index = 0,
     required String posterPrefix,
+    String? continueEpisodeLabel,
   }) {
     final title = (_titleDisplayStyle == 'Original' &&
             item['original_title'] != null &&
@@ -3954,6 +4216,25 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                         }),
                       ),
 
+                      // Favorite star (below watched icon, top-left area)
+                      if (!isHomeCard)
+                        Positioned(
+                          top: metadata['watch_status'] == 'watched' ? 38 : 10,
+                          left: 10,
+                          child: Builder(builder: (context) {
+                            final isFav = item['is_favorite'] as bool? ?? false;
+                            if (!isFav) return const SizedBox.shrink();
+                            return Container(
+                              padding: const EdgeInsets.all(3),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.6),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.star, color: Color(0xFFFFD65C), size: 14),
+                            );
+                          }),
+                        ),
+
                       // Selection checkbox restored to top-right (no resolution badge here)
 
                       // Progress bar (bottom)
@@ -4005,37 +4286,47 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        // Year – left side
-                        Text(
-                          (item['year'] != null && item['year'].toString().isNotEmpty && item['year'].toString() != 'null')
-                              ? item['year'].toString()
-                              : '',
-                          style: TextStyle(color: Colors.white38, fontSize: 11.0 * posterTextScale),
+                    if (continueEpisodeLabel != null) ...[
+                      Text(
+                        continueEpisodeLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: const Color(0xFFB593FF),
+                          fontSize: 10.0 * posterTextScale,
+                          fontWeight: FontWeight.w600,
                         ),
-                        // Resolution – right side (replaces version count; both share the right)
-                        if (resolutionLabel != null)
+                      ),
+                    ] else
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
                           Text(
-                            resolutionLabel,
-                            style: TextStyle(
-                              color: const Color(0xFFB593FF),
-                              fontSize: 10.0 * posterTextScale,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          )
-                        else if (!isHomeCard && versionsCount > 1)
-                          Text(
-                            '$versionsCount ver.',
-                            style: TextStyle(
-                              color: const Color(0xFFB593FF).withValues(alpha: 0.8),
-                              fontSize: 11.0 * posterTextScale,
-                              fontWeight: FontWeight.w500,
-                            ),
+                            (item['year'] != null && item['year'].toString().isNotEmpty && item['year'].toString() != 'null')
+                                ? item['year'].toString()
+                                : '',
+                            style: TextStyle(color: Colors.white38, fontSize: 11.0 * posterTextScale),
                           ),
-                      ],
-                    ),
+                          if (resolutionLabel != null)
+                            Text(
+                              resolutionLabel,
+                              style: TextStyle(
+                                color: const Color(0xFFB593FF),
+                                fontSize: 10.0 * posterTextScale,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            )
+                          else if (!isHomeCard && versionsCount > 1)
+                            Text(
+                              '$versionsCount ver.',
+                              style: TextStyle(
+                                color: const Color(0xFFB593FF).withValues(alpha: 0.8),
+                                fontSize: 11.0 * posterTextScale,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                        ],
+                      ),
                   ],
                 ),
               ),
@@ -4764,6 +5055,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             PaintingBinding.instance.imageCache.evict(NetworkImage(_avatarUrl!));
           }
           setState(() => _avatarUrl = newUrl);
+        } else if (mounted) {
+          setState(() => _avatarUrl = null);
         }
       }).catchError((_) {});
     } catch (e) {

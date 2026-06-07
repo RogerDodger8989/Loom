@@ -211,10 +211,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: widget.onBack != null ? IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: widget.onBack,
-        ) : null,
+        automaticallyImplyLeading: false,
         title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
       body: SingleChildScrollView(
@@ -601,11 +598,28 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
     }
   }
 
+  String _resolveRole(Map<String, dynamic> credit) {
+    final dept = credit['department']?.toString() ?? '';
+    if (dept == 'Cast') {
+      final char = credit['character']?.toString() ?? '';
+      return char.isNotEmpty ? char : 'Skådespelare';
+    }
+    final job = credit['job']?.toString() ?? '';
+    if (job.isNotEmpty) return job;
+    switch (dept) {
+      case 'Directing': return 'Regissör';
+      case 'Writing': return 'Manusförfattare';
+      case 'Production': return 'Producent';
+      case 'Sound': return 'Kompositör';
+      default: return dept.isNotEmpty ? dept : 'Crew';
+    }
+  }
+
   // --- List View Mode Item ---
   Widget _buildListRow(dynamic credit) {
     final title = credit['title'] ?? 'Okänd titel';
     final year = credit['year'] != null ? '(${credit['year']})' : '';
-    final role = credit['department'] == 'Director' ? (credit['job'] ?? 'Regissör') : (credit['character'] ?? '');
+    final role = _resolveRole(credit as Map<String, dynamic>);
     final localId = credit['local_id']?.toString();
     final tmdbId = credit['id']?.toString();
     final poster = credit['poster_path'];
@@ -657,7 +671,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  role.isNotEmpty ? role : (credit['department'] == 'Director' ? 'Regissör' : 'Skådespelare'),
+                  role,
                   style: const TextStyle(color: Colors.white38, fontSize: 14),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -672,7 +686,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
             Icon(Icons.star, color: Colors.amber.withValues(alpha: 0.8), size: 16),
             const SizedBox(width: 4),
             Text(
-              (credit['vote_average'] as double).toStringAsFixed(1),
+              (credit['vote_average'] as num).toDouble().toStringAsFixed(1),
               style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 14),
             ),
             const SizedBox(width: 6),
@@ -813,7 +827,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
   Widget _buildSplitCard(dynamic credit) {
     final title = credit['title'] ?? 'Okänd titel';
     final year = credit['year'] != null ? ' (${credit['year']})' : '';
-    final role = credit['department'] == 'Director' ? (credit['job'] ?? 'Regissör') : (credit['character'] ?? '');
+    final role = _resolveRole(credit as Map<String, dynamic>);
     final overview = credit['overview']?.toString().isNotEmpty == true ? credit['overview'] : 'Filmbeskrivning saknas.';
     final localId = credit['local_id']?.toString();
     final poster = credit['poster_path'];
@@ -945,7 +959,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                 Row(
                   children: [
                     Text(
-                      role.isNotEmpty ? role : (credit['department'] == 'Director' ? 'Regissör' : 'Skådespelare'),
+                      role,
                       style: const TextStyle(color: Color(0xFFB593FF), fontWeight: FontWeight.bold, fontSize: 13),
                     ),
                     if (credit['vote_average'] != null && credit['vote_average'] > 0) ...[
@@ -953,7 +967,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                       Icon(Icons.star, color: Colors.amber.withValues(alpha: 0.8), size: 14),
                       const SizedBox(width: 4),
                       Text(
-                        (credit['vote_average'] as double).toStringAsFixed(1),
+                        (credit['vote_average'] as num).toDouble().toStringAsFixed(1),
                         style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 13),
                       ),
                     ],

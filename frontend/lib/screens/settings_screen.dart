@@ -184,6 +184,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isRestoring = false;
   bool _isRestarting = false;
   bool _showClock = false;
+  bool _showUpcomingEpisodes = true;
 
   // ── Export/Import state ───────────────────────
   bool _expSettings = true;
@@ -419,6 +420,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _scanSkipWordsCtrl.text = s['SCAN_SKIP_WORDS'] ?? '';
       _scanMinSizeCtrl.text = s['SCAN_MIN_SIZE_MB'] ?? '0';
       _showClock = s['SHOW_CLOCK'] == 'true';
+      _showUpcomingEpisodes = s['SHOW_UPCOMING_EPISODES'] != 'false';
       _alwaysOnTop = s['ALWAYS_ON_TOP'] == 'true';
       _diskRuleWatchedEnabled   = s['DISK_RULE_WATCHED_ENABLED'] == 'true';
       _diskWatchedDaysCtrl.text  = s['DISK_RULE_WATCHED_DAYS'] ?? '7';
@@ -484,6 +486,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'SCAN_SKIP_WORDS': _scanSkipWordsCtrl.text.trim(),
         'SCAN_MIN_SIZE_MB': _scanMinSizeCtrl.text.trim(),
         'SHOW_CLOCK': _showClock ? 'true' : 'false',
+        'SHOW_UPCOMING_EPISODES': _showUpcomingEpisodes ? 'true' : 'false',
         'DISK_RULE_WATCHED_ENABLED': _diskRuleWatchedEnabled ? 'true' : 'false',
         'DISK_RULE_WATCHED_DAYS': _diskWatchedDaysCtrl.text.trim(),
         'DISK_RULE_UNSEEN_ENABLED': _diskRuleUnseenEnabled ? 'true' : 'false',
@@ -779,9 +782,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           actions: [
-            TextButton(
+            OutlinedButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -1117,57 +1125,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildBibliotek() {
     return DefaultTabController(
       length: 3,
-      child: Column(
-        children: [
-          // Sub-tab bar
-          Container(
-            margin: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.01),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-            ),
-            child: TabBar(
-              indicatorColor: const Color(0xFF8A5BFF),
-              labelColor: Colors.white,
-              unselectedLabelColor: Colors.white38,
-              indicatorSize: TabBarIndicatorSize.tab,
-              indicator: BoxDecoration(
-                borderRadius: BorderRadius.circular(10),
-                color: const Color(0xFF8A5BFF).withValues(alpha: 0.12),
-              ),
-              tabs: const [
-                Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.movie_outlined, size: 16), SizedBox(width: 6), Text('Filmer')])),
-                Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.tv_outlined, size: 16), SizedBox(width: 6), Text('TV-Serier')])),
-                Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.music_note_outlined, size: 16), SizedBox(width: 6), Text('Musik')])),
+      child: NestedScrollView(
+        headerSliverBuilder: (context, _) => [
+          SliverToBoxAdapter(
+            child: Column(
+              children: [
+                // Sub-tab bar
+                Container(
+                  margin: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.01),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                  ),
+                  child: TabBar(
+                    indicatorColor: const Color(0xFF8A5BFF),
+                    labelColor: Colors.white,
+                    unselectedLabelColor: Colors.white38,
+                    indicatorSize: TabBarIndicatorSize.tab,
+                    indicator: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      color: const Color(0xFF8A5BFF).withValues(alpha: 0.12),
+                    ),
+                    tabs: const [
+                      Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.movie_outlined, size: 16), SizedBox(width: 6), Text('Filmer')])),
+                      Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.tv_outlined, size: 16), SizedBox(width: 6), Text('TV-Serier')])),
+                      Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.music_note_outlined, size: 16), SizedBox(width: 6), Text('Musik')])),
+                    ],
+                  ),
+                ),
+                // Metadata section
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  child: _buildSection('Metadata', Icons.translate_outlined, [
+                    Row(children: [
+                      Expanded(child: _buildDropdown('Metadataspråk', _metadataLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _metadataLanguage = v!); _scheduleSave(); })),
+                      const SizedBox(width: 16),
+                      Expanded(child: _buildDropdown('Fallback-språk', _fallbackLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _fallbackLanguage = v!); _scheduleSave(); })),
+                      const SizedBox(width: 16),
+                      Expanded(child: _buildDropdown('JustWatch-region', _watchProviderRegion, ['SE', 'US', 'NO', 'GB'], (v) { setState(() => _watchProviderRegion = v!); _scheduleSave(); })),
+                      const SizedBox(width: 16),
+                      Expanded(child: _buildDropdown('Titeldisplay', _titleDisplayStyle, ['Translated', 'Original'], (v) { setState(() => _titleDisplayStyle = v!); _scheduleSave(); })),
+                    ]),
+                    const SizedBox(height: 12),
+                    _switchTile('Föredra lokal NFO-metadata', 'Använd .nfo-filer framför online-metadata.', _preferLocalNfo, _setPreferLocalNfo),
+                  ]),
+                ),
               ],
             ),
           ),
-          // Metadata section
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-            child: _buildSection('Metadata', Icons.translate_outlined, [
-              Row(children: [
-                Expanded(child: _buildDropdown('Metadataspråk', _metadataLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _metadataLanguage = v!); _scheduleSave(); })),
-                const SizedBox(width: 16),
-                Expanded(child: _buildDropdown('Fallback-språk', _fallbackLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _fallbackLanguage = v!); _scheduleSave(); })),
-                const SizedBox(width: 16),
-                Expanded(child: _buildDropdown('JustWatch-region', _watchProviderRegion, ['SE', 'US', 'NO', 'GB'], (v) { setState(() => _watchProviderRegion = v!); _scheduleSave(); })),
-                const SizedBox(width: 16),
-                Expanded(child: _buildDropdown('Titeldisplay', _titleDisplayStyle, ['Translated', 'Original'], (v) { setState(() => _titleDisplayStyle = v!); _scheduleSave(); })),
-              ]),
-              const SizedBox(height: 12),
-              _switchTile('Föredra lokal NFO-metadata', 'Använd .nfo-filer framför online-metadata.', _preferLocalNfo, _setPreferLocalNfo),
-            ]),
-          ),
-          Expanded(
-            child: TabBarView(children: [
-              _buildScannerSubTab('Movie'),
-              _buildScannerSubTab('Show'),
-              _buildScannerSubTab('Music'),
-            ]),
-          ),
         ],
+        body: TabBarView(children: [
+          _buildScannerSubTab('Movie'),
+          _buildScannerSubTab('Show'),
+          _buildScannerSubTab('Music'),
+        ]),
       ),
     );
   }
@@ -1176,6 +1188,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final paths = _libraryPaths.where((p) => p['type'] == type).toList();
     final typeLabel = type == 'Show' ? 'TV-seriemappar' : type == 'Movie' ? 'filmmappar' : 'musikmappar';
     return SingleChildScrollView(
+      physics: const NeverScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1229,6 +1242,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(color: Colors.white10),
           const SizedBox(height: 16),
           _buildScanFilterSection(),
+          if (type == 'Show') ...[
+            const SizedBox(height: 24),
+            const Divider(color: Colors.white10),
+            const SizedBox(height: 16),
+            _buildSection('Visningsalternativ', Icons.visibility_outlined, [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Visa kommande avsnitt', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                subtitle: const Text('Visar ej tillgängliga avsnitt som gråade i avsnittslistan', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                value: _showUpcomingEpisodes,
+                onChanged: (v) {
+                  setState(() => _showUpcomingEpisodes = v);
+                  _scheduleSave();
+                },
+                activeColor: const Color(0xFF8A5BFF),
+              ),
+            ]),
+          ],
         ],
       ),
     );
@@ -2800,8 +2831,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: const TextStyle(color: Colors.white70, height: 1.5),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Avbryt'),
+          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
@@ -2850,8 +2888,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(color: Colors.white70, height: 1.5),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Avbryt', style: TextStyle(color: Colors.white54))),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Avbryt'),
+          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.orangeAccent.withValues(alpha: 0.85),
@@ -5000,9 +5045,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ]),
           ),
           actions: [
-            TextButton(
+            OutlinedButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Avbryt'),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -5346,9 +5396,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     content: Text('Är du säker på att du vill ta bort "$username"?',
                         style: const TextStyle(color: Colors.white70)),
                     actions: [
-                      TextButton(
+                      OutlinedButton(
                         onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('Avbryt', style: TextStyle(color: Colors.white54)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white70,
+                          side: const BorderSide(color: Colors.white24),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text('Avbryt'),
                       ),
                       ElevatedButton(
                         style: ElevatedButton.styleFrom(
@@ -5471,7 +5526,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Avbryt', style: TextStyle(color: Colors.white38))),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Avbryt'),
+          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),

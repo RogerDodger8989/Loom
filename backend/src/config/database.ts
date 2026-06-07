@@ -256,6 +256,14 @@ try {
 }
 
 try {
+  db.exec('ALTER TABLE episodes ADD COLUMN overview TEXT;');
+} catch (e) { /* already exists */ }
+
+try {
+  db.exec('ALTER TABLE episodes ADD COLUMN still_path TEXT;');
+} catch (e) { /* already exists */ }
+
+try {
   db.exec('ALTER TABLE episodes ADD COLUMN deleted_at TEXT DEFAULT NULL;');
 } catch (e) {
   // Ignorera om kolumnen redan finns
@@ -303,6 +311,14 @@ try {
 
 try {
   db.exec('ALTER TABLE episodes ADD COLUMN delete_rule TEXT DEFAULT NULL;');
+} catch (e) { /* already exists */ }
+
+try {
+  db.exec('ALTER TABLE media_items ADD COLUMN is_favorite INTEGER DEFAULT 0;');
+} catch (e) { /* already exists */ }
+
+try {
+  db.exec('ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT NULL;');
 } catch (e) { /* already exists */ }
 
 export default db;
