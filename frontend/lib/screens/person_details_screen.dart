@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:universal_html/html.dart' as html;
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:io' show Process;
 import '../services/api.dart';
 import 'media_details_screen.dart';
 
@@ -286,8 +287,6 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                               _buildExternalBadge('IMDb', 'https://www.imdb.com/name/${person['imdb_id']}', Colors.amber),
                             _buildExternalBadge('Wikipedia', 'https://sv.wikipedia.org/wiki/${Uri.encodeComponent(name)}', Colors.white70),
                             _buildExternalBadge('TMDB', 'https://www.themoviedb.org/person/${person['id']}', Colors.blueAccent),
-                            _buildExternalBadge('Simkl', 'https://simkl.com/people/${person['id']}', Colors.green),
-                            _buildExternalBadge('Trakt', 'https://trakt.tv/people/${person['id']}', Colors.redAccent),
                           ],
                         ),
                       ],
@@ -1170,8 +1169,12 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        onTap: () {
-          html.window.open(url, '_blank');
+        onTap: () async {
+          try {
+            await Process.run('cmd', ['/c', 'start', '', url]);
+          } catch (_) {
+            await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+          }
         },
         child: badge,
       ),

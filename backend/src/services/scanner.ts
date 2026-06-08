@@ -650,6 +650,9 @@ export class ScannerService {
         if (tmdbShowId) {
           try {
             const fullShow = await tmdbService.fetchShowById(tmdbShowId);
+            if (fullShow?.external_ids?.imdb_id) {
+              db.prepare(`UPDATE media_items SET imdb_id = ? WHERE id = ?`).run(fullShow.external_ids.imdb_id, showId);
+            }
             if (fullShow?.number_of_seasons) {
               const upsertShowMeta = (key: string, val: string) => {
                 db.prepare(`INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
@@ -801,16 +804,19 @@ export class ScannerService {
     const year       = fullShow.first_air_date ? parseInt(fullShow.first_air_date.substring(0, 4), 10) : null;
     const title      = fullShow.name || null;
 
+    // Force-overwrite all core fields (no COALESCE — refresh means fetch fresh)
     db.prepare(`UPDATE media_items SET
-      poster_path = COALESCE(?, poster_path),
-      fanart_path = COALESCE(?, fanart_path),
-      genre       = COALESCE(?, genre),
-      plot        = COALESCE(?, plot),
-      year        = COALESCE(?, year),
-      title       = COALESCE(?, title)
-      WHERE id = ?`).run(posterUrl, fanartUrl, genre, plot, year, title, showId);
+      poster_path    = COALESCE(?, poster_path),
+      fanart_path    = COALESCE(?, fanart_path),
+      genre          = COALESCE(?, genre),
+      plot           = COALESCE(?, plot),
+      year           = COALESCE(?, year),
+      title          = COALESCE(?, title),
+      imdb_id        = COALESCE(?, imdb_id)
+      WHERE id = ?`).run(posterUrl, fanartUrl, genre, plot, year, title, fullShow.external_ids?.imdb_id || null, showId);
 
     if (fullShow.status)            upsert('status',            fullShow.status);
+    if (fullShow.last_air_date)     upsert('last_air_date',     fullShow.last_air_date);
     if (fullShow.number_of_seasons) upsert('number_of_seasons', String(fullShow.number_of_seasons));
     if (fullShow.seasons?.length) {
       const seasonsData = fullShow.seasons.map((s: any) => ({
@@ -826,7 +832,6 @@ export class ScannerService {
     if (fullShow.next_episode_to_air) {
       upsert('next_episode_to_air', JSON.stringify(fullShow.next_episode_to_air));
     } else {
-      // Clear stale next_air if show is ended/cancelled
       db.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'next_episode_to_air'`).run(showId);
     }
     if (fullShow.created_by?.length) {
@@ -835,17 +840,67 @@ export class ScannerService {
     if (fullShow.networks?.length) {
       upsert('networks', JSON.stringify(fullShow.networks.map((n: any) => n.name)));
     }
+    // Production countries — always overwrite so bad data (e.g., wrong country) gets fixed
+    if (fullShow.production_countries?.length) {
+      upsert('production_countries', JSON.stringify(
+        fullShow.production_countries.map((c: any) => ({ iso_3166_1: c.iso_3166_1, name: c.name }))
+      ));
+    }
+    if (fullShow.origin_country?.length) {
+      upsert('origin_country', JSON.stringify(fullShow.origin_country));
+    }
+    // Production companies
+    if (fullShow.production_companies?.length) {
+      upsert('production_companies', JSON.stringify(
+        fullShow.production_companies.slice(0, 3).map((c: any) => ({
+          id: c.id, name: c.name,
+          logo_path: c.logo_path ? tmdbService.getImageUrl(c.logo_path, 'w500') : null,
+          origin_country: c.origin_country || null,
+        }))
+      ));
+    }
     if (fullShow.trailer_url) upsert('trailer_url', fullShow.trailer_url);
     const cast = fullShow.credits?.cast?.slice(0, 20).map((m: any) => ({
       id: String(m.id), name: m.name, character: m.character || '',
       profile_path: m.profile_path ? tmdbService.getImageUrl(m.profile_path, 'w185') : null,
     }));
     if (cast?.length) upsert('cast', JSON.stringify(cast));
-    if (fullShow['watch/providers']?.results) upsert('watch_providers', JSON.stringify(fullShow['watch/providers'].results));
+    if (fullShow['watch/providers']?.results) upsert('watch_providers', JSON.stringify(fullShow['watch/providers']?.results));
     if (fullShow.logo_path) upsert('logo_path', tmdbService.getImageUrl(fullShow.logo_path, 'original') || '');
-    // Ratings
+    // Trakt / Simkl ratings via existing enrichment if available
     const vote = fullShow.vote_average;
     if (vote != null) upsert('ratings', JSON.stringify({ tmdb: vote, tmdb_votes: fullShow.vote_count }));
+    upsert('tmdb_rating', vote != null ? String(vote) : '');
+    // Keywords
+    if (fullShow.keywords?.results?.length) {
+      upsert('keywords', JSON.stringify(fullShow.keywords.results.map((k: any) => k.name)));
+    }
+
+    // Backfill episode still_path and overview in background
+    const apiKey = (db.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get() as any)?.value;
+    const prefLang = (db.prepare("SELECT value FROM system_settings WHERE key='METADATA_LANGUAGE'").get() as any)?.value || 'sv-SE';
+    if (apiKey) {
+      const episodes = db.prepare(`SELECT id, season_number, episode_number FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).all(showId) as any[];
+      setImmediate(async () => {
+        for (const ep of episodes) {
+          try {
+            const epResp = await axios.get(
+              `https://api.themoviedb.org/3/tv/${tmdbShowId}/season/${ep.season_number}/episode/${ep.episode_number}`,
+              { params: { api_key: apiKey, language: prefLang } }
+            );
+            const overview = epResp.data?.overview || null;
+            const stillPath = epResp.data?.still_path
+              ? tmdbService.getImageUrl(epResp.data.still_path, 'w500')
+              : null;
+            const title = epResp.data?.name || null;
+            const airDate = epResp.data?.air_date || null;
+            db.prepare(`UPDATE episodes SET title = COALESCE(?, title), air_date = COALESCE(?, air_date), overview = COALESCE(?, overview), still_path = COALESCE(?, still_path) WHERE id = ?`)
+              .run(title, airDate, overview, stillPath, ep.id);
+          } catch (_) {}
+        }
+        console.log(`[Scanner] Episode metadata backfill done for show ${showId}`);
+      });
+    }
   }
 
   /**

@@ -1242,24 +1242,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(color: Colors.white10),
           const SizedBox(height: 16),
           _buildScanFilterSection(),
-          if (type == 'Show') ...[
-            const SizedBox(height: 24),
-            const Divider(color: Colors.white10),
-            const SizedBox(height: 16),
-            _buildSection('Visningsalternativ', Icons.visibility_outlined, [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Visa kommande avsnitt', style: TextStyle(color: Colors.white70, fontSize: 14)),
-                subtitle: const Text('Visar ej tillgängliga avsnitt som gråade i avsnittslistan', style: TextStyle(color: Colors.white38, fontSize: 12)),
-                value: _showUpcomingEpisodes,
-                onChanged: (v) {
-                  setState(() => _showUpcomingEpisodes = v);
-                  _scheduleSave();
-                },
-                activeColor: const Color(0xFF8A5BFF),
-              ),
-            ]),
-          ],
+          if (type == 'Show') ...[],
         ],
       ),
     );
@@ -1764,6 +1747,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Text(
               'Styr vilken version som väljs automatiskt när en film har flera versioner.',
               style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11, height: 1.5),
+            ),
+          ]),
+          const SizedBox(height: 16),
+          _buildSection('TV-Serier', Icons.tv_outlined, [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Visa kommande avsnitt', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              subtitle: const Text('Visar ej tillgängliga avsnitt som gråade i avsnittslistan', style: TextStyle(color: Colors.white38, fontSize: 12)),
+              value: _showUpcomingEpisodes,
+              onChanged: (v) {
+                setState(() => _showUpcomingEpisodes = v);
+                _scheduleSave();
+              },
+              activeColor: const Color(0xFF8A5BFF),
             ),
           ]),
           const SizedBox(height: 16),

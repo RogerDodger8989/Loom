@@ -1,9 +1,11 @@
-﻿import 'package:flutter/gestures.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import '../services/api.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
+import 'dart:io' show Process;
+import 'package:url_launcher/url_launcher.dart';
 import 'package:universal_html/html.dart' as html;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'episode_details_screen.dart';
@@ -26,6 +28,9 @@ class MediaDetailsScreen extends StatefulWidget {
   final VoidCallback? onVideoPlayerClosed;
   final VoidCallback? onEdit;
   final void Function(String mediaId, Offset pos)? onContextMenu;
+  final void Function(Map<String, dynamic> episode, Map<String, dynamic> showData)? onEpisodeSelected;
+  final void Function(String epId, Map<String, dynamic> ep)? onEditEpisode;
+  final int? initialSeasonNumber;
 
   const MediaDetailsScreen({
     super.key,
@@ -41,6 +46,9 @@ class MediaDetailsScreen extends StatefulWidget {
     this.onVideoPlayerClosed,
     this.onEdit,
     this.onContextMenu,
+    this.onEpisodeSelected,
+    this.onEditEpisode,
+    this.initialSeasonNumber,
   });
 
   @override
@@ -258,6 +266,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialSeasonNumber != null) {
+      _selectedSeasonNumber = widget.initialSeasonNumber!;
+      _seasonOverviewMode = false;
+    }
     _loadPlaybackSettings();
     _fetchDetails();
     // Pre-warm HLS cache so playback starts instantly
@@ -655,21 +667,23 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
           border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
         ),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, color: const Color(0xFF8A5BFF), size: 14),
             const SizedBox(width: 6),
             Text('$label: ',
                 style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
-            DropdownButtonHideUnderline(
-              child: DropdownButton<T>(
-                value: value,
-                dropdownColor: const Color(0xFF15102A),
-                style: const TextStyle(color: Colors.white, fontSize: 12),
-                isDense: true,
-                items: items,
-                onChanged: onChanged,
+            Flexible(
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<T>(
+                  value: value,
+                  dropdownColor: const Color(0xFF15102A),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  isDense: true,
+                  isExpanded: true,
+                  items: items,
+                  onChanged: onChanged,
+                ),
               ),
             ),
           ],
@@ -727,76 +741,86 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         ? _selectedVersionId
         : (versionItems.isNotEmpty ? versionItems.first.value : widget.mediaId);
 
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+    String? effectiveAudio;
+    if (audioTracks.isNotEmpty) {
+      final firstIdx = audioTracks.first['index']?.toString();
+      effectiveAudio = audioItems.any((i) => i.value == _selectedAudioIndex)
+          ? _selectedAudioIndex
+          : firstIdx;
+      if (effectiveAudio != _selectedAudioIndex) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _selectedAudioIndex = effectiveAudio);
+        });
+      }
+    }
+
+    return Row(
       children: [
-        // ── Version dropdown (left of Kvalitet) ──
-        if (versionItems.isNotEmpty)
-          Opacity(
-            opacity: singleVersion ? 0.45 : 1.0,
-            child: dropdown<String>(
-              icon: Icons.layers_outlined,
-              label: 'Version',
-              value: effectiveVersionId!,
-              items: versionItems,
-              onChanged: singleVersion
-                  ? (_) {}
-                  : (v) {
-                      if (v == null) return;
-                      setState(() {
-                        _selectedVersionId = v;
-                        _selectedSubtitleIndex = 'none';
-                        _selectedAudioIndex = null;
-                      });
-                      // Apply saved language defaults for the new version's tracks
-                      final ver = (_mediaData?['versions'] as List? ?? [])
-                          .cast<Map<String, dynamic>>()
-                          .firstWhere((ver) => ver['id']?.toString() == v, orElse: () => {});
-                      if (ver.isNotEmpty) _applyLanguageDefaults(Map<String, dynamic>.from(ver));
-                    },
+        if (versionItems.isNotEmpty) ...[
+          Expanded(
+            child: Opacity(
+              opacity: singleVersion ? 0.45 : 1.0,
+              child: dropdown<String>(
+                icon: Icons.layers_outlined,
+                label: 'Version',
+                value: effectiveVersionId!,
+                items: versionItems,
+                onChanged: singleVersion
+                    ? (_) {}
+                    : (v) {
+                        if (v == null) return;
+                        setState(() {
+                          _selectedVersionId = v;
+                          _selectedSubtitleIndex = 'none';
+                          _selectedAudioIndex = null;
+                        });
+                        final ver = (_mediaData?['versions'] as List? ?? [])
+                            .cast<Map<String, dynamic>>()
+                            .firstWhere((ver) => ver['id']?.toString() == v, orElse: () => {});
+                        if (ver.isNotEmpty) _applyLanguageDefaults(Map<String, dynamic>.from(ver));
+                      },
+              ),
             ),
           ),
-        dropdown<String>(
-          icon: Icons.hd_outlined,
-          label: 'Kvalitet',
-          value: _selectedQuality,
-          items: qualityItems,
-          onChanged: (v) {
-            if (v != null) setState(() => _selectedQuality = v);
-            _savePlaybackSettings();
-          },
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: dropdown<String>(
+            icon: Icons.hd_outlined,
+            label: 'Kvalitet',
+            value: _selectedQuality,
+            items: qualityItems,
+            onChanged: (v) {
+              if (v != null) setState(() => _selectedQuality = v);
+              _savePlaybackSettings();
+            },
+          ),
         ),
-        if (subtitleTracks.isNotEmpty)
-          dropdown<String>(
+        const SizedBox(width: 8),
+        Expanded(
+          child: dropdown<String>(
             icon: Icons.subtitles_outlined,
             label: 'Undertext',
-            value: _selectedSubtitleIndex,
+            value: subtitleItems.any((i) => i.value == _selectedSubtitleIndex)
+                ? _selectedSubtitleIndex
+                : 'none',
             items: subtitleItems,
             onChanged: (v) {
               if (v != null) setState(() => _selectedSubtitleIndex = v);
             },
           ),
+        ),
         if (audioTracks.isNotEmpty) ...[
-          () {
-            // Ensure value is valid — default to first track if none selected
-            final firstIdx = audioTracks.first['index']?.toString();
-            final effectiveAudio = audioItems.any((i) => i.value == _selectedAudioIndex)
-                ? _selectedAudioIndex
-                : firstIdx;
-            if (effectiveAudio != _selectedAudioIndex) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) setState(() => _selectedAudioIndex = effectiveAudio);
-              });
-            }
-            return dropdown<String?>(
+          const SizedBox(width: 8),
+          Expanded(
+            child: dropdown<String?>(
               icon: Icons.audio_file_outlined,
               label: 'Ljud',
               value: effectiveAudio,
               items: audioItems,
               onChanged: (v) => setState(() => _selectedAudioIndex = v),
-            );
-          }(),
+            ),
+          ),
         ],
       ],
     );
@@ -1032,9 +1056,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: Colors.black.withValues(alpha: 0.65),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.4), width: 1),
+        border: Border.all(color: color.withValues(alpha: 0.7), width: 1),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1048,38 +1072,38 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   }
 
   Widget _buildCrewRow(String label, List<Map<String, dynamic>> people) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12, letterSpacing: 0.5),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: people.map((person) {
-            final name = person['name'] as String? ?? '';
-            final id = person['id']?.toString();
-            return ActionChip(
-              backgroundColor: Colors.white.withValues(alpha: 0.06),
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              label: Text(name, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-              onPressed: id != null ? () {
-                if (widget.onPersonSelected != null) {
-                  widget.onPersonSelected!(id);
-                } else {
-                  Navigator.push(context, MaterialPageRoute(
-                    builder: (context) => PersonDetailsScreen(personId: id, apiService: widget.apiService),
-                  ));
-                }
-              } : null,
-            );
-          }).toList(),
-        ),
-      ],
+    if (people.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: people.map((person) {
+          final name = person['name'] as String? ?? '';
+          final id = person['id']?.toString();
+          return ActionChip(
+            mouseCursor: id != null ? SystemMouseCursors.click : MouseCursor.defer,
+            backgroundColor: Colors.white.withValues(alpha: 0.06),
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.10)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            label: RichText(
+              text: TextSpan(children: [
+                TextSpan(text: '$label ', style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600)),
+                TextSpan(text: name, style: const TextStyle(color: Colors.white, fontSize: 12)),
+              ]),
+            ),
+            onPressed: id != null ? () {
+              if (widget.onPersonSelected != null) {
+                widget.onPersonSelected!(id);
+              } else {
+                Navigator.push(context, MaterialPageRoute(
+                  builder: (context) => PersonDetailsScreen(personId: id, apiService: widget.apiService),
+                ));
+              }
+            } : null,
+          );
+        }).toList(),
+      ),
     );
   }
 
@@ -1126,10 +1150,8 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       },
     );
 
-    if (action == 'same') {
-      html.window.open(finalTrailerUrl, '_self');
-    } else if (action == 'new') {
-      html.window.open(finalTrailerUrl, '_blank');
+    if (action == 'same' || action == 'new') {
+      launchUrl(Uri.parse(finalTrailerUrl), mode: LaunchMode.externalApplication);
     }
   }
 
@@ -1169,6 +1191,18 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     }
 
     final media = _mediaData!;
+
+    // Intercept system back when viewing episode list — go to season overview first
+    return PopScope(
+      canPop: _seasonOverviewMode,
+      onPopInvoked: (didPop) {
+        if (!didPop) setState(() => _seasonOverviewMode = true);
+      },
+      child: _buildContent(context, media),
+    );
+  }
+
+  Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
     final title = media['title'] ?? 'Unknown Title';
     final year = media['year']?.toString() ?? '';
     final plot = media['plot'] ?? 'Ingen beskrivning tillgänglig.';
@@ -1568,11 +1602,21 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                           onTap: _toggleFavorite,
                                           child: AnimatedSwitcher(
                                             duration: const Duration(milliseconds: 200),
-                                            child: Icon(
-                                              _isFavorite ? Icons.star : Icons.star_border,
+                                            child: Text(
+                                              String.fromCharCode((_isFavorite ? Icons.star : Icons.star_border).codePoint),
                                               key: ValueKey(_isFavorite),
-                                              color: _isFavorite ? const Color(0xFFFFD65C) : Colors.white38,
-                                              size: 28,
+                                              style: TextStyle(
+                                                fontFamily: Icons.star.fontFamily,
+                                                package: Icons.star.fontPackage,
+                                                fontSize: 28,
+                                                color: _isFavorite ? const Color(0xFFFFD65C) : Colors.white,
+                                                shadows: const [
+                                                  Shadow(color: Colors.black, blurRadius: 3, offset: Offset(1.5, 1.5)),
+                                                  Shadow(color: Colors.black, blurRadius: 3, offset: Offset(-1.5, 1.5)),
+                                                  Shadow(color: Colors.black, blurRadius: 3, offset: Offset(1.5, -1.5)),
+                                                  Shadow(color: Colors.black, blurRadius: 3, offset: Offset(-1.5, -1.5)),
+                                                ],
+                                              ),
                                             ),
                                           ),
                                         ),
@@ -1617,8 +1661,24 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 final versionSuffix = releaseVersion.isNotEmpty
                                     ? ' [$releaseVersion]'
                                     : '';
-                                final displayTitle = year.isNotEmpty
-                                    ? '$mainDisplayTitle ($year)$versionSuffix'
+
+                                // For ended shows show year range (xxxx–xxxx), for ongoing show (xxxx–)
+                                String yearDisplay = year;
+                                if (isShow && year.isNotEmpty) {
+                                  final statusLower = (showStatus ?? '').toLowerCase();
+                                  if (statusLower == 'ended' || statusLower == 'canceled' || statusLower == 'cancelled') {
+                                    final lastAirRaw = metadata['last_air_date']?.toString() ?? '';
+                                    if (lastAirRaw.length >= 4) {
+                                      final endYear = lastAirRaw.substring(0, 4);
+                                      if (endYear != year) yearDisplay = '$year–$endYear';
+                                    }
+                                  } else if (statusLower.isNotEmpty) {
+                                    yearDisplay = '$year–';
+                                  }
+                                }
+
+                                final displayTitle = yearDisplay.isNotEmpty
+                                    ? '$mainDisplayTitle ($yearDisplay)$versionSuffix'
                                     : '$mainDisplayTitle$versionSuffix';
 
                                 return Column(
@@ -2512,54 +2572,27 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           const SizedBox(height: 8),
 
                           // Order: IMDb, Simkl, Trakt, TMDB
-                          if (media['imdb_id'] != null)
-                            _buildRatingRow(
-                              'IMDb',
-                              '${_formatRating(metadata['imdb_rating'])} / 10',
-                              const Color(0xFFF5C518),
-                              url:
-                                  'https://www.imdb.com/title/${media['imdb_id']}',
-                              votes: _formatVotes(metadata['imdb_votes']),
-                            ),
                           _buildRatingRow(
-                            'Simkl',
-                            metadata['simkl_rating'] != null
-                                ? _formatSimklRating(metadata['simkl_rating'])
-                                : '—%',
-                            const Color(0xFF21C65E),
+                            'IMDb',
+                            '${_formatRating(metadata['imdb_rating'])} / 10',
+                            const Color(0xFFF5C518),
                             url: media['imdb_id'] != null
-                                ? 'https://simkl.com/movies/?q=${Uri.encodeComponent(media['title'] ?? '')}'
-                                : null,
-                            votes: _formatVotes(metadata['simkl_votes'] ??
-                                ratings['simkl_votes']),
+                                ? 'https://www.imdb.com/title/${media['imdb_id']}'
+                                : 'https://www.imdb.com/find/?q=${Uri.encodeComponent(media['title']?.toString() ?? '')}',
+                            votes: _formatVotes(metadata['imdb_votes']),
                           ),
                           _buildRatingRow(
-                            'Trakt',
-                            '${_formatRating(metadata['trakt_rating'])} / 10',
-                            const Color(0xFFED2224),
-                            url: media['imdb_id'] != null
-                                ? 'https://trakt.tv/search/imdb/${media['imdb_id']}'
-                                : null,
-                            votes: _formatVotes(metadata['trakt_votes'] ??
-                                ratings['trakt_votes']),
+                            'TMDB',
+                            '${_formatRating(ratings['tmdb'])} / 10',
+                            const Color(0xFF03B6E1),
+                            url: media['tmdb_id'] != null
+                                ? (media['type']?.toString().toLowerCase() == 'show' ||
+                                        media['type']?.toString().toLowerCase() == 'tv'
+                                    ? 'https://www.themoviedb.org/tv/${media['tmdb_id']}'
+                                    : 'https://www.themoviedb.org/movie/${media['tmdb_id']}')
+                                : 'https://www.themoviedb.org/search?query=${Uri.encodeComponent(media['title']?.toString() ?? '')}',
+                            votes: _formatVotes(ratings['tmdb_votes']),
                           ),
-                          if (ratings['tmdb'] != null)
-                            _buildRatingRow(
-                              'TMDB',
-                              '${_formatRating(ratings['tmdb'])} / 10',
-                              const Color(0xFF03B6E1),
-                              url: media['tmdb_id'] != null
-                                  ? (media['type']?.toString().toLowerCase() ==
-                                              'show' ||
-                                          media['type']
-                                                  ?.toString()
-                                                  .toLowerCase() ==
-                                              'tv'
-                                      ? 'https://www.themoviedb.org/tv/${media['tmdb_id']}'
-                                      : 'https://www.themoviedb.org/movie/${media['tmdb_id']}')
-                                  : null,
-                              votes: _formatVotes(ratings['tmdb_votes']),
-                            ),
                         ],
                       ),
                     ),
@@ -2568,7 +2601,11 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               ),
             ),
 
-            // Cast Carousel - Spacing optimized and moved up
+            // Seasons & Episodes for TV shows — shown ABOVE cast
+            if (media['type'] == 'Show' && media['episodes'] is List && (media['episodes'] as List).isNotEmpty)
+              _buildSeasonsSection(media['episodes'] as List<dynamic>),
+
+            // Cast Carousel
             if (cast.isNotEmpty) ...[
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 40),
@@ -2872,10 +2909,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               const SizedBox(height: 30),
             ],
 
-            // Seasons & Episodes (TV shows only)
-            if (media['type'] == 'Show' && media['episodes'] is List && (media['episodes'] as List).isNotEmpty)
-              _buildSeasonsSection(media['episodes'] as List<dynamic>),
-
             // Similar media should appear below cast and remain library-only via backend filter
             _buildSimilarCarousel(),
           ],
@@ -2997,7 +3030,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     return MouseRegion(
       cursor: url != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
       child: GestureDetector(
-        onTap: url != null ? () => html.window.open(url, '_blank') : null,
+        onTap: url != null ? () async {
+          try {
+            await Process.run('cmd', ['/c', 'start', '', url]);
+          } catch (_) {
+            await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+          }
+        } : null,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
           margin: const EdgeInsets.only(bottom: 8),
@@ -3353,37 +3392,91 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       Offset.zero & overlay.size,
     );
     final label = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
+    final allWatched = eps.isNotEmpty && eps.every((e) => e['is_watched'] == 1 || e['is_watched'] == true);
     final selected = await showMenu<String>(
       context: ctx,
       color: const Color(0xFF11151D),
       position: rel,
       items: [
         PopupMenuItem(
-          value: 'mark_watched',
+          value: 'favorite',
           child: Row(children: [
-            const Icon(Icons.check_circle_outline, size: 16, color: Color(0xFF4CAF50)),
+            const Icon(Icons.star_border, size: 16, color: Color(0xFFFFD700)),
             const SizedBox(width: 8),
-            Text('Markera $label som sedd'),
+            const Text('Lägg till i favoriter'),
           ]),
         ),
         PopupMenuItem(
-          value: 'mark_unwatched',
+          value: 'playlist',
           child: Row(children: [
-            const Icon(Icons.radio_button_unchecked, size: 16, color: Colors.white54),
+            const Icon(Icons.playlist_add, size: 16, color: Colors.white70),
             const SizedBox(width: 8),
-            Text('Markera $label som osedd'),
+            const Text('Lägg till på spellista'),
           ]),
         ),
-        const PopupMenuDivider(),
-        if (_isAdmin) PopupMenuItem(
-          value: 'delete_season',
+        PopupMenuItem(
+          value: allWatched ? 'mark_unwatched' : 'mark_watched',
           child: Row(children: [
-            const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+            Icon(allWatched ? Icons.visibility_off : Icons.visibility, size: 16, color: Colors.white70),
             const SizedBox(width: 8),
-            Text(
-              'Radera $label (${eps.length} avsnitt)',
-              style: const TextStyle(color: Colors.redAccent),
-            ),
+            Text(allWatched ? 'Markera som osedd' : 'Markera som sedd'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'refresh',
+          child: Row(children: [
+            const Icon(Icons.refresh, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Uppdatera metadata'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'edit',
+          child: Row(children: [
+            const Icon(Icons.edit_outlined, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Redigera'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'fix_match',
+          child: Row(children: [
+            const Icon(Icons.search, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Fixa matchning'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'unmatch',
+          child: Row(children: [
+            const Icon(Icons.link_off, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Ta bort matchning'),
+          ]),
+        ),
+        if (_isAdmin)
+          const PopupMenuItem(
+            value: 'delete_season',
+            child: Row(children: [
+              Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+              SizedBox(width: 8),
+              Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
+            ]),
+          ),
+        PopupMenuItem(
+          value: 'info',
+          child: Row(children: [
+            const Icon(Icons.info_outline, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Info'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'stats',
+          child: Row(children: [
+            const Icon(Icons.bar_chart, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Visa statistik'),
           ]),
         ),
       ],
@@ -3393,11 +3486,41 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
     if (selected == 'mark_watched' || selected == 'mark_unwatched') {
       try {
-        await widget.apiService.markSeasonSeen(widget.mediaId, seasonNum, selected == 'mark_watched');
-        if (mounted) setState(() => _mediaData = null);
-        _fetchDetails();
+        final newWatched = selected == 'mark_watched';
+        await widget.apiService.markSeasonSeen(widget.mediaId, seasonNum, newWatched);
+        if (mounted && _mediaData != null) {
+          setState(() {
+            final allEps = _mediaData!['episodes'];
+            if (allEps is List) {
+              for (final e in allEps) {
+                if (e is Map && int.tryParse(e['season_number']?.toString() ?? '') == seasonNum) {
+                  e['is_watched'] = newWatched ? 1 : 0;
+                }
+              }
+            }
+          });
+        }
       } catch (e) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Fel: $e')));
+      }
+      return;
+    }
+
+    if (selected == 'info') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Info-vy för säsonger är inte implementerad.')));
+      }
+      return;
+    }
+    if (selected == 'edit') {
+      if (mounted) {
+        widget.onEdit?.call();
+      }
+      return;
+    }
+    if (selected == 'favorite' || selected == 'playlist' || selected == 'refresh' || selected == 'fix_match' || selected == 'unmatch' || selected == 'stats') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Funktionen stöds ej för enskilda säsonger.')));
       }
       return;
     }
@@ -3454,43 +3577,97 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       color: const Color(0xFF11151D),
       position: rel,
       items: [
+        if (progress > 0)
+          const PopupMenuItem(value: 'clear_continue', child: Text('Ta bort från fortsätt titta')),
         PopupMenuItem(
           value: 'play',
           child: Row(children: [
-            const Icon(Icons.play_arrow, size: 16, color: Color(0xFF8A5BFF)),
+            Icon(progress > 60 ? Icons.play_circle_outline : Icons.play_arrow, size: 16, color: const Color(0xFF8A5BFF)),
             const SizedBox(width: 8),
-            Text('Spela $label'),
+            Text(progress > 60 ? 'Fortsätt' : 'Spela'),
           ]),
         ),
-        if (progress > 60)
-          PopupMenuItem(
-            value: 'resume',
-            child: Row(children: [
-              const Icon(Icons.play_circle_outline, size: 16, color: Color(0xFF8A5BFF)),
-              const SizedBox(width: 8),
-              Text('Fortsätt $label'),
-            ]),
-          ),
-        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'favorite',
+          child: Row(children: [
+            const Icon(Icons.star_border, size: 16, color: Color(0xFFFFD700)),
+            const SizedBox(width: 8),
+            const Text('Lägg till i favoriter'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'playlist',
+          child: Row(children: [
+            const Icon(Icons.playlist_add, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Lägg till på spellista'),
+          ]),
+        ),
         PopupMenuItem(
           value: isWatched ? 'mark_unwatched' : 'mark_watched',
           child: Row(children: [
-            Icon(isWatched ? Icons.radio_button_unchecked : Icons.check_circle_outline, size: 16, color: isWatched ? Colors.white54 : const Color(0xFF4CAF50)),
+            Icon(isWatched ? Icons.visibility_off : Icons.visibility, size: 16, color: Colors.white70),
             const SizedBox(width: 8),
             Text(isWatched ? 'Markera som osedd' : 'Markera som sedd'),
           ]),
         ),
-        if (_isAdmin) ...[
-          const PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'refresh',
+          child: Row(children: [
+            const Icon(Icons.refresh, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Uppdatera metadata'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'edit',
+          child: Row(children: [
+            const Icon(Icons.edit_outlined, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Redigera'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'fix_match',
+          child: Row(children: [
+            const Icon(Icons.search, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Fixa matchning'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'unmatch',
+          child: Row(children: [
+            const Icon(Icons.link_off, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Ta bort matchning'),
+          ]),
+        ),
+        if (_isAdmin)
           PopupMenuItem(
             value: 'delete',
             child: Row(children: [
               const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
               const SizedBox(width: 8),
-              Text('Radera $label', style: const TextStyle(color: Colors.redAccent)),
+              const Text('Ta bort', style: TextStyle(color: Colors.redAccent)),
             ]),
           ),
-        ],
+        PopupMenuItem(
+          value: 'info',
+          child: Row(children: [
+            const Icon(Icons.info_outline, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Info'),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'stats',
+          child: Row(children: [
+            const Icon(Icons.bar_chart, size: 16, color: Colors.white70),
+            const SizedBox(width: 8),
+            const Text('Visa statistik'),
+          ]),
+        ),
       ],
     );
     if (!mounted) return;
@@ -3512,12 +3689,56 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       ));
     } else if (selected == 'mark_watched' || selected == 'mark_unwatched') {
       try {
-        await widget.apiService.toggleEpisodeSeenStatus(epId, selected == 'mark_watched');
-        if (mounted) setState(() => _mediaData = null);
-        _fetchDetails();
+        final newWatched = selected == 'mark_watched';
+        await widget.apiService.toggleEpisodeSeenStatus(epId, newWatched);
+        if (mounted && _mediaData != null) {
+          setState(() {
+            final allEps = _mediaData!['episodes'];
+            if (allEps is List) {
+              for (final e in allEps) {
+                if (e is Map && e['id']?.toString() == epId) {
+                  e['is_watched'] = newWatched ? 1 : 0;
+                  break;
+                }
+              }
+            }
+          });
+        }
       } catch (e) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Fel: $e')));
       }
+    } else if (selected == 'info') {
+      if (_mediaData != null) {
+        final allEps = _mediaData!['episodes'];
+        Map<String, dynamic>? ep;
+        if (allEps is List) {
+          for (final e in allEps) {
+            if (e is Map && e['id']?.toString() == epId) {
+              ep = Map<String, dynamic>.from(e);
+              break;
+            }
+          }
+        }
+        if (ep != null && widget.onEpisodeSelected != null) {
+          widget.onEpisodeSelected!(ep, _mediaData!);
+        }
+      }
+    } else if (selected == 'edit') {
+      if (_mediaData != null) {
+        final allEps = _mediaData!['episodes'];
+        Map<String, dynamic>? ep;
+        if (allEps is List) {
+          for (final e in allEps) {
+            if (e is Map && e['id']?.toString() == epId) {
+              ep = Map<String, dynamic>.from(e);
+              break;
+            }
+          }
+        }
+        if (ep != null) widget.onEditEpisode?.call(epId, ep);
+      }
+    } else if (selected == 'favorite' || selected == 'playlist' || selected == 'refresh' || selected == 'fix_match' || selected == 'unmatch' || selected == 'stats' || selected == 'clear_continue') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Funktionen stöds ej för enskilda avsnitt.')));
     } else if (selected == 'delete') {
       final ok = await showDialog<bool>(
         context: context,
@@ -3572,8 +3793,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     final metadata = _mediaData?['metadata'];
     List<Map<String, dynamic>> tmdbSeasons = [];
     if (metadata is Map) {
-      final seasonsRaw = metadata['seasons_json']?.toString() ?? '';
-      if (seasonsRaw.isNotEmpty) {
+      final seasonsRaw = metadata['seasons_json'];
+      if (seasonsRaw is List) {
+        for (final e in seasonsRaw) {
+          if (e is Map) tmdbSeasons.add(Map<String, dynamic>.from(e));
+        }
+      } else if (seasonsRaw is String && seasonsRaw.isNotEmpty) {
         for (final e in _parseJsonList(seasonsRaw)) {
           if (e is Map) tmdbSeasons.add(Map<String, dynamic>.from(e));
         }
@@ -3670,7 +3895,10 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               final total = sEps.length;
               final tmdbTotal = (s['episode_count'] as num?)?.toInt() ?? total;
               final allWatched = total > 0 && watched == total;
-              final poster = s['poster_path']?.toString();
+              final posterRaw = s['poster_path']?.toString();
+              final poster = posterRaw != null && posterRaw.isNotEmpty
+                  ? (posterRaw.startsWith('http') ? posterRaw : 'https://image.tmdb.org/t/p/w300$posterRaw')
+                  : null;
               final sName = s['name']?.toString() ?? (sNum == 0 ? 'Specials' : 'Säsong $sNum');
               final airDate = s['air_date']?.toString() ?? '';
               final year = airDate.length >= 4 ? airDate.substring(0, 4) : '';
@@ -3776,13 +4004,20 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(sName,
-                                  style: TextStyle(
-                                      color: hasLocal ? Colors.white : Colors.white54,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(sName,
+                                        style: TextStyle(
+                                            color: hasLocal ? Colors.white : Colors.white54,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.bold),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis),
+                                  ),
+                                ],
+                              ),
                               const SizedBox(height: 2),
                               Text(
                                 hasLocal ? '$total av $tmdbTotal avsnitt' : '$tmdbTotal avsnitt${year.isNotEmpty ? ' · $year' : ''}',
@@ -3805,6 +4040,26 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                   padding: const EdgeInsets.only(top: 4),
                                   child: Text('Ej tillgänglig',
                                       style: TextStyle(color: Colors.white.withValues(alpha: 0.30), fontSize: 10)),
+                                ),
+                              // "..." button row
+                              if (hasLocal)
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    InkWell(
+                                      mouseCursor: SystemMouseCursors.click,
+                                      borderRadius: BorderRadius.circular(12),
+                                      onTap: () {
+                                        final RenderBox box = context.findRenderObject() as RenderBox;
+                                        final pos = box.localToGlobal(Offset.zero);
+                                        _showSeasonContextMenu(context, Offset(pos.dx + box.size.width / 2, pos.dy + box.size.height / 2), sNum, sEps);
+                                      },
+                                      child: const Padding(
+                                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                        child: Icon(Icons.more_horiz, color: Colors.white38, size: 16),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                             ],
                           ),
@@ -3972,7 +4227,6 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                             ],
                           ),
                         ),
-                      ),
                       ),  // GestureDetector
                     ),    // MouseRegion
                   );
@@ -4117,9 +4371,12 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         final duration = int.tryParse(ep['duration']?.toString() ?? '0') ?? 0;
         final hasProgress = progress > 60 && !isWatched;
         final airDate = ep['air_date']?.toString() ?? '';
-        final stillPath = ep['still_path']?.toString();
         final overview = ep['overview']?.toString() ?? '';
         final isUpcoming = ep['_is_upcoming'] == true;
+        final stillPathRaw = ep['still_path']?.toString();
+        final stillPath = stillPathRaw != null && stillPathRaw.isNotEmpty
+            ? (stillPathRaw.startsWith('http') ? stillPathRaw : 'https://image.tmdb.org/t/p/w300$stillPathRaw')
+            : null;
 
         Widget leadingWidget;
         if (stillPath != null && stillPath.isNotEmpty) {
@@ -4187,21 +4444,26 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                     isWatched: isWatched, progress: progress)
                 : null,
             child: InkWell(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => EpisodeDetailsScreen(
-                    episode: ep,
-                    showTitle: _mediaData?['title']?.toString() ?? '',
-                    showFanartPath: _mediaData?['fanart_path']?.toString(),
-                    apiService: widget.apiService,
-                    onStatusChanged: () {
-                      if (mounted) setState(() => _mediaData = null);
-                      _fetchDetails();
-                    },
-                  ),
-                ),
-              ),
+              mouseCursor: SystemMouseCursors.click,
+              onTap: () {
+                if (widget.onEpisodeSelected != null && _mediaData != null) {
+                  widget.onEpisodeSelected!(ep, _mediaData!);
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => EpisodeDetailsScreen(
+                        episode: ep,
+                        showData: _mediaData ?? {},
+                        apiService: widget.apiService,
+                        onStatusChanged: () {
+                          if (mounted) _fetchDetails();
+                        },
+                      ),
+                    ),
+                  );
+                }
+              },
               borderRadius: BorderRadius.circular(10),
               child: Opacity(
                 opacity: isUpcoming ? 0.40 : 1.0,
@@ -4236,12 +4498,24 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                           Tooltip(
                             message: isWatched ? 'Markera som osedd' : 'Markera som sedd',
                             child: InkWell(
+                              mouseCursor: SystemMouseCursors.click,
                               onTap: epId != null
                                   ? () async {
                                       try {
                                         await widget.apiService.toggleEpisodeSeenStatus(epId, !isWatched);
-                                        if (mounted) setState(() => _mediaData = null);
-                                        _fetchDetails();
+                                        if (mounted && _mediaData != null) {
+                                          setState(() {
+                                            final eps = _mediaData!['episodes'];
+                                            if (eps is List) {
+                                              for (final e in eps) {
+                                                if (e is Map && e['id']?.toString() == epId) {
+                                                  e['is_watched'] = !isWatched ? 1 : 0;
+                                                  break;
+                                                }
+                                              }
+                                            }
+                                          });
+                                        }
                                       } catch (_) {}
                                     }
                                   : null,
@@ -4256,6 +4530,20 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               ),
                             ),
                           ),
+                          // "..." button
+                          if (epId != null)
+                            GestureDetector(
+                              onTapUp: (details) async {
+                                await _showEpisodeContextMenu(context, details.globalPosition, epId, label, isWatched: isWatched, progress: progress);
+                              },
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: const Padding(
+                                  padding: EdgeInsets.all(6),
+                                  child: Icon(Icons.more_vert, color: Colors.white60, size: 20),
+                                ),
+                              ),
+                            ),
                           // Play button
                           if (epId != null)
                             IconButton(
@@ -4444,133 +4732,165 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         final progress = int.tryParse(ep['playback_progress']?.toString() ?? '0') ?? 0;
         final duration = int.tryParse(ep['duration']?.toString() ?? '0') ?? 0;
         final hasProgress = progress > 60 && !isWatched;
-        final stillPath = ep['still_path']?.toString();
+        final stillRaw2 = ep['still_path']?.toString();
+        final stillPath = stillRaw2 != null && stillRaw2.isNotEmpty
+            ? (stillRaw2.startsWith('http') ? stillRaw2 : 'https://image.tmdb.org/t/p/w300$stillRaw2')
+            : null;
         final overview = ep['overview']?.toString() ?? '';
         final airDate = ep['air_date']?.toString() ?? '';
         final isUpcoming = ep['_is_upcoming'] == true;
 
         return Opacity(
           opacity: isUpcoming ? 0.40 : 1.0,
-          child: GestureDetector(
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => EpisodeDetailsScreen(
-                episode: ep,
-                showTitle: _mediaData?['title']?.toString() ?? '',
-                showFanartPath: _mediaData?['fanart_path']?.toString(),
-                apiService: widget.apiService,
-                onStatusChanged: () {
-                  if (mounted) setState(() => _mediaData = null);
-                  _fetchDetails();
-                },
-              ),
-            ),
-          ),
-          onDoubleTap: epId != null
-              ? () => Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => VideoPlayerScreen(
-                    mediaId: epId,
-                    apiService: widget.apiService,
-                    startFromSeconds: hasProgress ? progress : 0,
-                  )))
-              : null,
-          onSecondaryTapUp: epId != null
-              ? (d) => _showEpisodeContextMenu(context, d.globalPosition, epId, label, isWatched: isWatched, progress: progress)
-              : null,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: isWatched ? 0.02 : 0.04),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-            ),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // Still image background
-                if (stillPath != null && stillPath.isNotEmpty)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      stillPath,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                    ),
-                  ),
-                // Watched overlay
-                if (isWatched)
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                // Bottom gradient + label + title
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
+          child: Stack(
+            children: [
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () {
+                    if (widget.onEpisodeSelected != null && _mediaData != null) {
+                      widget.onEpisodeSelected!(ep, _mediaData!);
+                    } else {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => EpisodeDetailsScreen(
+                            episode: ep,
+                            showData: _mediaData ?? {},
+                            apiService: widget.apiService,
+                            onStatusChanged: () {
+                              if (mounted) setState(() => _mediaData = null);
+                              _fetchDetails();
+                            },
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  onDoubleTap: epId != null
+                      ? () => Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => VideoPlayerScreen(
+                            mediaId: epId,
+                            apiService: widget.apiService,
+                            startFromSeconds: hasProgress ? progress : 0,
+                          )))
+                      : null,
+                  onSecondaryTapUp: epId != null
+                      ? (d) => _showEpisodeContextMenu(context, d.globalPosition, epId, label, isWatched: isWatched, progress: progress)
+                      : null,
                   child: Container(
-                    padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
                     decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.bottomCenter,
-                        end: Alignment.topCenter,
-                        colors: [Colors.black.withValues(alpha: 0.88), Colors.transparent],
-                      ),
-                      borderRadius: const BorderRadius.only(
-                          bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8)),
+                      color: Colors.white.withValues(alpha: isWatched ? 0.02 : 0.04),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Stack(
+                      fit: StackFit.expand,
                       children: [
-                        if (hasProgress && duration > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 4),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(2),
-                              child: LinearProgressIndicator(
-                                value: (progress / duration).clamp(0.0, 1.0),
-                                minHeight: 3,
-                                color: const Color(0xFF8A5BFF),
-                                backgroundColor: Colors.white12,
-                              ),
+                        if (stillPath != null && stillPath.isNotEmpty)
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              stillPath,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                             ),
                           ),
-                        Text(label,
-                            style: const TextStyle(
-                                color: Color(0xFFB593FF), fontSize: 10, fontWeight: FontWeight.bold)),
-                        Text(epTitle,
-                            style: const TextStyle(color: Colors.white, fontSize: 11),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis),
+                        if (isWatched)
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.45),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.bottomCenter,
+                                end: Alignment.topCenter,
+                                colors: [Colors.black.withValues(alpha: 0.88), Colors.transparent],
+                              ),
+                              borderRadius: const BorderRadius.only(
+                                  bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (hasProgress && duration > 0)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 4),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(2),
+                                      child: LinearProgressIndicator(
+                                        value: (progress / duration).clamp(0.0, 1.0),
+                                        minHeight: 3,
+                                        color: const Color(0xFF8A5BFF),
+                                        backgroundColor: Colors.white12,
+                                      ),
+                                    ),
+                                  ),
+                                Text(label,
+                                    style: const TextStyle(
+                                        color: Color(0xFFB593FF), fontSize: 10, fontWeight: FontWeight.bold)),
+                                Text(epTitle,
+                                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (isWatched)
+                          Positioned(
+                            top: 6,
+                            left: 6,
+                            child: Container(
+                              padding: const EdgeInsets.all(3),
+                              decoration: const BoxDecoration(color: Color(0xFF4CAF50), shape: BoxShape.circle),
+                              child: const Icon(Icons.check, color: Colors.white, size: 10),
+                            ),
+                          ),
+                        Center(
+                          child: Icon(
+                            isWatched ? Icons.replay_rounded : Icons.play_circle_outline_rounded,
+                            color: Colors.white.withValues(alpha: stillPath != null && stillPath.isNotEmpty ? 0.0 : 0.30),
+                            size: 28,
+                          ),
+                        ),
                       ],
                     ),
                   ),
                 ),
-                // Watched check top-left
-                if (isWatched)
-                  Positioned(
-                    top: 6,
-                    left: 6,
-                    child: Container(
-                      padding: const EdgeInsets.all(3),
-                      decoration: const BoxDecoration(color: Color(0xFF4CAF50), shape: BoxShape.circle),
-                      child: const Icon(Icons.check, color: Colors.white, size: 10),
+              ),
+              // "..." button outside the card GestureDetector — no gesture conflict
+              if (epId != null)
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTapUp: (details) async {
+                        await _showEpisodeContextMenu(context, details.globalPosition, epId, label, isWatched: isWatched, progress: progress);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(Icons.more_vert, color: Colors.white70, size: 16),
+                      ),
                     ),
                   ),
-                // Play hint center
-                Center(
-                  child: Icon(
-                    isWatched ? Icons.replay_rounded : Icons.play_circle_outline_rounded,
-                    color: Colors.white.withValues(alpha: stillPath != null && stillPath.isNotEmpty ? 0.0 : 0.30),
-                    size: 28,
-                  ),
                 ),
-              ],
-            ),
+            ],
           ),
-          ),  // Opacity
         );
       },
     );

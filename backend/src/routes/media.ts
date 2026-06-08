@@ -1457,6 +1457,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           // Get episodes with per-user watch status
           const episodes = db.prepare(`
             SELECT e.id, e.season_number, e.episode_number, e.title, e.file_path, e.air_date,
+                   e.still_path, e.overview,
                    COALESCE(wh.is_watched, 0) as is_watched,
                    COALESCE(wh.last_position_seconds, 0) as playback_progress,
                    COALESCE(wh.total_duration_seconds, 0) as duration
@@ -1515,30 +1516,37 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           }
         }
 
-        // 2. Fetch movie credits
-        const creditsRes = await axios.get(`https://api.themoviedb.org/3/person/${id}/movie_credits`, {
+        // 2. Fetch combined credits (movies + TV shows)
+        const creditsRes = await axios.get(`https://api.themoviedb.org/3/person/${id}/combined_credits`, {
           params: { api_key: apiKeyRow.value, language: prefLang }
         });
-        
-        const castCredits = creditsRes.data.cast || [];
-        const crewCredits = creditsRes.data.crew || [];
 
-        // 3. Match against local library movies and watchlist!
-        const localMovies = db.prepare(`
-          SELECT mi.id, mi.title, mi.year, mi.tmdb_id, mi.poster_path,
+        // Normalize movie and TV entries to a common shape
+        const normalizeCredit = (c: any) => ({
+          ...c,
+          title: c.title || c.name || '',
+          release_date: c.release_date || c.first_air_date || null,
+        });
+
+        const castCredits = (creditsRes.data.cast || []).map(normalizeCredit);
+        const crewCredits = (creditsRes.data.crew || []).map(normalizeCredit);
+
+        // 3. Match against local library (movies AND shows) and watchlist
+        const localMedia = db.prepare(`
+          SELECT mi.id, mi.title, mi.year, mi.tmdb_id, mi.type, mi.poster_path,
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'watch_status') as watch_status,
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'playback_progress') as playback_progress,
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'duration') as duration,
                  (SELECT metadata_value FROM media_metadata WHERE media_item_id = mi.id AND metadata_key = 'runtime') as runtime
           FROM media_items mi
-          WHERE mi.type = 'Movie' AND mi.deleted_at IS NULL
+          WHERE mi.deleted_at IS NULL
         `).all() as any[];
 
         const watchlistRows = db.prepare(`SELECT tmdb_id FROM watchlist`).all() as Array<{ tmdb_id: string }>;
         const watchlistTmdbIds = new Set(watchlistRows.map(r => r.tmdb_id.toString()));
 
         const matchLocal = (tmdbId: any, title: string) => {
-          return localMovies.find(m => (m.tmdb_id && tmdbId && m.tmdb_id.toString() === tmdbId.toString()) || m.title.toLowerCase() === title.toLowerCase());
+          return localMedia.find(m => (m.tmdb_id && tmdbId && m.tmdb_id.toString() === tmdbId.toString()) || m.title.toLowerCase() === title.toLowerCase());
         };
 
         const mappedCast = castCredits.map((c: any) => {
@@ -1554,6 +1562,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             vote_average: c.vote_average || 0.0,
             vote_count: c.vote_count || 0,
             overview: c.overview || '',
+            media_type: c.media_type || 'movie',
             local_id: localMatch ? localMatch.id : null,
             watch_status: localMatch ? localMatch.watch_status : null,
             playback_progress: localMatch ? localMatch.playback_progress : null,
@@ -1577,6 +1586,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             vote_average: c.vote_average || 0.0,
             vote_count: c.vote_count || 0,
             overview: c.overview || '',
+            media_type: c.media_type || 'movie',
             local_id: localMatch ? localMatch.id : null,
             watch_status: localMatch ? localMatch.watch_status : null,
             playback_progress: localMatch ? localMatch.playback_progress : null,
@@ -2076,6 +2086,35 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // PATCH /api/media/episodes/:id — update episode metadata fields
+  fastify.patch(
+    '/api/media/episodes/:id',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: Record<string, any> }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      const body = request.body || {};
+      try {
+        const ep = db.prepare(`SELECT id FROM episodes WHERE id = ? AND deleted_at IS NULL`).get(id) as any;
+        if (!ep) return reply.code(404).send({ error: 'Episode not found' });
+
+        const allowed = ['title', 'overview', 'still_path', 'air_date'];
+        const updates: string[] = [];
+        const params: any[] = [];
+        for (const key of allowed) {
+          if (body[key] !== undefined) {
+            updates.push(`${key} = ?`);
+            params.push(body[key]);
+          }
+        }
+        if (updates.length === 0) return reply.send({ ok: true, updated: 0 });
+        params.push(id);
+        db.prepare(`UPDATE episodes SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+        return reply.send({ ok: true, updated: updates.length });
+      } catch (err: any) {
+        return reply.code(500).send({ error: 'Failed to update episode', details: err.message });
+      }
+    }
+  );
+
   // DELETE /api/media/episodes/:id — soft-delete a single episode
   fastify.delete(
     '/api/media/episodes/:id',
@@ -2336,6 +2375,15 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           return reply.send({ success: true, status: 'updated' });
         }
 
+        // For movies: if we already have a TMDB ID, clear stale metadata first so
+        // processMovieFile re-fetches everything fresh via fetchMovieById.
+        if (item.tmdb_id) {
+          db.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key IN (
+            'production_countries','production_companies','cast','ratings','imdb_rating',
+            'imdb_votes','simkl_rating','simkl_votes','trakt_rating','trakt_votes',
+            'watch_providers','trailer_url','tagline','keywords','awards'
+          )`).run(item.id);
+        }
         const res = await mediaScanner.processMovieFile(item.file_path, false);
         return reply.send({ success: true, status: res });
       } catch (err: any) {

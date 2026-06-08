@@ -428,6 +428,23 @@ export class TMDBService {
         }
       }
 
+      // Fetch aggregate credits to get all cast members across all seasons
+      try {
+        const fullCreditsRes = await axios.get(`${TMDB_BASE_URL}/tv/${id}/aggregate_credits`, {
+          params: { api_key: apiKey }
+        });
+        if (fullCreditsRes.data?.cast?.length > (showData.credits?.cast?.length || 0)) {
+          const mappedCast = fullCreditsRes.data.cast.map((c: any) => ({
+            ...c,
+            character: c.roles && c.roles.length > 0 ? c.roles.map((r: any) => r.character).join(' / ') : ''
+          }));
+          showData.credits = {
+            ...fullCreditsRes.data,
+            cast: mappedCast
+          };
+        }
+      } catch {}
+
       // Fallback trailer_url
       if (!showData.trailer_url && prefLang !== 'en-US') {
         try {

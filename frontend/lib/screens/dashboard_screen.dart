@@ -1,4 +1,5 @@
-﻿import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,7 @@ import 'dart:ui' as ui;
 import 'package:window_manager/window_manager.dart';
 import '../utils/platform_view_registry.dart' as ui_web;
 import '../services/api.dart';
+import 'episode_details_screen.dart';
 import 'fix_match_dialog.dart';
 import 'media_details_screen.dart';
 import 'media_info_dialog.dart';
@@ -34,7 +36,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   
   String? _selectedMediaId;
   String? _selectedPersonId;
+  Map<String, dynamic>? _selectedEpisode;
+  Map<String, dynamic>? _selectedEpisodeShowData;
   int? _autoPlaySecondsInNextOpen;
+  int? _mediaInitialSeason;
   DateTime? _calendarSelectedDay;
   bool _isSidebarExpanded = true;
   bool _isFullscreen = false;
@@ -82,7 +87,31 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     return parts.take(2).map((part) => part.isNotEmpty ? part[0].toUpperCase() : '').join();
   }
 
+  void _saveScrollOffsets() {
+    if (_tabController.index == 1 && _moviesScrollController.hasClients) {
+      _savedMoviesOffset = _moviesScrollController.offset;
+      _savedScrollTab = 1;
+    } else if (_tabController.index == 2 && _showsScrollController.hasClients) {
+      _savedShowsOffset = _showsScrollController.offset;
+      _savedScrollTab = 2;
+    }
+  }
+
+  void _restoreScrollOffset() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_savedScrollTab == 1 && _moviesScrollController.hasClients) {
+        final max = _moviesScrollController.position.maxScrollExtent;
+        _moviesScrollController.jumpTo(_savedMoviesOffset.clamp(0.0, max));
+      } else if (_savedScrollTab == 2 && _showsScrollController.hasClients) {
+        final max = _showsScrollController.position.maxScrollExtent;
+        _showsScrollController.jumpTo(_savedShowsOffset.clamp(0.0, max));
+      }
+    });
+  }
+
   void _navigateTo(String type, String id, {int? autoPlaySeconds}) {
+    _saveScrollOffsets();
     setState(() {
       _autoPlaySecondsInNextOpen = autoPlaySeconds;
       String? currentType;
@@ -90,6 +119,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       if (_selectedPersonId != null) {
         currentType = 'person';
         currentId = _selectedPersonId;
+      } else if (_selectedEpisode != null) {
+        // Clear episode state when navigating elsewhere
+        _selectedEpisode = null;
+        _selectedEpisodeShowData = null;
       } else if (_selectedMediaId != null) {
         currentType = 'media';
         currentId = _selectedMediaId;
@@ -102,11 +135,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       if (type == 'media') {
         _selectedMediaId = id;
         _selectedPersonId = null;
+        _selectedEpisode = null;
+        _selectedEpisodeShowData = null;
       } else if (type == 'person') {
         _selectedPersonId = id;
         _selectedMediaId = null;
+        _selectedEpisode = null;
+        _selectedEpisodeShowData = null;
       }
-      
+
       _forwardHistory.clear();
     });
     // Clear the pending autoplay flag after the navigation frame so child receives it once.
@@ -134,6 +171,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   void _goBack() {
+    // Episod-vy: backa till serie-sidan utan att röra navHistory
+    if (_selectedEpisode != null) {
+      setState(() {
+        _selectedEpisode = null;
+        _selectedEpisodeShowData = null;
+      });
+      return;
+    }
+
     if (_navHistory.isEmpty) {
       setState(() {
         if (_selectedPersonId != null) {
@@ -144,6 +190,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           _selectedMediaId = null;
         }
       });
+      _restoreScrollOffset();
       return;
     }
 
@@ -761,6 +808,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Timer? _manualSyncTimer;
 
   String? _genreFilter;
+  String? _showsGenreFilter;
   String? _keywordFilter;
   String _moviesSearchQuery = '';
   List<Map<String, dynamic>> _homeSections = [];
@@ -783,6 +831,12 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   String? _hoveredPosterKey;
   final Set<String> _selectedMediaIds = {};
   int? _lastSelectedMediaIndex;
+
+  final ScrollController _moviesScrollController = ScrollController();
+  final ScrollController _showsScrollController = ScrollController();
+  double _savedMoviesOffset = 0.0;
+  double _savedShowsOffset = 0.0;
+  int _savedScrollTab = 1;
 
   @override
   void initState() {
@@ -818,7 +872,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       {'id': 'recent_shows', 'title': 'Nyligen tillagda Serier', 'visible': true, 'comingSoon': false},
       {'id': 'recent_watched_movies', 'title': 'Nyligen sedda Filmer', 'visible': true, 'comingSoon': false},
       {'id': 'recent_watched_shows', 'title': 'Nyligen sedda Serier', 'visible': true, 'comingSoon': false},
-      {'id': 'recent_shows', 'title': 'Nyligen tillagda Serier', 'visible': false, 'comingSoon': true},
       {'id': 'recent_images', 'title': 'Nyligen tillagda Bilder', 'visible': false, 'comingSoon': true},
       {'id': 'recent_music', 'title': 'Nyligen tillagda Musik', 'visible': false, 'comingSoon': true},
       {'id': 'tmdb_trending', 'title': 'Trender från TMDB', 'visible': false, 'comingSoon': true},
@@ -856,7 +909,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         }
 
         if (parsed.isNotEmpty) {
-          _homeSections = parsed.where((section) => (section['id'] ?? '').toString().isNotEmpty).toList();
+          final validParsed = parsed.where((s) => (s['id'] ?? '').toString().isNotEmpty).toList();
+          // Merge: keep saved order/visibility, append any default sections that are missing
+          final savedIds = validParsed.map((s) => s['id'].toString()).toSet();
+          final defaults = _defaultHomeSections();
+          for (final def in defaults) {
+            final id = def['id'].toString();
+            if (!savedIds.contains(id)) {
+              validParsed.add(def);
+            }
+          }
+          _homeSections = validParsed;
           return;
         }
       }
@@ -1003,7 +1066,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   child: const Text('Avbryt'),
                 ),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF8A5BFF),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
                   onPressed: () async {
                     setState(() {
                       _homeSections = editableSections;
@@ -1042,6 +1109,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     _traktTokenController.dispose();
     _tmdbAuthController.dispose();
     _defaultSubLangController.dispose();
+    _moviesScrollController.dispose();
+    _showsScrollController.dispose();
     super.dispose();
   }
 
@@ -1425,18 +1494,59 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                   _navigateTo('media', mediaId);
                                 },
                               )
-                            : _selectedMediaId != null
+                            : _selectedEpisode != null && _selectedEpisodeShowData != null
+                                ? EpisodeDetailsScreen(
+                                    key: ValueKey('ep_${_selectedEpisode!['id']}'),
+                                    episode: _selectedEpisode!,
+                                    showData: _selectedEpisodeShowData!,
+                                    apiService: widget.apiService,
+                                    onStatusChanged: _loadAllMedia,
+                                    onPersonSelected: (personId) {
+                                      setState(() {
+                                        _selectedEpisode = null;
+                                        _selectedEpisodeShowData = null;
+                                      });
+                                      _navigateTo('person', personId);
+                                    },
+                                    onNavigateToShow: () {
+                                      final showId = _selectedEpisodeShowData!['id']?.toString();
+                                      setState(() {
+                                        _selectedEpisode = null;
+                                        _selectedEpisodeShowData = null;
+                                        _mediaInitialSeason = null;
+                                      });
+                                      if (showId != null) _navigateTo('media', showId);
+                                    },
+                                    onNavigateToSeason: (seasonNum) {
+                                      final showId = _selectedEpisodeShowData!['id']?.toString();
+                                      setState(() {
+                                        _selectedEpisode = null;
+                                        _selectedEpisodeShowData = null;
+                                        _mediaInitialSeason = seasonNum;
+                                      });
+                                      if (showId != null) _navigateTo('media', showId);
+                                    },
+                                    onNavigateToEpisode: (ep) {
+                                      setState(() {
+                                        _selectedEpisode = ep;
+                                      });
+                                    },
+                                  )
+                                : _selectedMediaId != null
                                 ? MediaDetailsScreen(
-                                    key: ValueKey(_selectedMediaId),
+                                    key: ValueKey('${_selectedMediaId}_${_mediaInitialSeason ?? -1}'),
                                     mediaId: _selectedMediaId!,
                                     apiService: widget.apiService,
                                     onBack: _goBack,
                                     autoPlaySeconds: _autoPlaySecondsInNextOpen,
                                     onVideoPlayerClosed: _loadAllMedia,
+                                    initialSeasonNumber: _mediaInitialSeason,
                                     onGenreSelected: (g) {
                                       setState(() {
+                                        if (_selectedMediaId != null) _navHistory.add({'type': 'media', 'id': _selectedMediaId!});
                                         _selectedMediaId = null;
                                         _genreFilter = g;
+                                        _showsGenreFilter = null;
                                         _keywordFilter = null;
                                       });
                                       try {
@@ -1445,8 +1555,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                     },
                                     onShowGenreSelected: (g) {
                                       setState(() {
+                                        if (_selectedMediaId != null) _navHistory.add({'type': 'media', 'id': _selectedMediaId!});
                                         _selectedMediaId = null;
-                                        _genreFilter = g;
+                                        _showsGenreFilter = g;
+                                        _genreFilter = null;
                                         _keywordFilter = null;
                                       });
                                       try {
@@ -1471,6 +1583,15 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                     },
                                     onEdit: () => _openMediaEditor({'id': _selectedMediaId}),
                                     onContextMenu: (id, pos) => _openPosterActionsMenu({'id': id}, isHomeCard: false, globalPos: pos),
+                                    onEpisodeSelected: (episode, showData) {
+                                      setState(() {
+                                        _navHistory.add({'type': 'media', 'id': _selectedMediaId!});
+                                        _selectedEpisode = episode;
+                                        _selectedEpisodeShowData = showData;
+                                        _forwardHistory.clear();
+                                      });
+                                    },
+                                    onEditEpisode: (epId, ep) => _openEpisodeEditor(epId, ep),
                                   )
                                 : AnimatedBuilder(
                                     animation: _tabController,
@@ -1951,11 +2072,25 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   List<dynamic> _getContinueWatchingShows(List<dynamic> shows, int? days) {
     final filtered = shows.where((show) {
       final metadata = show['metadata'];
-      if (metadata is! Map) return false;
-      final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
-      if (progress <= 0) return false;
-      final lastAt = metadata['last_watched_at']?.toString() ?? show['last_watched_at']?.toString();
-      return _isWithinDays(lastAt, days);
+      // Check show-level metadata first
+      if (metadata is Map) {
+        final progress = int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
+        final hasLastEpisode = (metadata['last_watched_episode_id']?.toString() ?? '').isNotEmpty;
+        if (progress > 0 || hasLastEpisode) {
+          final lastAt = metadata['last_watched_at']?.toString() ?? show['last_watched_at']?.toString();
+          return _isWithinDays(lastAt, days);
+        }
+      }
+      // Fallback: check episodes list for any in-progress episode
+      final episodes = show['episodes'];
+      if (episodes is List) {
+        return episodes.any((e) {
+          final prog = int.tryParse(e['playback_progress']?.toString() ?? '0') ?? 0;
+          final watched = e['is_watched'] == 1 || e['is_watched'] == true;
+          return prog > 60 && !watched;
+        });
+      }
+      return false;
     }).toList();
 
     filtered.sort((a, b) {
@@ -1991,6 +2126,37 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       }
     }
     return null;
+  }
+
+  List<dynamic> _getRecentlyWatchedShows(List<dynamic> shows) {
+    final watched = shows.where((show) {
+      final metadata = show['metadata'];
+      // Check show-level last_watched_at
+      if (metadata is Map) {
+        final lastWatched = metadata['last_watched_at']?.toString() ?? show['last_watched_at']?.toString() ?? '';
+        if (lastWatched.isNotEmpty) return true;
+      }
+      // Fallback: any episode is watched
+      final episodes = show['episodes'];
+      if (episodes is List) {
+        return episodes.any((e) => e['is_watched'] == 1 || e['is_watched'] == true);
+      }
+      return false;
+    }).toList();
+
+    watched.sort((a, b) {
+      final metaA = a['metadata'] is Map ? a['metadata'] as Map : <String, dynamic>{};
+      final metaB = b['metadata'] is Map ? b['metadata'] as Map : <String, dynamic>{};
+      final aTime = DateTime.tryParse(metaA['last_watched_at']?.toString() ?? '')
+          ?? DateTime.tryParse(a['last_watched_at']?.toString() ?? '')
+          ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = DateTime.tryParse(metaB['last_watched_at']?.toString() ?? '')
+          ?? DateTime.tryParse(b['last_watched_at']?.toString() ?? '')
+          ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+
+    return watched;
   }
 
   List<dynamic> _getRecentlyWatchedMovies(List<dynamic> movies) {
@@ -2740,6 +2906,193 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+  Future<void> _openEpisodeEditor(String epId, Map<String, dynamic> ep) async {
+    final titleCtrl = TextEditingController(text: ep['title']?.toString() ?? '');
+    final overviewCtrl = TextEditingController(text: ep['overview']?.toString() ?? ep['plot']?.toString() ?? '');
+    final stillCtrl = TextEditingController(text: ep['still_path']?.toString() ?? '');
+    final airDateCtrl = TextEditingController(text: ep['air_date']?.toString() ?? '');
+    String activeTab = 'allmant';
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          Widget buildField(String label, TextEditingController ctrl, {int maxLines = 1}) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Row(
+                crossAxisAlignment: maxLines > 1 ? CrossAxisAlignment.start : CrossAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 140,
+                    child: Text(label, style: const TextStyle(color: Colors.white60, fontSize: 13)),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: ctrl,
+                      maxLines: maxLines,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.05),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFF8A5BFF)),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          final tabs = [
+            {'key': 'allmant', 'label': 'Allmänt'},
+            {'key': 'affisch', 'label': 'Stillbild'},
+          ];
+
+          Widget content;
+          if (activeTab == 'allmant') {
+            content = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                buildField('Titel', titleCtrl),
+                buildField('Luftdatum', airDateCtrl),
+                buildField('Beskrivning', overviewCtrl, maxLines: 5),
+              ],
+            );
+          } else {
+            content = buildField('Stillbild URL', stillCtrl);
+          }
+
+          return Dialog(
+            backgroundColor: const Color(0xFF0D1117),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: SizedBox(
+              width: 760,
+              height: 520,
+              child: Row(
+                children: [
+                  Container(
+                    width: 180,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.03),
+                      borderRadius: const BorderRadius.only(topLeft: Radius.circular(16), bottomLeft: Radius.circular(16)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(20, 24, 20, 20),
+                          child: Text('Redigera avsnitt', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                        ),
+                        ...tabs.map((t) {
+                          final isSelected = activeTab == t['key'];
+                          return InkWell(
+                            onTap: () => setDialogState(() => activeTab = t['key']!),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                              decoration: BoxDecoration(
+                                color: isSelected ? const Color(0xFF8A5BFF).withValues(alpha: 0.15) : Colors.transparent,
+                                border: Border(
+                                  left: BorderSide(
+                                    color: isSelected ? const Color(0xFF8A5BFF) : Colors.transparent,
+                                    width: 3,
+                                  ),
+                                ),
+                              ),
+                              child: Text(t['label']!, style: TextStyle(color: isSelected ? Colors.white : Colors.white54, fontSize: 14)),
+                            ),
+                          );
+                        }),
+                        const Spacer(),
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text('Lås ikon hindrar scanner från att skriva över fältet.',
+                              style: TextStyle(color: Colors.white24, fontSize: 11)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(28),
+                            child: content,
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(28, 0, 28, 20),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              OutlinedButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white70,
+                                  side: const BorderSide(color: Colors.white24),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                child: const Text('Avbryt'),
+                              ),
+                              const SizedBox(width: 12),
+                              ElevatedButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF8A5BFF),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                child: const Text('Spara'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (saved == true && mounted) {
+      try {
+        await widget.apiService.updateEpisodeFields(epId, {
+          'title': titleCtrl.text.trim(),
+          'overview': overviewCtrl.text.trim(),
+          'still_path': stillCtrl.text.trim(),
+          'air_date': airDateCtrl.text.trim(),
+        });
+        setState(() {});
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kunde inte spara: $e')));
+      }
+    }
+    titleCtrl.dispose();
+    overviewCtrl.dispose();
+    stillCtrl.dispose();
+    airDateCtrl.dispose();
+  }
+
   Future<void> _openMediaEditor(dynamic item) async {
     final itemId = item['id']?.toString();
     if (itemId == null) return;
@@ -3058,7 +3411,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                               ),
                               const SizedBox(width: 8),
                               TextButton(
-                                onPressed: () => html.window.open(value, '_blank'),
+                                onPressed: () => launchUrl(Uri.parse(value), mode: LaunchMode.externalApplication),
                                 child: const Text('Öppna'),
                               ),
                             ],
@@ -3422,7 +3775,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   List<dynamic> _findLocalHomeMatches(String query) {
     final q = query.toLowerCase();
-    final candidates = _movies.where((m) {
+    final allMedia = [..._movies, ..._shows];
+    final candidates = allMedia.where((m) {
       final title = (m['title'] ?? '').toString().toLowerCase();
       final originalTitle = (m['original_title'] ?? '').toString().toLowerCase();
       final year = (m['year'] ?? '').toString().toLowerCase();
@@ -3746,16 +4100,20 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildGenreFilterBadge() {
+    final activeFilter = _keywordFilter != null
+        ? 'Nyckelord: $_keywordFilter'
+        : (_showsGenreFilter != null ? 'Genre: $_showsGenreFilter' : 'Genre: $_genreFilter');
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
       child: Chip(
         backgroundColor: const Color(0xFF8A5BFF).withValues(alpha: 0.1),
         side: const BorderSide(color: Color(0xFF8A5BFF)),
-        label: Text(_keywordFilter != null ? 'Nyckelord: $_keywordFilter' : 'Genre: $_genreFilter', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        label: Text(activeFilter, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         deleteIcon: const Icon(Icons.close, color: Colors.white, size: 18),
         onDeleted: () {
           setState(() {
             _genreFilter = null;
+            _showsGenreFilter = null;
             _keywordFilter = null;
           });
         },
@@ -3782,7 +4140,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         .take(12)
         .toList();
     final watchedMovies = _getRecentlyWatchedMovies(_movies).take(12).toList();
-    final watchedShows = _getRecentlyWatchedMovies(_shows).take(12).toList();
+    final watchedShows = _getRecentlyWatchedShows(_shows).take(12).toList();
 
     return SingleChildScrollView(
       child: Column(
@@ -4453,6 +4811,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           child: GridView.builder(
             // Keep the current filtered list available for shift-range selection.
             key: ValueKey(filteredMovies.length),
+            controller: _moviesScrollController,
             padding: const EdgeInsets.only(top: 10, bottom: 30),
             gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
               maxCrossAxisExtent: 150 * _posterScale,
@@ -4482,7 +4841,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       gridContent = _buildEmptyState('Inga TV-serier hittades', 'Gå till Biblioteks scanner-fliken för att importera dina mediafiler.');
     } else {
       List<dynamic> filteredShows = _shows;
-      if (_genreFilter != null) {
+      if (_showsGenreFilter != null) {
+        filteredShows = _shows.where((s) => (s['genre'] as String? ?? '').toString().toLowerCase().contains(_showsGenreFilter!.toLowerCase())).toList();
+      } else if (_genreFilter != null) {
         filteredShows = _shows.where((s) => (s['genre'] as String? ?? '').toString().toLowerCase().contains(_genreFilter!.toLowerCase())).toList();
       } else if (_keywordFilter != null) {
         filteredShows = _shows.where((s) {
@@ -4510,7 +4871,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           children: [
             _buildGenreFilterBadge(),
             Expanded(child: _buildEmptyState(
-              _keywordFilter != null ? 'Inga serier matchar nyckelord "$_keywordFilter"' : 'Inga serier matchar genren "$_genreFilter"',
+              _keywordFilter != null ? 'Inga serier matchar nyckelord "$_keywordFilter"' : 'Inga serier matchar genren "${_showsGenreFilter ?? _genreFilter}"',
               'Ta bort filtret för att se alla serier.'
             )),
           ],
@@ -4519,10 +4880,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         gridContent = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (_genreFilter != null) _buildGenreFilterBadge(),
+            if (_showsGenreFilter != null || _genreFilter != null) _buildGenreFilterBadge(),
             Expanded(
               child: GridView.builder(
                 key: ValueKey(filteredShows.length),
+                controller: _showsScrollController,
                 padding: const EdgeInsets.only(top: 10, bottom: 30),
                 gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
                   maxCrossAxisExtent: 150 * _posterScale,
@@ -5359,7 +5721,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               Padding(
                 padding: const EdgeInsets.only(left: 8),
                 child: InkWell(
-                  onTap: () => html.window.open('https://www.omdbapi.com/apikey.aspx', '_blank'),
+                  onTap: () => launchUrl(Uri.parse('https://www.omdbapi.com/apikey.aspx'), mode: LaunchMode.externalApplication),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -5380,7 +5742,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 children: [
                   const Text('Simkl Integration', style: TextStyle(color: Colors.green, fontSize: 15, fontWeight: FontWeight.bold)),
                   TextButton.icon(
-                    onPressed: () => html.window.open('https://simkl.com/settings/developer/', '_blank'),
+                    onPressed: () => launchUrl(Uri.parse('https://simkl.com/settings/developer/'), mode: LaunchMode.externalApplication),
                     icon: const Icon(Icons.open_in_new, size: 12, color: Colors.green),
                     label: const Text('Skapa Simkl App', style: TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
                   ),
@@ -5411,7 +5773,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     await _saveSettings();
                   } else {
                     await _saveSettings();
-                    html.window.open('${widget.apiService.baseUrl}/api/oauth/simkl/authorize', '_blank');
+                    launchUrl(Uri.parse('${widget.apiService.baseUrl}/api/oauth/simkl/authorize'), mode: LaunchMode.externalApplication);
                     Timer.periodic(const Duration(seconds: 2), (timer) async {
                       if (timer.tick > 30) {
                         timer.cancel();
@@ -5478,7 +5840,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 children: [
                   const Text('Trakt.tv Integration', style: TextStyle(color: Colors.redAccent, fontSize: 15, fontWeight: FontWeight.bold)),
                   TextButton.icon(
-                    onPressed: () => html.window.open('https://trakt.tv/oauth/applications', '_blank'),
+                    onPressed: () => launchUrl(Uri.parse('https://trakt.tv/oauth/applications'), mode: LaunchMode.externalApplication),
                     icon: const Icon(Icons.open_in_new, size: 12, color: Colors.redAccent),
                     label: const Text('Skapa Trakt App', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
                   ),
@@ -5509,7 +5871,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                     await _saveSettings();
                   } else {
                     await _saveSettings();
-                    html.window.open('${widget.apiService.baseUrl}/api/oauth/trakt/authorize', '_blank');
+                    launchUrl(Uri.parse('${widget.apiService.baseUrl}/api/oauth/trakt/authorize'), mode: LaunchMode.externalApplication);
                     Timer.periodic(const Duration(seconds: 2), (timer) async {
                       if (timer.tick > 30) {
                         timer.cancel();
@@ -6044,4 +6406,4 @@ class _PremiumToastWidgetState extends State<_PremiumToastWidget> with SingleTic
     );
   }
 }
-
+

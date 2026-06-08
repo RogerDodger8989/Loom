@@ -217,6 +217,17 @@ class ApiService {
     }
   }
 
+  Future<void> updateEpisodeFields(String id, Map<String, dynamic> fields) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/api/media/episodes/$id'),
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode(fields),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update episode: ${response.body}');
+    }
+  }
+
   Future<void> updateMediaItemFields(String id, Map<String, dynamic> fields) async {
     final response = await http.patch(
       Uri.parse('$baseUrl/api/media/items/$id'),
