@@ -2524,16 +2524,32 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // GET /api/media/:id/similar — Get similar/recommended movies from library
+  // GET /api/media/:id/similar - Get similar/recommended media from TMDB (both in library and not)
   fastify.get(
     '/api/media/:id/similar',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const { id } = request.params;
 
       try {
-        const movie = db.prepare(`SELECT tmdb_id, title FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id) as any;
-        if (!movie || !movie.tmdb_id) {
-          return reply.code(404).send({ error: 'Movie not found or no TMDB ID' });
+        let movieTmdbId: string | undefined;
+        let movieType: string | undefined;
+
+        if (id.startsWith('external_')) {
+          const match = id.match(/^external_(movie|show)_(.+)$/);
+          if (match) {
+            movieType = match[1] === 'show' ? 'Show' : 'Movie';
+            movieTmdbId = match[2];
+          }
+        } else {
+          const movie = db.prepare(`SELECT tmdb_id, type FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id) as any;
+          if (movie && movie.tmdb_id) {
+            movieTmdbId = movie.tmdb_id;
+            movieType = movie.type;
+          }
+        }
+
+        if (!movieTmdbId) {
+          return reply.code(404).send({ error: 'Media not found or no TMDB ID' });
         }
 
         // Fetch similar movies from TMDB
@@ -2544,7 +2560,8 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
         let similarMovies = [];
         try {
-          const response = await axios.get(`https://api.themoviedb.org/3/movie/${movie.tmdb_id}/similar`, {
+          const endpoint = movieType === 'Show' ? 'tv' : 'movie';
+          const response = await axios.get(`https://api.themoviedb.org/3/${endpoint}/${movieTmdbId}/recommendations`, {
             params: {
               api_key: apiKey.value,
               language: 'sv-SE'
@@ -2552,42 +2569,49 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           });
           similarMovies = response.data.results || [];
         } catch (tmdbErr: any) {
-          request.log.warn('Failed to fetch similar movies from TMDB:', tmdbErr.message);
+          request.log.warn(`Failed to fetch similar ${movieType}s from TMDB:`, tmdbErr.message);
           return reply.send({ id, items: [] });
         }
 
-        // Filter to only items in library. Prefer TMDB ID, fall back to title match.
         const normalizedSimilar = similarMovies.map((m: any) => ({
-          id: m.id,
-          title: (m.title || '').toString().trim().toLowerCase(),
+          tmdb_id: m.id,
+          title: m.title || m.name || '',
+          year: m.release_date ? new Date(m.release_date).getFullYear() : (m.first_air_date ? new Date(m.first_air_date).getFullYear() : null),
+          poster_path: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null,
+          overview: m.overview || '',
         }));
+
         if (normalizedSimilar.length === 0) {
           return reply.send({ id, items: [] });
         }
 
-        const tmdbIds = normalizedSimilar.map((m: any) => m.id).filter(Boolean);
-        const libraryRows = db.prepare(`
-          SELECT id, title, year, poster_path, tmdb_id
+        const tmdbIds = normalizedSimilar.map((m: any) => m.tmdb_id).filter(Boolean);
+        const placeholders = tmdbIds.map(() => '?').join(',');
+        const libraryRows = tmdbIds.length > 0 ? db.prepare(`
+          SELECT id, tmdb_id
           FROM media_items
-          WHERE deleted_at IS NULL
-          ORDER BY year DESC
-        `).all() as Array<{
-          id: string;
-          title: string;
-          year: number | null;
-          poster_path: string | null;
-          tmdb_id: string | null;
-        }>;
+          WHERE deleted_at IS NULL AND tmdb_id IN (${placeholders})
+        `).all(...tmdbIds) as any[] : [];
 
-        const libraryItems = libraryRows.filter((row) => {
-          const tmdbIdMatch = row.tmdb_id && tmdbIds.includes(Number(row.tmdb_id));
-          const titleMatch = normalizedSimilar.some((item: { title: string }) => item.title && item.title === (row.title || '').toString().trim().toLowerCase());
-          return tmdbIdMatch || titleMatch;
-        });
+        const libraryMap = new Map();
+        for (const row of libraryRows) {
+          libraryMap.set(Number(row.tmdb_id), row.id);
+        }
+
+        const finalItems = normalizedSimilar.map((m: any) => ({
+          id: libraryMap.get(Number(m.tmdb_id)) || null,
+          tmdb_id: m.tmdb_id,
+          title: m.title,
+          year: m.year,
+          poster_path: m.poster_path,
+          type: movieType,
+          in_library: libraryMap.has(Number(m.tmdb_id)),
+          overview: m.overview
+        }));
 
         return reply.send({
           id,
-          items: libraryItems,
+          items: finalItems,
         });
       } catch (error: any) {
         request.log.error(error);

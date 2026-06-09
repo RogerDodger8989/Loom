@@ -139,6 +139,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _defaultAudioLanguage = 'sv';
   String _watchProviderRegion = 'SE';
   String _titleDisplayStyle = 'Translated';
+  bool _showReleaseVersion = true;
   bool _preferLocalNfo = true;
   bool _alwaysOnTop = false;
   bool _syncTraktRatings = true;
@@ -403,6 +404,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _defaultAudioLanguage = s['DEFAULT_AUDIO_LANG'] ?? 'sv';
       _watchProviderRegion = s['WATCH_PROVIDER_REGION'] ?? 'SE';
       _titleDisplayStyle = s['TITLE_DISPLAY_STYLE'] ?? 'Translated';
+      _showReleaseVersion = s['SHOW_RELEASE_VERSION'] != 'false';
       _preferLocalNfo = s['PREFER_LOCAL_NFO'] != 'false';
       _versionPriority = s['VERSION_PRIORITY'] ?? '1080p,720p,4K';
       _syncTraktRatings = s['sync_trakt_ratings'] != 'false';
@@ -468,6 +470,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'DEFAULT_AUDIO_LANG': _defaultAudioLanguage,
         'WATCH_PROVIDER_REGION': _watchProviderRegion,
         'TITLE_DISPLAY_STYLE': _titleDisplayStyle,
+        'SHOW_RELEASE_VERSION': _showReleaseVersion ? 'true' : 'false',
         'PREFER_LOCAL_NFO': _preferLocalNfo ? 'true' : 'false',
         'sync_trakt_ratings': _syncTraktRatings ? 'true' : 'false',
         'sync_trakt_watched': _syncTraktWatched ? 'true' : 'false',
@@ -1169,6 +1172,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ]),
                     const SizedBox(height: 12),
                     _switchTile('Föredra lokal NFO-metadata', 'Använd .nfo-filer framför online-metadata.', _preferLocalNfo, _setPreferLocalNfo),
+                    _switchTile('Visa utgåva/version i titel', 'T.ex. visar "[Director\'s Cut]" efter titeln.', _showReleaseVersion, (v) { setState(() => _showReleaseVersion = v); _scheduleSave(); }),
                   ]),
                 ),
               ],

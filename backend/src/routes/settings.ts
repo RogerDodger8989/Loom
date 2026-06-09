@@ -33,6 +33,7 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         'DEFAULT_AUDIO_LANG',
         'WATCH_PROVIDER_REGION',
         'TITLE_DISPLAY_STYLE',
+        'SHOW_RELEASE_VERSION',
         'PREFER_LOCAL_NFO',
         'HOME_LAYOUT',
         'sync_trakt_ratings',
@@ -88,6 +89,7 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         DEFAULT_AUDIO_LANG: 'en',
         WATCH_PROVIDER_REGION: 'SE',
         TITLE_DISPLAY_STYLE: 'Translated',
+        SHOW_RELEASE_VERSION: 'true',
         PREFER_LOCAL_NFO: 'true',
         HOME_LAYOUT: '',
         sync_trakt_ratings: 'true',
@@ -162,6 +164,7 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
       DEFAULT_AUDIO_LANG?: string;
       WATCH_PROVIDER_REGION?: string;
       TITLE_DISPLAY_STYLE?: string;
+      SHOW_RELEASE_VERSION?: string;
       PREFER_LOCAL_NFO?: string;
       HOME_LAYOUT?: string;
       sync_trakt_ratings?: string;
@@ -229,6 +232,7 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
         updateSetting('DEFAULT_AUDIO_LANG', body.DEFAULT_AUDIO_LANG);
         updateSetting('WATCH_PROVIDER_REGION', body.WATCH_PROVIDER_REGION);
         updateSetting('TITLE_DISPLAY_STYLE', body.TITLE_DISPLAY_STYLE);
+        updateSetting('SHOW_RELEASE_VERSION', body.SHOW_RELEASE_VERSION);
         updateSetting('PREFER_LOCAL_NFO', body.PREFER_LOCAL_NFO);
         updateSetting('HOME_LAYOUT', body.HOME_LAYOUT);
         updateSetting('sync_trakt_ratings', body.sync_trakt_ratings);

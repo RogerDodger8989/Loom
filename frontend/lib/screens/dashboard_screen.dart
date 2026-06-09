@@ -4432,13 +4432,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                           ),
                         ),
 
-                      // Hover dark overlay
+                      // Hover light overlay
                       Positioned.fill(
                         child: IgnorePointer(
                           child: AnimatedOpacity(
                             duration: const Duration(milliseconds: 180),
                             opacity: isHovered ? 1 : 0,
-                            child: Container(color: Colors.black.withValues(alpha: 0.30)),
+                            child: Container(color: Colors.white.withValues(alpha: 0.2)),
                           ),
                         ),
                       ),

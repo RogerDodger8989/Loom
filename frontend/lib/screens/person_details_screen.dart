@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'dart:io' show Process;
 import '../services/api.dart';
 import 'media_details_screen.dart';
+import '../widgets/hoverable_builder.dart';
 
 class PersonDetailsScreen extends StatefulWidget {
   final String personId;
@@ -633,21 +634,29 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
       child: Row(
         children: [
           // Small Poster
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: () => _handleOnCardTap(localId, title, tmdbId),
-              child: Container(
-                width: 40,
-                height: 60,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(6),
-                  color: Colors.white10,
-                  image: poster != null ? DecorationImage(image: NetworkImage(poster), fit: BoxFit.cover) : null,
+          HoverableBuilder(
+            builder: (context, isHovered) {
+              return GestureDetector(
+                onTap: () => _handleOnCardTap(localId, title, tmdbId, credit['media_type'] as String?),
+                child: Container(
+                  width: 40,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    color: Colors.white10,
+                    border: Border.all(color: Colors.white.withValues(alpha: isHovered ? 0.4 : 0.0)),
+                    image: poster != null ? DecorationImage(image: NetworkImage(poster), fit: BoxFit.cover) : null,
+                  ),
+                  foregroundDecoration: isHovered
+                      ? BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        )
+                      : null,
+                  child: poster == null ? const Icon(Icons.movie, color: Colors.white24, size: 20) : null,
                 ),
-                child: poster == null ? const Icon(Icons.movie, color: Colors.white24, size: 20) : null,
-              ),
-            ),
+              );
+            }
           ),
           const SizedBox(width: 16),
 
@@ -659,7 +668,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
-                    onTap: () => _handleOnCardTap(localId, title, tmdbId),
+                    onTap: () => _handleOnCardTap(localId, title, tmdbId, credit['media_type'] as String?),
                     child: Text(
                       '$title $year',
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
@@ -711,30 +720,36 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
     final poster = credit['poster_path'];
     final isWatched = credit['watch_status'] == 'watched';
 
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: () => _handleOnCardTap(localId, title, credit['id']?.toString()),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Container(
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  color: Colors.white10,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-                ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (poster != null)
-                      Image.network(poster, fit: BoxFit.cover)
-                    else
-                      const Center(child: Icon(Icons.movie, size: 40, color: Colors.white24)),
-                    
-                    // Owned indicator overlay badge in top-right
+    return HoverableBuilder(
+      builder: (context, isHovered) {
+        return GestureDetector(
+          onTap: () => _handleOnCardTap(localId, title, credit['id']?.toString(), credit['media_type'] as String?),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Container(
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: Colors.white10,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: isHovered ? 0.4 : 0.06)),
+                  ),
+                  foregroundDecoration: isHovered
+                      ? BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        )
+                      : null,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (poster != null)
+                          Image.network(poster, fit: BoxFit.cover)
+                        else
+                          const Center(child: Icon(Icons.movie, size: 40, color: Colors.white24)),
+                        
+                        // Owned indicator overlay badge in top-right
                     Positioned(
                       top: 8,
                       right: 8,
@@ -818,8 +833,8 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
             ),
           ],
         ),
-      ),
-    );
+      );
+    });
   }
 
   // --- Card/Split View Mode Item ---
@@ -843,23 +858,29 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Cover left side
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: () => _handleOnCardTap(localId, title, credit['id']?.toString()),
-              child: Container(
-                width: 100,
-                height: 150,
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  color: Colors.white10,
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-                ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (poster != null)
+          HoverableBuilder(
+            builder: (context, isHovered) {
+              return GestureDetector(
+                onTap: () => _handleOnCardTap(localId, title, credit['id']?.toString(), credit['media_type'] as String?),
+                child: Container(
+                  width: 100,
+                  height: 150,
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.white10,
+                    border: Border.all(color: Colors.white.withValues(alpha: isHovered ? 0.4 : 0.06)),
+                  ),
+                  foregroundDecoration: isHovered
+                      ? BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        )
+                      : null,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (poster != null)
                       Image.network(poster, fit: BoxFit.cover)
                     else
                       const Center(child: Icon(Icons.movie, size: 36, color: Colors.white24)),
@@ -913,8 +934,8 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                   ],
                 ),
               ),
-            ),
-          ),
+            );
+          }),
           const SizedBox(width: 20),
 
           // Overview right side
@@ -1060,8 +1081,9 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
     }
   }
 
-  void _handleOnCardTap(String? localId, String title, String? tmdbId) {
-    final String targetId = localId ?? 'external_movie_$tmdbId';
+  void _handleOnCardTap(String? localId, String title, String? tmdbId, [String? mediaType]) {
+    final String type = (mediaType?.toLowerCase() == 'tv' || mediaType?.toLowerCase() == 'show') ? 'show' : 'movie';
+    final String targetId = localId ?? 'external_${type}_$tmdbId';
     if (widget.onMediaSelected != null) {
       widget.onMediaSelected!(targetId);
     } else {

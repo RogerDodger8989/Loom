@@ -14,6 +14,7 @@ import 'media_info_dialog.dart';
 import 'person_details_screen.dart';
 import 'resume_playback_modal.dart';
 import 'video_player_screen.dart';
+import '../widgets/hoverable_builder.dart';
 
 class MediaDetailsScreen extends StatefulWidget {
   final String mediaId;
@@ -69,11 +70,14 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   bool _isWatched = false;
   int _savedProgressSeconds = 0;
   String _titleDisplayStyle = 'Translated';
+  bool _showReleaseVersion = true;
   bool _isCoverHovered = false;
   bool _isInWatchlist = false;
   bool _isWatchlistLoading = false;
   bool _isFavorite = false;
   final ScrollController _scrollController = ScrollController();
+  Future<Map<String, dynamic>>? _similarItemsFuture;
+  Future<Map<String, dynamic>>? _collectionItemsFuture;
 
   // Playback settings — persisted across sessions
   String _selectedQuality = 'direct';
@@ -358,8 +362,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       setState(() {
         _isLoading = true;
         _error = null;
+        _similarItemsFuture = widget.apiService.fetchSimilarItems(widget.mediaId);
       });
       final data = await widget.apiService.fetchMediaDetails(widget.mediaId);
+
+      if (data['collection_id'] != null) {
+        _collectionItemsFuture = widget.apiService.fetchCollectionItems(data['collection_id'].toString());
+      }
 
       // Extract ratings / watch status if saved
       final metadata = data['metadata'] ?? {};
@@ -371,11 +380,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
       // Load settings to fetch default options
       String titleStyle = 'Translated';
+      bool showReleaseVersion = true;
       String versionPriority = '1080p,720p,4K';
       try {
         final settings = await widget.apiService.getSettings();
         if (settings.containsKey('TITLE_DISPLAY_STYLE')) {
           titleStyle = settings['TITLE_DISPLAY_STYLE'];
+        }
+        if (settings.containsKey('SHOW_RELEASE_VERSION')) {
+          showReleaseVersion = settings['SHOW_RELEASE_VERSION'] != 'false';
         }
         if (settings.containsKey('VERSION_PRIORITY')) {
           versionPriority = settings['VERSION_PRIORITY'];
@@ -419,6 +432,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         _isWatched = savedWatchStatus;
         _savedProgressSeconds = progress;
         _titleDisplayStyle = titleStyle;
+        _showReleaseVersion = showReleaseVersion;
         _isInWatchlist = isInWatchlist;
         _isFavorite = data['is_favorite'] as bool? ?? false;
         _isLoading = false;
@@ -1628,7 +1642,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 final releaseVersion =
                                     metadata['release_version']?.toString() ??
                                         '';
-                                final versionSuffix = releaseVersion.isNotEmpty
+                                final versionSuffix = _showReleaseVersion && releaseVersion.isNotEmpty
                                     ? ' [$releaseVersion]'
                                     : '';
 
@@ -1844,12 +1858,38 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 runSpacing: 8,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  ...productionCompanies.take(2).map((company) {
+                                  ...productionCompanies.take(3).map((company) {
                                     final companyName = company is Map
                                         ? (company['name']?.toString() ?? '')
                                         : company.toString();
+                                    final logoPath = company is Map
+                                        ? company['logo_path']?.toString()
+                                        : null;
+
                                     if (companyName.isEmpty)
                                       return const SizedBox.shrink();
+
+                                    if (logoPath != null && logoPath.isNotEmpty) {
+                                      return Tooltip(
+                                        message: companyName,
+                                        child: Container(
+                                          height: 32,
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withValues(alpha: 0.06),
+                                            borderRadius: BorderRadius.circular(6),
+                                            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                                          ),
+                                          child: Image.network(
+                                            logoPath,
+                                            height: 24,
+                                            fit: BoxFit.contain,
+                                            errorBuilder: (context, error, stackTrace) => const Icon(Icons.business, size: 16),
+                                          ),
+                                        ),
+                                      );
+                                    }
+
                                     return Chip(
                                       avatar: const Icon(Icons.business,
                                           size: 16, color: Color(0xFF8A5BFF)),
@@ -1858,7 +1898,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                               color: Colors.white70,
                                               fontSize: 12)),
                                       backgroundColor:
-                                          Colors.white.withValues(alpha: 0.05),
+                                          Colors.white.withValues(alpha: 0.06),
                                       side: BorderSide(
                                           color: Colors.white
                                               .withValues(alpha: 0.08)),
@@ -1880,21 +1920,18 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                       message: countryName,
                                       child: Container(
                                         padding: const EdgeInsets.symmetric(
-                                            horizontal: 10, vertical: 6),
+                                            horizontal: 8, vertical: 6),
                                         decoration: BoxDecoration(
                                           color: Colors.white
-                                              .withValues(alpha: 0.05),
+                                              .withValues(alpha: 0.06),
                                           borderRadius:
-                                              BorderRadius.circular(8),
+                                              BorderRadius.circular(6),
                                           border: Border.all(
                                               color: Colors.white
                                                   .withValues(alpha: 0.08)),
                                         ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            if (iso.length == 2) ...[
-                                              ClipRRect(
+                                        child: (iso.length == 2)
+                                            ? ClipRRect(
                                                 borderRadius:
                                                     BorderRadius.circular(2),
                                                 child: Image.network(
@@ -1910,17 +1947,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                                                   color: Colors
                                                                       .white54)),
                                                 ),
+                                              )
+                                            : Text(
+                                                countryName,
+                                                style: const TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.white70),
                                               ),
-                                              const SizedBox(width: 6),
-                                            ],
-                                            Text(
-                                              countryName,
-                                              style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.white70),
-                                            ),
-                                          ],
-                                        ),
                                       ),
                                     );
                                   }),
@@ -2596,47 +2629,53 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                     final actor = cast[index];
                     final actorId = actor['id']?.toString();
 
-                    return MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: GestureDetector(
-                        onTap: () {
-                          if (actorId != null) {
-                            if (widget.onPersonSelected != null) {
-                              widget.onPersonSelected!(actorId);
-                            } else {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => PersonDetailsScreen(
-                                    personId: actorId,
-                                    apiService: widget.apiService,
-                                  ),
-                                ),
-                              );
-                            }
-                          }
-                        },
-                        child: Container(
-                          width: 140,
-                          margin: const EdgeInsets.symmetric(horizontal: 10),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                height: 160,
-                                decoration: BoxDecoration(
-                                  color: Colors.white10,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.04)),
-                                  image: actor['profile_path'] != null
-                                      ? DecorationImage(
-                                          image: NetworkImage(
-                                              actor['profile_path']),
-                                          fit: BoxFit.cover)
-                                      : null,
-                                ),
+                    return HoverableBuilder(
+                      builder: (context, isHovered) {
+                        return GestureDetector(
+                          onTap: () {
+                              if (actorId != null) {
+                                if (widget.onPersonSelected != null) {
+                                  widget.onPersonSelected!(actorId);
+                                } else {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => PersonDetailsScreen(
+                                        personId: actorId,
+                                        apiService: widget.apiService,
+                                      ),
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                            child: Container(
+                              width: 140,
+                              margin: const EdgeInsets.symmetric(horizontal: 10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    height: 160,
+                                    decoration: BoxDecoration(
+                                      color: Colors.white10,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                          color:
+                                              Colors.white.withValues(alpha: isHovered ? 0.3 : 0.04)),
+                                      image: actor['profile_path'] != null
+                                          ? DecorationImage(
+                                              image: NetworkImage(
+                                                  actor['profile_path']),
+                                              fit: BoxFit.cover)
+                                          : null,
+                                    ),
+                                    foregroundDecoration: isHovered
+                                        ? BoxDecoration(
+                                            color: Colors.white.withValues(alpha: 0.2),
+                                            borderRadius: BorderRadius.circular(12),
+                                          )
+                                        : null,
                                 child: actor['profile_path'] == null
                                     ? const Center(
                                         child: Icon(Icons.person,
@@ -2659,8 +2698,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                             ],
                           ),
                         ),
-                      ),
-                    );
+                      );
+                    }
+                  );
                   },
                 ),
               ),
@@ -2679,8 +2719,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
               ),
               const SizedBox(height: 12),
               FutureBuilder<Map<String, dynamic>>(
-                future: widget.apiService
-                    .fetchCollectionItems(collectionId.toString()),
+                future: _collectionItemsFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return const Padding(
@@ -2715,42 +2754,48 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                         final inLibrary = localId.isNotEmpty;
                         final isCurrent = localId == widget.mediaId;
 
-                        return Opacity(
-                          opacity: inLibrary ? 1.0 : 0.45,
-                          child: MouseRegion(
-                          cursor: SystemMouseCursors.click,
-                          child: GestureDetector(
-                            onTap: () {
-                              if (localId.isNotEmpty) {
-                                widget.onMediaSelected?.call(localId);
-                              } else if (tmdbId != null) {
-                                widget.onMediaSelected?.call('external_movie_$tmdbId');
-                              }
-                            },
-                            child: Container(
-                              width: 140,
-                              margin:
-                                  const EdgeInsets.symmetric(horizontal: 10),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    height: 210,
-                                    clipBehavior: Clip.antiAlias,
-                                    decoration: BoxDecoration(
-                                      color: Colors.white10,
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: Colors.white
-                                            .withValues(alpha: 0.06),
-                                        width: 1.0,
-                                      ),
-                                    ),
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        if (poster != null)
-                                          Image.network(
+                        return HoverableBuilder(
+                          builder: (context, isHovered) {
+                            return Opacity(
+                              opacity: inLibrary ? 1.0 : 0.45,
+                              child: GestureDetector(
+                                onTap: () {
+                                  if (localId.isNotEmpty) {
+                                    widget.onMediaSelected?.call(localId);
+                                  } else if (tmdbId != null) {
+                                    widget.onMediaSelected?.call('external_movie_$tmdbId');
+                                  }
+                                },
+                                child: Container(
+                                  width: 140,
+                                  margin:
+                                      const EdgeInsets.symmetric(horizontal: 10),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Container(
+                                        height: 210,
+                                        clipBehavior: Clip.antiAlias,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white10,
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(
+                                            color: Colors.white
+                                                .withValues(alpha: isHovered ? 0.3 : 0.06),
+                                            width: 1.0,
+                                          ),
+                                        ),
+                                        foregroundDecoration: isHovered
+                                            ? BoxDecoration(
+                                                color: Colors.white.withValues(alpha: 0.2),
+                                                borderRadius: BorderRadius.circular(12),
+                                              )
+                                            : null,
+                                        child: Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            if (poster != null)
+                                              Image.network(
                                             poster.toString(),
                                             fit: BoxFit.cover,
                                             errorBuilder:
@@ -2870,7 +2915,9 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                               ),
                             ),
                           ),
-                        ));
+                        );
+                      }
+                    );
                       },
                     ),
                   );
@@ -3218,7 +3265,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
   Widget _buildSimilarCarousel() {
     return FutureBuilder<Map<String, dynamic>>(
-      future: widget.apiService.fetchSimilarItems(widget.mediaId),
+      future: _similarItemsFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Padding(
@@ -3285,63 +3332,146 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                 itemBuilder: (context, index) {
                   final item = similarItems[index];
                   final itemId = item['id']?.toString();
+                  final tmdbId = item['tmdb_id']?.toString();
                   final title = item['title'] ?? 'Unknown';
                   final year = item['year'] != null ? ' (${item['year']})' : '';
                   final poster = item['poster_path'] as String?;
+                  final inLibrary = item['in_library'] as bool? ?? true;
+                  final type = (item['type'] as String?)?.toLowerCase() == 'show' ? 'show' : 'movie';
+                  final targetId = itemId ?? 'external_${type}_$tmdbId';
 
-                  return MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: GestureDetector(
-                      onTap: () {
-                        if (itemId != null && widget.onMediaSelected != null) {
-                          widget.onMediaSelected!(itemId);
-                          setState(() {
-                            _mediaData = null;
-                            _isLoading = true;
-                          });
-                          _fetchDetails();
-                        }
-                      },
-                      child: Container(
-                        width: 140,
-                        margin: const EdgeInsets.symmetric(horizontal: 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              height: 180,
-                              decoration: BoxDecoration(
-                                color: Colors.white10,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                    color:
-                                        Colors.white.withValues(alpha: 0.04)),
-                                image: poster != null
-                                    ? DecorationImage(
-                                        image: NetworkImage(poster),
-                                        fit: BoxFit.cover)
-                                    : null,
+                  return HoverableBuilder(
+                    builder: (context, isHovered) {
+                      return GestureDetector(
+                        onTap: () {
+                          if (widget.onMediaSelected != null) {
+                            widget.onMediaSelected!(targetId);
+                          } else {
+                            if (targetId.startsWith('external_')) {
+                               Navigator.push(
+                                 context,
+                                 MaterialPageRoute(
+                                   builder: (context) => MediaDetailsScreen(
+                                     mediaId: targetId,
+                                     apiService: widget.apiService,
+                                   ),
+                                 ),
+                               );
+                            } else {
+                              setState(() {
+                                _mediaData = null;
+                                _isLoading = true;
+                              });
+                              _fetchDetails();
+                            }
+                          }
+                        },
+                        onSecondaryTapDown: (details) async {
+                          final position = details.globalPosition;
+                          final value = await showMenu(
+                            context: context,
+                              position: RelativeRect.fromLTRB(
+                                position.dx, position.dy, position.dx + 1, position.dy + 1,
                               ),
-                              child: poster == null
-                                  ? const Center(
-                                      child: Icon(Icons.movie,
-                                          size: 50, color: Colors.white24))
-                                  : null,
+                              items: [
+                                const PopupMenuItem(
+                                  value: 'watchlist',
+                                  child: Text('Lägg till i bevakningslista'),
+                                ),
+                              ],
+                            );
+                            if (value == 'watchlist' && tmdbId != null) {
+                              try {
+                                await widget.apiService.addToWatchlist(
+                                  tmdbId: tmdbId,
+                                  title: title,
+                                  type: type,
+                                  year: item['year'] != null ? int.tryParse(item['year'].toString()) : null,
+                                  posterPath: poster,
+                                );
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('$title lades till i bevakningslistan!')),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Kunde inte lägga till: $e')),
+                                  );
+                                }
+                              }
+                            }
+                          },
+                          child: Container(
+                            width: 140,
+                            margin: const EdgeInsets.symmetric(horizontal: 10),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Opacity(
+                                  opacity: inLibrary ? 1.0 : 0.4,
+                                  child: Stack(
+                                    children: [
+                                      Container(
+                                        height: 180,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white10,
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(
+                                              color:
+                                                  Colors.white.withValues(alpha: isHovered ? 0.3 : 0.04)),
+                                          image: poster != null
+                                              ? DecorationImage(
+                                                  image: NetworkImage(poster),
+                                                  fit: BoxFit.cover)
+                                              : null,
+                                        ),
+                                        foregroundDecoration: isHovered
+                                            ? BoxDecoration(
+                                                color: Colors.white.withValues(alpha: 0.2),
+                                                borderRadius: BorderRadius.circular(12),
+                                              )
+                                            : null,
+                                        child: poster == null
+                                            ? const Center(
+                                                child: Icon(Icons.movie,
+                                                    size: 50, color: Colors.white24))
+                                            : null,
+                                      ),
+                                      if (!inLibrary)
+                                        Positioned.fill(
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              color: Colors.black.withValues(alpha: 0.2),
+                                              borderRadius: BorderRadius.circular(12),
+                                            ),
+                                            child: const Center(
+                                              child: Icon(Icons.cloud_off, color: Colors.white70, size: 36),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Opacity(
+                                  opacity: inLibrary ? 1.0 : 0.6,
+                                  child: Text('$title$year',
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 8),
-                            Text('$title$year',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
+                          ),
+                        );
+                      }
+                    );
+                  },
               ),
             ),
             const SizedBox(height: 60),
