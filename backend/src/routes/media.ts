@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
+import YTDlpWrap from 'yt-dlp-wrap';
 import { syncExternalRatings, syncExternalWatchStatus } from '../services/rating_sync';
 
 function computeTrashPath(filePath: string): string {
@@ -1121,8 +1122,11 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         });
 
         if (needsEnrichment) {
+          const isShowType = movie.type?.toString() === 'Show';
           const tmdbData = movie.tmdb_id
-            ? await tmdbService.fetchMovieById(movie.tmdb_id.toString())
+            ? (isShowType
+                ? await tmdbService.fetchShowById(movie.tmdb_id.toString())
+                : await tmdbService.fetchMovieById(movie.tmdb_id.toString()))
             : await tmdbService.searchMovie(movie.title, movie.year ?? undefined);
           if (tmdbData) {
             if (!movie.original_title && tmdbData.original_title) {
@@ -1135,10 +1139,13 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
               upsertMeta('tagline', tmdbData.tagline);
             }
 
-            if (!metadata.keywords && tmdbData.keywords?.keywords) {
-              const keywords = tmdbData.keywords.keywords.map((keyword: any) => keyword.name);
-              metadata.keywords = keywords;
-              upsertMeta('keywords', JSON.stringify(keywords));
+            if (!metadata.keywords) {
+              const rawKw = tmdbData.keywords?.keywords || tmdbData.keywords?.results || [];
+              if (rawKw.length > 0) {
+                const keywords = rawKw.map((keyword: any) => keyword.name);
+                metadata.keywords = keywords;
+                upsertMeta('keywords', JSON.stringify(keywords));
+              }
             }
 
             if (!metadata.production_companies && tmdbData.production_companies) {
@@ -2735,6 +2742,158 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       }
     }
   );
+
+  // Register both GET and HEAD routes to support pre-warming
+  const trailerStreamHandler = async (request: FastifyRequest<{ Querystring: { url?: string, title?: string, year?: string } }>, reply: FastifyReply) => {
+      const youtubeUrl = (request.query as any).url as string | undefined;
+      const title = (request.query as any).title as string | undefined;
+      const year = (request.query as any).year as string | undefined;
+      if (!youtubeUrl) return reply.code(400).send({ error: 'Missing url parameter' });
+
+      try {
+        const ytdlp = new YTDlpWrap();
+
+        // Auto-download yt-dlp binary if not present
+        const ytdlpPath = path.join(process.cwd(), 'yt-dlp' + (process.platform === 'win32' ? '.exe' : ''));
+        if (!fs.existsSync(ytdlpPath)) {
+          await YTDlpWrap.downloadFromGithub(ytdlpPath);
+        }
+        ytdlp.setBinaryPath(ytdlpPath);
+
+        let query = youtubeUrl;
+        if (youtubeUrl.includes('results?search_query=')) {
+          query = `ytsearch10:${new URL(youtubeUrl).searchParams.get('search_query')}`;
+        }
+
+        const { execSync, spawn } = require('child_process');
+        const crypto = require('crypto');
+
+        const extractVideoId = (output: string) => {
+          const lines = output.trim().split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('ERROR:') && !l.startsWith('WARNING:'));
+          return lines.length > 0 ? lines[lines.length - 1] : '';
+        };
+
+        // Cache resolution
+        // @ts-ignore
+        if (!global.videoIdCache) global.videoIdCache = {};
+        let videoId = '';
+        
+        // @ts-ignore
+        if (global.videoIdCache[query]) {
+          // @ts-ignore
+          videoId = global.videoIdCache[query];
+        } else {
+          // 1. Find the first working ID
+          try {
+            const out = execSync(`"${ytdlpPath}" "${query}" --get-id -i --max-downloads 1 --no-warnings`).toString();
+            videoId = extractVideoId(out);
+          } catch (err: any) {
+            const out = err.stdout?.toString();
+            if (out) videoId = extractVideoId(out);
+          }
+
+          // FALLBACK: If the TMDB trailer url was dead, try a direct search using title and year
+          if (!videoId && title) {
+             const fallbackQuery = `ytsearch5:${title} ${year || ''} official trailer`;
+             // @ts-ignore
+             if (global.videoIdCache[fallbackQuery]) {
+               // @ts-ignore
+               videoId = global.videoIdCache[fallbackQuery];
+             } else {
+               try {
+                 const out = execSync(`"${ytdlpPath}" "${fallbackQuery}" --get-id -i --max-downloads 1 --no-warnings`).toString();
+                 videoId = extractVideoId(out);
+                 // @ts-ignore
+                 if (videoId) global.videoIdCache[fallbackQuery] = videoId;
+               } catch (err: any) {
+                 const out = err.stdout?.toString();
+                 if (out) videoId = extractVideoId(out);
+                 // @ts-ignore
+                 if (videoId) global.videoIdCache[fallbackQuery] = videoId;
+               }
+             }
+          }
+          // @ts-ignore
+          if (videoId) global.videoIdCache[query] = videoId;
+        }
+
+        if (!videoId) {
+          return reply.code(404).send({ error: 'No available trailer found' });
+        }
+
+        // 2. Stream using ffmpeg on-the-fly merging or cache
+        const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+        const tmpDir = require('os').tmpdir();
+        const outputPath = path.join(tmpDir, `loom_trailer_${videoId}.mp4`);
+
+        // If not cached, download and merge
+        if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+           const cp = spawn(ytdlpPath, [
+             '-q',
+             '--no-warnings',
+             '--ffmpeg-location', ffmpegInstaller.path,
+             '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+             '--merge-output-format', 'mp4',
+             '-o', outputPath,
+             `https://www.youtube.com/watch?v=${videoId}`
+           ]);
+           await new Promise<void>((resolve, reject) => {
+             cp.on('close', (code: number | null) => {
+               if (code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) resolve();
+               else reject(new Error(`yt-dlp exited with code ${code}`));
+             });
+             cp.on('error', reject);
+           });
+        }
+
+        // Serve cached file with Range support
+        const stat = fs.statSync(outputPath);
+        const range = request.headers.range;
+        const contentType = 'video/mp4';
+
+        reply.header('Accept-Ranges', 'bytes');
+        reply.header('Content-Type', contentType);
+        reply.header('Access-Control-Allow-Origin', '*');
+
+        if (request.method === 'HEAD') {
+          reply.raw.writeHead(200, {
+            'Content-Length': stat.size,
+            'Content-Type': contentType,
+          });
+          reply.raw.end();
+          return;
+        }
+
+        if (range) {
+          const parts = range.replace(/bytes=/, '').split('-');
+          const start = parseInt(parts[0], 10);
+          const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+          const chunksize = (end - start) + 1;
+          reply.raw.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': chunksize,
+            'Content-Type': contentType,
+          });
+          fs.createReadStream(outputPath, { start, end }).pipe(reply.raw);
+          return;
+        }
+
+        reply.raw.writeHead(200, {
+          'Content-Length': stat.size,
+          'Content-Type': contentType,
+          'Accept-Ranges': 'bytes',
+        });
+        fs.createReadStream(outputPath).pipe(reply.raw);
+        return;
+      } catch (err: any) {
+        request.log.error(err);
+        return reply.code(500).send({ error: 'Failed to stream trailer', details: err.message });
+      }
+    };
+
+  fastify.get('/api/media/trailer-stream', trailerStreamHandler);
+  fastify.head('/api/media/trailer-stream', trailerStreamHandler);
 }
 
 function probeTechInfo(filePath: string): Promise<Record<string, unknown>> {

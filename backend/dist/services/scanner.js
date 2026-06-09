@@ -712,6 +712,35 @@ class ScannerService {
           VALUES (?, ?, 'Show', ?, ?, ?, ?, ?, ?)
         `).run(showId, displayTitle, plot, year, genre, posterUrl, fanartUrl, tmdbShowId);
                 console.log(`[Scanner] Created show: ${displayTitle}`);
+                // Fetch full show data to store seasons metadata
+                if (tmdbShowId) {
+                    try {
+                        const fullShow = await tmdb_1.tmdbService.fetchShowById(tmdbShowId);
+                        if (fullShow?.external_ids?.imdb_id) {
+                            database_1.default.prepare(`UPDATE media_items SET imdb_id = ? WHERE id = ?`).run(fullShow.external_ids.imdb_id, showId);
+                        }
+                        if (fullShow?.number_of_seasons) {
+                            const upsertShowMeta = (key, val) => {
+                                database_1.default.prepare(`INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+                  VALUES (?,?,?,?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value`)
+                                    .run((0, uuid_1.v4)(), showId, key, val);
+                            };
+                            upsertShowMeta('number_of_seasons', String(fullShow.number_of_seasons));
+                            if (fullShow.seasons?.length) {
+                                const seasonsData = fullShow.seasons.map((s) => ({
+                                    season_number: s.season_number,
+                                    name: s.name,
+                                    episode_count: s.episode_count,
+                                    air_date: s.air_date || null,
+                                    poster_path: s.poster_path ? tmdb_1.tmdbService.getImageUrl(s.poster_path, 'w342') : null,
+                                    overview: s.overview || null,
+                                }));
+                                upsertShowMeta('seasons_json', JSON.stringify(seasonsData));
+                            }
+                        }
+                    }
+                    catch (_) { }
+                }
             }
             else {
                 showId = showRow.id;
@@ -722,6 +751,8 @@ class ScannerService {
             // ── 3. Look up TMDB episode title if available ─────────────
             let episodeTitle = null;
             let episodeAirDate = null;
+            let episodeOverview = null;
+            let episodeStillPath = null;
             if (tmdbShowId) {
                 try {
                     const apiKey = database_1.default.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get()?.value;
@@ -730,6 +761,18 @@ class ScannerService {
                         const epResp = await axios_1.default.get(`https://api.themoviedb.org/3/tv/${tmdbShowId}/season/${season}/episode/${episodeNum}`, { params: { api_key: apiKey, language: prefLang } });
                         episodeTitle = epResp.data?.name || null;
                         episodeAirDate = epResp.data?.air_date || null;
+                        episodeOverview = epResp.data?.overview || null;
+                        if (epResp.data?.still_path) {
+                            episodeStillPath = tmdb_1.tmdbService.getImageUrl(epResp.data.still_path, 'w500');
+                        }
+                        // Fallback overview in English if missing
+                        if (!episodeOverview && prefLang !== 'en-US') {
+                            try {
+                                const enResp = await axios_1.default.get(`https://api.themoviedb.org/3/tv/${tmdbShowId}/season/${season}/episode/${episodeNum}`, { params: { api_key: apiKey, language: 'en-US' } });
+                                episodeOverview = enResp.data?.overview || null;
+                            }
+                            catch (_) { }
+                        }
                     }
                 }
                 catch (_) { }
@@ -740,8 +783,8 @@ class ScannerService {
       `).get(showId, season, episodeNum);
             let episodeId;
             if (existing) {
-                database_1.default.prepare(`UPDATE episodes SET file_path = ?, title = COALESCE(?, title), air_date = COALESCE(?, air_date) WHERE id = ?`)
-                    .run(filePath, episodeTitle, episodeAirDate, existing.id);
+                database_1.default.prepare(`UPDATE episodes SET file_path = ?, title = COALESCE(?, title), air_date = COALESCE(?, air_date), overview = COALESCE(?, overview), still_path = COALESCE(?, still_path) WHERE id = ?`)
+                    .run(filePath, episodeTitle, episodeAirDate, episodeOverview, episodeStillPath, existing.id);
                 episodeId = existing.id;
                 // Update track metadata
                 if (probeResult.audioTracks.length > 0 || probeResult.subtitleTracks.length > 0) {
@@ -764,9 +807,9 @@ class ScannerService {
             else {
                 episodeId = (0, uuid_1.v4)();
                 database_1.default.prepare(`
-          INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate);
+          INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate, episodeOverview, episodeStillPath);
                 console.log(`[Scanner] Added S${String(season).padStart(2, '0')}E${String(episodeNum).padStart(2, '0')} of ${showDirName}`);
                 // Store track metadata on the show's media_item
                 const upsertEpMeta = (key, val) => {
@@ -800,6 +843,125 @@ class ScannerService {
             console.error(`[Scanner] Error processing episode ${filePath}:`, e);
             (0, scan_events_1.emitScanEvent)('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Show');
             return 'skipped';
+        }
+    }
+    /**
+     * Refresh show metadata from TMDB for an already-scanned show item.
+     */
+    async refreshShowMetadata(showId, tmdbShowId) {
+        const upsert = (key, val) => {
+            database_1.default.prepare(`INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+        VALUES (?,?,?,?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value`)
+                .run((0, uuid_1.v4)(), showId, key, val);
+        };
+        const fullShow = await tmdb_1.tmdbService.fetchShowById(tmdbShowId);
+        if (!fullShow)
+            return;
+        const posterUrl = fullShow.poster_path ? tmdb_1.tmdbService.getImageUrl(fullShow.poster_path, 'w500') : null;
+        const fanartUrl = fullShow.backdrop_path ? tmdb_1.tmdbService.getImageUrl(fullShow.backdrop_path, 'original') : null;
+        const genre = fullShow.genres?.map((g) => g.name).join(', ') || null;
+        const plot = fullShow.overview || null;
+        const year = fullShow.first_air_date ? parseInt(fullShow.first_air_date.substring(0, 4), 10) : null;
+        const title = fullShow.name || null;
+        // Force-overwrite all core fields (no COALESCE — refresh means fetch fresh)
+        database_1.default.prepare(`UPDATE media_items SET
+      poster_path    = COALESCE(?, poster_path),
+      fanart_path    = COALESCE(?, fanart_path),
+      genre          = COALESCE(?, genre),
+      plot           = COALESCE(?, plot),
+      year           = COALESCE(?, year),
+      title          = COALESCE(?, title),
+      imdb_id        = COALESCE(?, imdb_id)
+      WHERE id = ?`).run(posterUrl, fanartUrl, genre, plot, year, title, fullShow.external_ids?.imdb_id || null, showId);
+        if (fullShow.status)
+            upsert('status', fullShow.status);
+        if (fullShow.last_air_date)
+            upsert('last_air_date', fullShow.last_air_date);
+        if (fullShow.number_of_seasons)
+            upsert('number_of_seasons', String(fullShow.number_of_seasons));
+        if (fullShow.seasons?.length) {
+            const seasonsData = fullShow.seasons.map((s) => ({
+                season_number: s.season_number,
+                name: s.name,
+                episode_count: s.episode_count,
+                air_date: s.air_date || null,
+                overview: s.overview || null,
+                poster_path: s.poster_path ? tmdb_1.tmdbService.getImageUrl(s.poster_path, 'w342') : null,
+            }));
+            upsert('seasons_json', JSON.stringify(seasonsData));
+        }
+        if (fullShow.next_episode_to_air) {
+            upsert('next_episode_to_air', JSON.stringify(fullShow.next_episode_to_air));
+        }
+        else {
+            database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'next_episode_to_air'`).run(showId);
+        }
+        if (fullShow.created_by?.length) {
+            upsert('created_by', JSON.stringify(fullShow.created_by.map((c) => ({ id: String(c.id), name: c.name }))));
+        }
+        if (fullShow.networks?.length) {
+            upsert('networks', JSON.stringify(fullShow.networks.map((n) => n.name)));
+        }
+        // Production countries — always overwrite so bad data (e.g., wrong country) gets fixed
+        if (fullShow.production_countries?.length) {
+            upsert('production_countries', JSON.stringify(fullShow.production_countries.map((c) => ({ iso_3166_1: c.iso_3166_1, name: c.name }))));
+        }
+        if (fullShow.origin_country?.length) {
+            upsert('origin_country', JSON.stringify(fullShow.origin_country));
+        }
+        // Production companies
+        if (fullShow.production_companies?.length) {
+            upsert('production_companies', JSON.stringify(fullShow.production_companies.slice(0, 3).map((c) => ({
+                id: c.id, name: c.name,
+                logo_path: c.logo_path ? tmdb_1.tmdbService.getImageUrl(c.logo_path, 'w500') : null,
+                origin_country: c.origin_country || null,
+            }))));
+        }
+        if (fullShow.trailer_url)
+            upsert('trailer_url', fullShow.trailer_url);
+        const cast = fullShow.credits?.cast?.slice(0, 20).map((m) => ({
+            id: String(m.id), name: m.name, character: m.character || '',
+            profile_path: m.profile_path ? tmdb_1.tmdbService.getImageUrl(m.profile_path, 'w185') : null,
+        }));
+        if (cast?.length)
+            upsert('cast', JSON.stringify(cast));
+        if (fullShow['watch/providers']?.results)
+            upsert('watch_providers', JSON.stringify(fullShow['watch/providers']?.results));
+        if (fullShow.logo_path)
+            upsert('logo_path', tmdb_1.tmdbService.getImageUrl(fullShow.logo_path, 'original') || '');
+        // Trakt / Simkl ratings via existing enrichment if available
+        const vote = fullShow.vote_average;
+        if (vote != null)
+            upsert('ratings', JSON.stringify({ tmdb: vote, tmdb_votes: fullShow.vote_count }));
+        upsert('tmdb_rating', vote != null ? String(vote) : '');
+        // Keywords
+        if (fullShow.keywords?.results?.length) {
+            upsert('keywords', JSON.stringify(fullShow.keywords.results.map((k) => k.name)));
+        }
+        if (fullShow.tagline)
+            upsert('tagline', fullShow.tagline);
+        // Backfill episode still_path and overview in background
+        const apiKey = database_1.default.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get()?.value;
+        const prefLang = database_1.default.prepare("SELECT value FROM system_settings WHERE key='METADATA_LANGUAGE'").get()?.value || 'sv-SE';
+        if (apiKey) {
+            const episodes = database_1.default.prepare(`SELECT id, season_number, episode_number FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).all(showId);
+            setImmediate(async () => {
+                for (const ep of episodes) {
+                    try {
+                        const epResp = await axios_1.default.get(`https://api.themoviedb.org/3/tv/${tmdbShowId}/season/${ep.season_number}/episode/${ep.episode_number}`, { params: { api_key: apiKey, language: prefLang } });
+                        const overview = epResp.data?.overview || null;
+                        const stillPath = epResp.data?.still_path
+                            ? tmdb_1.tmdbService.getImageUrl(epResp.data.still_path, 'w500')
+                            : null;
+                        const title = epResp.data?.name || null;
+                        const airDate = epResp.data?.air_date || null;
+                        database_1.default.prepare(`UPDATE episodes SET title = COALESCE(?, title), air_date = COALESCE(?, air_date), overview = COALESCE(?, overview), still_path = COALESCE(?, still_path) WHERE id = ?`)
+                            .run(title, airDate, overview, stillPath, ep.id);
+                    }
+                    catch (_) { }
+                }
+                console.log(`[Scanner] Episode metadata backfill done for show ${showId}`);
+            });
         }
     }
     /**

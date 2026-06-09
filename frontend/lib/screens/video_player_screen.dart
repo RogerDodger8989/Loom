@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/api.dart';
+import 'package:http/http.dart' as http;
 
 // ── Mini-player overlay (app-wide singleton) ──────────────────────────────────
 
@@ -179,6 +180,8 @@ class VideoPlayerScreen extends StatefulWidget {
   final String bitrate;
   final String? initialSubtitleIndex;
   final String? initialAudioIndex;
+  // When set, plays this YouTube URL via backend trailer-stream proxy (no mediaId lookup)
+  final String? trailerYoutubeUrl;
 
   const VideoPlayerScreen({
     super.key,
@@ -190,6 +193,7 @@ class VideoPlayerScreen extends StatefulWidget {
     this.bitrate = '4000k',
     this.initialSubtitleIndex,
     this.initialAudioIndex,
+    this.trailerYoutubeUrl,
   });
 
   @override
@@ -277,7 +281,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     _tracksSubscription?.cancel();
     // Save progress when the user exits via the ← back button (not stop button).
     // The periodic timer only saves every 10 s, so without this the last ~10 s are lost.
-    if (!_goingToMiniPlayer && _position.inSeconds > 0) {
+    if (!_goingToMiniPlayer && _position.inSeconds > 0 && widget.trailerYoutubeUrl == null) {
       widget.apiService
           .reportPlaybackProgress(widget.mediaId, _position.inSeconds, _duration.inSeconds)
           .catchError((_) {});
@@ -411,7 +415,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         // For transcoded (web-stream with empty_moov) the duration grows from 0
         // as data arrives. Ignore these updates — duration is pre-seeded from
         // metadata in _loadMediaContext so the seekbar always has the correct value.
-        if (_qualityMode == 'direct') setState(() => _duration = dur);
+        // For trailers, we always want the player's duration since we don't have metadata duration.
+        if (_qualityMode == 'direct' || widget.trailerYoutubeUrl != null) setState(() => _duration = dur);
       });
 
       _completedSubscription = player!.stream.completed.listen((completed) {
@@ -459,6 +464,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<void> _saveProgressPeriodic() async {
+    if (widget.trailerYoutubeUrl != null) return;
     if (_position.inSeconds <= 0 || _duration.inSeconds <= 0) return;
     final currentId = _currentMediaId;
     try {
@@ -473,8 +479,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<void> _loadMediaContext() async {
-    final media = widget.mediaData ??
-        await widget.apiService.fetchMediaDetails(widget.mediaId);
+    Map<String, dynamic> media = widget.mediaData ?? <String, dynamic>{};
+    if (media.isEmpty && widget.mediaId.isNotEmpty && widget.mediaId != 'trailer') {
+      try {
+        media = await widget.apiService.fetchMediaDetails(widget.mediaId);
+      } catch (e) {
+        debugPrint('Loom-Player: fetchMediaDetails failed: $e');
+      }
+    }
+    
     final metadata = (media['metadata'] is Map)
         ? Map<String, dynamic>.from(media['metadata'] as Map)
         : <String, dynamic>{};
@@ -501,7 +514,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     // Fall back to runtime (minutes → seconds) if the ffprobe duration is missing.
     final rawDurSec = int.tryParse(metadata['duration']?.toString() ?? '0') ?? 0;
     final runtimeMin = int.tryParse(metadata['runtime']?.toString() ?? '0') ?? 0;
-    final metaDurSec = rawDurSec > 0 ? rawDurSec : runtimeMin * 60;
+    final metaDurSec = widget.trailerYoutubeUrl != null ? 0 : (rawDurSec > 0 ? rawDurSec : runtimeMin * 60);
 
     final queue = await _buildQueue(media);
 
@@ -512,7 +525,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
     if (!mounted) return;
     setState(() {
-      _title = media['title']?.toString() ?? 'Uppspelning';
+      if (widget.trailerYoutubeUrl != null) {
+        final baseTitle = media['title']?.toString() ?? 'Trailer';
+        _title = baseTitle.toLowerCase().contains('trailer') ? baseTitle : '$baseTitle - Trailer';
+      } else {
+        _title = media['title']?.toString() ?? 'Uppspelning';
+      }
       _year = media['year']?.toString() ?? '';
       _posterPath = media['poster_path']?.toString();
       _audioTracks = audioTracks;
@@ -535,6 +553,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   Future<List<Map<String, dynamic>>> _buildQueue(
       Map<String, dynamic> media) async {
+    if (widget.trailerYoutubeUrl != null) return [];
+    
     final queue = <Map<String, dynamic>>[
       {'id': widget.mediaId, 'title': media['title']?.toString() ?? 'Now Playing'}
     ];
@@ -655,6 +675,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   // Returns file:// URI for direct play on desktop (PGS works natively with mpv).
   // Falls back to HTTP stream URL on web or if the backend can't resolve the path.
   Future<String> _resolveUrl(String mediaId, {int startSeconds = 0}) async {
+    if (widget.trailerYoutubeUrl != null) {
+      final title = widget.mediaData?['title'] ?? '';
+      final year = widget.mediaData?['year'] ?? '';
+      final trailerUrl = '${widget.apiService.baseUrl}/api/media/trailer-stream?url=${Uri.encodeComponent(widget.trailerYoutubeUrl!)}&title=${Uri.encodeComponent(title.toString())}&year=${Uri.encodeComponent(year.toString())}';
+      
+      try {
+        // Pre-warm the backend cache. This forces yt-dlp to download and process the trailer,
+        // so that when media_kit opens the stream, the file is already cached and won't trigger a network timeout.
+        await http.head(Uri.parse(trailerUrl)).timeout(const Duration(seconds: 45));
+      } catch (e) {
+        debugPrint('Pre-warm trailer error: $e');
+      }
+      
+      return trailerUrl;
+    }
     if (_qualityMode != 'direct' || kIsWeb) {
       return _buildStreamUrl(mediaId, startSeconds: startSeconds);
     }
@@ -900,6 +935,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<void> _stopAndSave() async {
+    if (widget.trailerYoutubeUrl != null) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      return;
+    }
+
     try {
       await widget.apiService.reportPlaybackProgress(
         widget.mediaId,
@@ -1454,44 +1495,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                                         onTap: _stopAndSave,
                                         color: Colors.white54),
                                     const SizedBox(width: 10),
-                                    if (_versions.isNotEmpty) ...[
+                                    if (widget.trailerYoutubeUrl == null) ...[
+                                      if (_versions.isNotEmpty) ...[
+                                        _compactDropdown<String>(
+                                          icon: Icons.layers_outlined,
+                                          value: _selectedVersionId ?? widget.mediaId,
+                                          items: _buildVersionItems(),
+                                          onChanged: _versions.length > 1
+                                              ? (v) { if (v != null) _switchVersion(v); }
+                                              : null,
+                                        ),
+                                        const SizedBox(width: 6),
+                                      ],
                                       _compactDropdown<String>(
-                                        icon: Icons.layers_outlined,
-                                        value: _selectedVersionId ?? widget.mediaId,
-                                        items: _buildVersionItems(),
-                                        onChanged: _versions.length > 1
-                                            ? (v) { if (v != null) _switchVersion(v); }
-                                            : null,
+                                        icon: Icons.hd_outlined,
+                                        value: _qualityMode,
+                                        items: _buildQualityItems(),
+                                        onChanged: (v) {
+                                          if (v != null) _switchQuality(v);
+                                        },
                                       ),
                                       const SizedBox(width: 6),
-                                    ],
-                                    _compactDropdown<String>(
-                                      icon: Icons.hd_outlined,
-                                      value: _qualityMode,
-                                      items: _buildQualityItems(),
-                                      onChanged: (v) {
-                                        if (v != null) _switchQuality(v);
-                                      },
-                                    ),
-                                    const SizedBox(width: 6),
-                                    _compactDropdown<String>(
-                                      icon: Icons.subtitles_outlined,
-                                      value: _subtitleIndex,
-                                      items: _buildSubtitleItems(),
-                                      onChanged: (v) {
-                                        if (v != null) _switchSubtitle(v);
-                                      },
-                                    ),
-                                    if (_audioTracks.isNotEmpty) ...[
-                                      const SizedBox(width: 6),
                                       _compactDropdown<String>(
-                                        icon: Icons.audio_file_outlined,
-                                        value: _selectedAudioTrackIndex ?? _audioTracks.first['index']!.toString(),
-                                        items: _buildAudioItems(),
-                                        onChanged: (v) { if (v != null) _switchAudioTrack(v); },
+                                        icon: Icons.subtitles_outlined,
+                                        value: _subtitleIndex,
+                                        items: _buildSubtitleItems(),
+                                        onChanged: (v) {
+                                          if (v != null) _switchSubtitle(v);
+                                        },
                                       ),
+                                      if (_audioTracks.isNotEmpty) ...[
+                                        const SizedBox(width: 6),
+                                        _compactDropdown<String>(
+                                          icon: Icons.audio_file_outlined,
+                                          value: _selectedAudioTrackIndex ?? _audioTracks.first['index']!.toString(),
+                                          items: _buildAudioItems(),
+                                          onChanged: (v) { if (v != null) _switchAudioTrack(v); },
+                                        ),
+                                      ],
+                                      const SizedBox(width: 10),
                                     ],
-                                    const SizedBox(width: 10),
                                     _iconBtn(
                                       icon: _repeatEnabled
                                           ? Icons.repeat_one
@@ -1576,11 +1619,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 ),
 
                 // ── Queue card ──────────────────────────────────────
-                if (_showControls && _queue.length > 1)
+                if (_showControls && _queue.length > 1 && widget.trailerYoutubeUrl == null)
                   Positioned(right: 18, top: 90, child: _queueCard()),
 
                 // ── Skip intro / outro — sits above the controls panel ──
-                if (_showSkipIntro || _showSkipOutro)
+                if ((_showSkipIntro || _showSkipOutro) && widget.trailerYoutubeUrl == null)
                   Positioned(
                     bottom: 140,
                     right: 24,

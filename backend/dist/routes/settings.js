@@ -88,6 +88,19 @@ async function settingsRoutes(fastify) {
                 'SHOW_CLOCK',
                 'VERSION_PRIORITY',
                 'ALWAYS_ON_TOP',
+                'DISK_RULE_WATCHED_ENABLED',
+                'DISK_RULE_WATCHED_DAYS',
+                'DISK_RULE_UNSEEN_ENABLED',
+                'DISK_RULE_UNSEEN_DAYS',
+                'DISK_RULE_INACTIVE_ENABLED',
+                'DISK_RULE_INACTIVE_DAYS',
+                'DISK_RULE_SIZE_ENABLED',
+                'DISK_RULE_SIZE_GB',
+                'DISK_RULE_SIZE_REQUIRE_WATCHED',
+                'DISK_RULE_RATING_ENABLED',
+                'DISK_RULE_RATING_MAX',
+                'DISK_RULE_SERIES_MODE',
+                'DISK_RULE_PROTECT_FAVORITES',
             ];
             const placeholders = keys.map(() => '?').join(',');
             const rows = database_1.default.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...keys);
@@ -129,6 +142,19 @@ async function settingsRoutes(fastify) {
                 SHOW_CLOCK: 'false',
                 VERSION_PRIORITY: '1080p,720p,4K',
                 ALWAYS_ON_TOP: 'false',
+                DISK_RULE_WATCHED_ENABLED: 'false',
+                DISK_RULE_WATCHED_DAYS: '7',
+                DISK_RULE_UNSEEN_ENABLED: 'false',
+                DISK_RULE_UNSEEN_DAYS: '60',
+                DISK_RULE_INACTIVE_ENABLED: 'false',
+                DISK_RULE_INACTIVE_DAYS: '365',
+                DISK_RULE_SIZE_ENABLED: 'false',
+                DISK_RULE_SIZE_GB: '50',
+                DISK_RULE_SIZE_REQUIRE_WATCHED: 'false',
+                DISK_RULE_RATING_ENABLED: 'false',
+                DISK_RULE_RATING_MAX: '3',
+                DISK_RULE_SERIES_MODE: 'episode',
+                DISK_RULE_PROTECT_FAVORITES: 'true',
             };
             rows.forEach(r => {
                 if (r.key in settings) {
@@ -199,6 +225,19 @@ async function settingsRoutes(fastify) {
             updateSetting('SHOW_CLOCK', body.SHOW_CLOCK);
             updateSetting('VERSION_PRIORITY', body.VERSION_PRIORITY);
             updateSetting('ALWAYS_ON_TOP', body.ALWAYS_ON_TOP);
+            updateSetting('DISK_RULE_WATCHED_ENABLED', body.DISK_RULE_WATCHED_ENABLED);
+            updateSetting('DISK_RULE_WATCHED_DAYS', body.DISK_RULE_WATCHED_DAYS);
+            updateSetting('DISK_RULE_UNSEEN_ENABLED', body.DISK_RULE_UNSEEN_ENABLED);
+            updateSetting('DISK_RULE_UNSEEN_DAYS', body.DISK_RULE_UNSEEN_DAYS);
+            updateSetting('DISK_RULE_INACTIVE_ENABLED', body.DISK_RULE_INACTIVE_ENABLED);
+            updateSetting('DISK_RULE_INACTIVE_DAYS', body.DISK_RULE_INACTIVE_DAYS);
+            updateSetting('DISK_RULE_SIZE_ENABLED', body.DISK_RULE_SIZE_ENABLED);
+            updateSetting('DISK_RULE_SIZE_GB', body.DISK_RULE_SIZE_GB);
+            updateSetting('DISK_RULE_SIZE_REQUIRE_WATCHED', body.DISK_RULE_SIZE_REQUIRE_WATCHED);
+            updateSetting('DISK_RULE_RATING_ENABLED', body.DISK_RULE_RATING_ENABLED);
+            updateSetting('DISK_RULE_RATING_MAX', body.DISK_RULE_RATING_MAX);
+            updateSetting('DISK_RULE_SERIES_MODE', body.DISK_RULE_SERIES_MODE);
+            updateSetting('DISK_RULE_PROTECT_FAVORITES', body.DISK_RULE_PROTECT_FAVORITES);
             dbg('PUT /api/settings — faktiskt sparade till DB', savedKeys);
             return reply.send({ success: true });
         }

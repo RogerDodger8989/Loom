@@ -102,7 +102,8 @@ class TMDBService {
                     if (movieData.videos && movieData.videos.results && movieData.videos.results.length > 0) {
                         const officialTrailer = movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                             || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-                            || movieData.videos.results.find((v) => v.site === 'YouTube');
+                            || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                            || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser');
                         if (officialTrailer) {
                             movieData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
                         }
@@ -116,7 +117,8 @@ class TMDBService {
                             if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
                                 const enTrailer = videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                                     || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-                                    || videoRes.data.results.find((v) => v.site === 'YouTube');
+                                    || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                                    || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser');
                                 if (enTrailer) {
                                     movieData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
                                     console.log(`[TMDB] Found trailer via en-US fallback for movie ${match.id}: ${movieData.trailer_url}`);
@@ -207,6 +209,30 @@ class TMDBService {
         }
     }
     /**
+     * Search candidate TV shows from TMDB (returns all candidate matches)
+     */
+    async searchTvCandidates(title, year) {
+        const apiKey = this.getApiKey();
+        if (!apiKey)
+            return [];
+        const prefLang = this.getSetting('METADATA_LANGUAGE') || 'sv-SE';
+        try {
+            const response = await axios_1.default.get(`${TMDB_BASE_URL}/search/tv`, {
+                params: {
+                    api_key: apiKey,
+                    query: title,
+                    first_air_date_year: year,
+                    language: prefLang
+                }
+            });
+            return response.data?.results || [];
+        }
+        catch (e) {
+            console.error(`[TMDB] Failed to search TV candidates for ${title}:`, e);
+            return [];
+        }
+    }
+    /**
      * Fetch full movie details directly by TMDB ID
      */
     async fetchMovieById(id) {
@@ -236,7 +262,8 @@ class TMDBService {
             if (movieData.videos && movieData.videos.results && movieData.videos.results.length > 0) {
                 const officialTrailer = movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                     || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-                    || movieData.videos.results.find((v) => v.site === 'YouTube');
+                    || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                    || movieData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser');
                 if (officialTrailer) {
                     movieData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
                 }
@@ -250,7 +277,8 @@ class TMDBService {
                     if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
                         const enTrailer = videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                             || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-                            || videoRes.data.results.find((v) => v.site === 'YouTube');
+                            || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                            || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser');
                         if (enTrailer) {
                             movieData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
                             console.log(`[TMDB] Found trailer via en-US fallback for movie ${id}: ${movieData.trailer_url}`);
@@ -324,11 +352,29 @@ class TMDBService {
             if (showData.videos && showData.videos.results && showData.videos.results.length > 0) {
                 const officialTrailer = showData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                     || showData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-                    || showData.videos.results.find((v) => v.site === 'YouTube');
+                    || showData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                    || showData.videos.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser');
                 if (officialTrailer) {
                     showData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
                 }
             }
+            // Fetch aggregate credits to get all cast members across all seasons
+            try {
+                const fullCreditsRes = await axios_1.default.get(`${TMDB_BASE_URL}/tv/${id}/aggregate_credits`, {
+                    params: { api_key: apiKey }
+                });
+                if (fullCreditsRes.data?.cast?.length > (showData.credits?.cast?.length || 0)) {
+                    const mappedCast = fullCreditsRes.data.cast.map((c) => ({
+                        ...c,
+                        character: c.roles && c.roles.length > 0 ? c.roles.map((r) => r.character).join(' / ') : ''
+                    }));
+                    showData.credits = {
+                        ...fullCreditsRes.data,
+                        cast: mappedCast
+                    };
+                }
+            }
+            catch { }
             // Fallback trailer_url
             if (!showData.trailer_url && prefLang !== 'en-US') {
                 try {
@@ -338,7 +384,8 @@ class TMDBService {
                     if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
                         const enTrailer = videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                             || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-                            || videoRes.data.results.find((v) => v.site === 'YouTube');
+                            || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                            || videoRes.data.results.find((v) => v.site === 'YouTube' && v.type === 'Teaser');
                         if (enTrailer) {
                             showData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
                         }
@@ -346,7 +393,9 @@ class TMDBService {
                 }
                 catch { }
             }
-            if ((!showData.overview || showData.overview.trim() === '') && prefLang !== fallbackLang) {
+            const needsShowFallback = prefLang !== fallbackLang && ((!showData.overview || showData.overview.trim() === '') ||
+                (!showData.tagline || showData.tagline.trim() === ''));
+            if (needsShowFallback) {
                 try {
                     const fallbackResponse = await axios_1.default.get(`${TMDB_BASE_URL}/tv/${id}`, {
                         params: {
@@ -355,8 +404,10 @@ class TMDBService {
                             append_to_response: 'credits,watch/providers,keywords,similar,external_ids,images'
                         }
                     });
-                    if (fallbackResponse.data && fallbackResponse.data.overview) {
-                        showData.overview = fallbackResponse.data.overview;
+                    if (fallbackResponse.data) {
+                        if ((!showData.overview || showData.overview.trim() === '') && fallbackResponse.data.overview) {
+                            showData.overview = fallbackResponse.data.overview;
+                        }
                         if ((!showData.tagline || showData.tagline.trim() === '') && fallbackResponse.data.tagline) {
                             showData.tagline = fallbackResponse.data.tagline;
                         }

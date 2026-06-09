@@ -57,6 +57,7 @@ const users_1 = __importDefault(require("./routes/users"));
 const stats_1 = __importDefault(require("./routes/stats"));
 const rss_1 = __importDefault(require("./routes/rss"));
 const export_1 = __importDefault(require("./routes/export"));
+const disk_1 = __importDefault(require("./routes/disk"));
 const multipart_1 = __importDefault(require("@fastify/multipart"));
 const log_store_1 = require("./services/log_store");
 const rating_sync_1 = require("./services/rating_sync");
@@ -117,6 +118,7 @@ async function buildApp() {
     app.register(stats_1.default);
     app.register(rss_1.default);
     app.register(export_1.default);
+    app.register(disk_1.default);
     // Log every HTTP response to the in-memory log store (skip in test mode)
     if (!isTest) {
         app.addHook('onResponse', async (req, reply) => {

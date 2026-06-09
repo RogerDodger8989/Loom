@@ -32,6 +32,10 @@ export declare class ScannerService {
      */
     processEpisodeFile(filePath: string, libraryPath: string, preferLocalNfo?: boolean): Promise<'added' | 'updated' | 'skipped'>;
     /**
+     * Refresh show metadata from TMDB for an already-scanned show item.
+     */
+    refreshShowMetadata(showId: string, tmdbShowId: string): Promise<void>;
+    /**
      * Helper to parse release versions/editions from filename
      */
     private parseEditionFromFilename;

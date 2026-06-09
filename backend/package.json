@@ -13,12 +13,20 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["**/__tests__/**/*.test.ts"],
+    "testMatch": [
+      "**/__tests__/**/*.test.ts"
+    ],
     "testTimeout": 15000,
     "transform": {
-      "^.+\\.[tj]sx?$": ["ts-jest", {
-        "tsconfig": { "module": "commonjs", "allowJs": true }
-      }]
+      "^.+\\.[tj]sx?$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "commonjs",
+            "allowJs": true
+          }
+        }
+      ]
     },
     "transformIgnorePatterns": [
       "node_modules/(?!(uuid)/)"
@@ -38,7 +46,8 @@
     "fastify": "^4.28.0",
     "nodemailer": "^8.0.10",
     "uuid": "^14.0.0",
-    "xml2js": "^0.6.2"
+    "xml2js": "^0.6.2",
+    "yt-dlp-wrap": "^2.3.12"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",

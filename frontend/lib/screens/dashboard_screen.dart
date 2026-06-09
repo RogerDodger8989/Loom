@@ -1765,6 +1765,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
               _tabController.animateTo(index);
               _selectedMediaId = null;
               _selectedPersonId = null;
+              _selectedEpisode = null;
+              _selectedEpisodeShowData = null;
             });
           }
         },

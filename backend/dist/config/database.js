@@ -283,6 +283,14 @@ catch (e) {
     // Ignorera om kolumnen redan finns
 }
 try {
+    db.exec('ALTER TABLE episodes ADD COLUMN overview TEXT;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE episodes ADD COLUMN still_path TEXT;');
+}
+catch (e) { /* already exists */ }
+try {
     db.exec('ALTER TABLE episodes ADD COLUMN deleted_at TEXT DEFAULT NULL;');
 }
 catch (e) {
@@ -314,6 +322,30 @@ try {
 catch (e) { /* already exists */ }
 try {
     db.exec('ALTER TABLE users ADD COLUMN pin_plain TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec("ALTER TABLE media_items ADD COLUMN delete_source TEXT DEFAULT 'manual';");
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE media_items ADD COLUMN delete_rule TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec("ALTER TABLE episodes ADD COLUMN delete_source TEXT DEFAULT 'manual';");
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE episodes ADD COLUMN delete_rule TEXT DEFAULT NULL;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE media_items ADD COLUMN is_favorite INTEGER DEFAULT 0;');
+}
+catch (e) { /* already exists */ }
+try {
+    db.exec('ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT NULL;');
 }
 catch (e) { /* already exists */ }
 exports.default = db;

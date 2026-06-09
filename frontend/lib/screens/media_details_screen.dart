@@ -1114,45 +1114,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   Future<void> _launchTrailer(
       String? trailerUrl, String title, String year) async {
     final finalTrailerUrl = trailerUrl ?? _buildTrailerSearchUrl(title, year);
-    final action = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF15102A),
-          title: const Text('Öppna trailer',
-              style: TextStyle(color: Colors.white)),
-          content: const Text(
-            'För TV-fjärrkontroll: välj Samma flik så fungerar Back/Retur för att gå tillbaka till filmen.',
-            style: TextStyle(color: Colors.white70),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, 'same'),
-              child: const Text('Samma flik',
-                  style: TextStyle(color: Color(0xFF8A5BFF))),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, 'new'),
-              child: const Text('Ny flik',
-                  style: TextStyle(color: Colors.white70)),
-            ),
-            OutlinedButton(
-              onPressed: () => Navigator.pop(dialogContext, 'cancel'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.white70,
-                side: const BorderSide(color: Colors.white24),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: const Text('Avbryt'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (action == 'same' || action == 'new') {
-      launchUrl(Uri.parse(finalTrailerUrl), mode: LaunchMode.externalApplication);
-    }
+    
+    Navigator.push(context, MaterialPageRoute(
+      builder: (context) => VideoPlayerScreen(
+        mediaId: widget.mediaId,
+        apiService: widget.apiService,
+        mediaData: _mediaData,
+        trailerYoutubeUrl: finalTrailerUrl,
+      ),
+    ));
   }
 
   @override

@@ -1,0 +1,1 @@
+try { require('child_process').execSync('yt-dlp.exe "ytsearch5:Monsters Inc 2001 official trailer" --get-id -i --max-downloads 1 --no-warnings'); } catch (err) { console.log('STDOUT:', err.stdout.toString()); console.log('STDERR:', err.stderr.toString()); }

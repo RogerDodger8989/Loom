@@ -166,7 +166,8 @@ export class TMDBService {
           if (movieData.videos && movieData.videos.results && movieData.videos.results.length > 0) {
             const officialTrailer = movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
               || movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-              || movieData.videos.results.find((v: any) => v.site === 'YouTube');
+              || movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+              || movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser');
             if (officialTrailer) {
               movieData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
             }
@@ -181,7 +182,8 @@ export class TMDBService {
               if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
                 const enTrailer = videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
                   || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-                  || videoRes.data.results.find((v: any) => v.site === 'YouTube');
+                  || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+                  || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser');
                 if (enTrailer) {
                   movieData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
                   console.log(`[TMDB] Found trailer via en-US fallback for movie ${match.id}: ${movieData.trailer_url}`);
@@ -329,7 +331,8 @@ export class TMDBService {
       if (movieData.videos && movieData.videos.results && movieData.videos.results.length > 0) {
         const officialTrailer = movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
           || movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-          || movieData.videos.results.find((v: any) => v.site === 'YouTube');
+          || movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+          || movieData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser');
         if (officialTrailer) {
           movieData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
         }
@@ -344,7 +347,8 @@ export class TMDBService {
           if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
             const enTrailer = videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
               || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-              || videoRes.data.results.find((v: any) => v.site === 'YouTube');
+              || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+              || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser');
             if (enTrailer) {
               movieData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
               console.log(`[TMDB] Found trailer via en-US fallback for movie ${id}: ${movieData.trailer_url}`);
@@ -422,7 +426,8 @@ export class TMDBService {
       if (showData.videos && showData.videos.results && showData.videos.results.length > 0) {
         const officialTrailer = showData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
           || showData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-          || showData.videos.results.find((v: any) => v.site === 'YouTube');
+          || showData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+          || showData.videos.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser');
         if (officialTrailer) {
           showData.trailer_url = `https://www.youtube.com/watch?v=${officialTrailer.key}`;
         }
@@ -454,7 +459,8 @@ export class TMDBService {
           if (videoRes.data && videoRes.data.results && videoRes.data.results.length > 0) {
             const enTrailer = videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
               || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-              || videoRes.data.results.find((v: any) => v.site === 'YouTube');
+              || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser' && v.official)
+              || videoRes.data.results.find((v: any) => v.site === 'YouTube' && v.type === 'Teaser');
             if (enTrailer) {
               showData.trailer_url = `https://www.youtube.com/watch?v=${enTrailer.key}`;
             }
@@ -462,7 +468,11 @@ export class TMDBService {
         } catch {}
       }
 
-      if ((!showData.overview || showData.overview.trim() === '') && prefLang !== fallbackLang) {
+      const needsShowFallback = prefLang !== fallbackLang && (
+        (!showData.overview || showData.overview.trim() === '') ||
+        (!showData.tagline || showData.tagline.trim() === '')
+      );
+      if (needsShowFallback) {
         try {
           const fallbackResponse = await axios.get(`${TMDB_BASE_URL}/tv/${id}`, {
             params: {
@@ -471,8 +481,10 @@ export class TMDBService {
               append_to_response: 'credits,watch/providers,keywords,similar,external_ids,images'
             }
           });
-          if (fallbackResponse.data && fallbackResponse.data.overview) {
-            showData.overview = fallbackResponse.data.overview;
+          if (fallbackResponse.data) {
+            if ((!showData.overview || showData.overview.trim() === '') && fallbackResponse.data.overview) {
+              showData.overview = fallbackResponse.data.overview;
+            }
             if ((!showData.tagline || showData.tagline.trim() === '') && fallbackResponse.data.tagline) {
               showData.tagline = fallbackResponse.data.tagline;
             }

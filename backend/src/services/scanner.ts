@@ -875,6 +875,7 @@ export class ScannerService {
     if (fullShow.keywords?.results?.length) {
       upsert('keywords', JSON.stringify(fullShow.keywords.results.map((k: any) => k.name)));
     }
+    if (fullShow.tagline) upsert('tagline', fullShow.tagline);
 
     // Backfill episode still_path and overview in background
     const apiKey = (db.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get() as any)?.value;

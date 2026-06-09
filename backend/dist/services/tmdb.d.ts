@@ -82,6 +82,10 @@ export declare class TMDBService {
      */
     searchMovieCandidates(title: string, year?: number): Promise<any[]>;
     /**
+     * Search candidate TV shows from TMDB (returns all candidate matches)
+     */
+    searchTvCandidates(title: string, year?: number): Promise<any[]>;
+    /**
      * Fetch full movie details directly by TMDB ID
      */
     fetchMovieById(id: string): Promise<any>;
