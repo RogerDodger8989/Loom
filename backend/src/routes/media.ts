@@ -2464,13 +2464,40 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       try {
         // Library items in this collection
         const libraryItems = db.prepare(`
-          SELECT id, title, year, poster_path, tmdb_id
+          SELECT id, title, year, poster_path, tmdb_id, is_favorite
           FROM media_items
           WHERE collection_id = ? AND deleted_at IS NULL
           ORDER BY COALESCE(year, 9999) ASC
         `).all(collectionId) as any[];
 
-        const libraryByTmdbId = new Map(libraryItems.map(i => [i.tmdb_id?.toString(), i]));
+        const itemIds = libraryItems.map(i => i.id);
+        const metadataRows = itemIds.length > 0
+          ? db.prepare(`
+              SELECT media_item_id, metadata_key, metadata_value
+              FROM media_metadata
+              WHERE media_item_id IN (${itemIds.map(() => '?').join(',')})
+            `).all(...itemIds) as any[]
+          : [];
+
+        const libraryByTmdbId = new Map();
+        for (const i of libraryItems) {
+          const tmdbStr = i.tmdb_id?.toString();
+          if (!tmdbStr) continue;
+
+          const meta = metadataRows.filter(m => m.media_item_id === i.id).reduce((acc: any, curr) => {
+            acc[curr.metadata_key] = curr.metadata_value;
+            return acc;
+          }, {});
+
+          if (!libraryByTmdbId.has(tmdbStr)) {
+            libraryByTmdbId.set(tmdbStr, { ...i, metadata: meta, versions: [] });
+          }
+
+          libraryByTmdbId.get(tmdbStr).versions.push({
+            id: i.id,
+            resolution: meta.resolution || meta.video_resolution || meta.quality || null
+          });
+        }
 
         // Fetch full collection from TMDB
         const tmdbKey = (db.prepare(`SELECT value FROM system_settings WHERE key='TMDB_API_KEY'`).get() as any)?.value;
@@ -2513,6 +2540,9 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
             poster_path: posterPath,
             in_library: !!libItem,
             release_date: part.release_date ?? null,
+            is_favorite: libItem?.is_favorite === 1,
+            metadata: libItem?.metadata ?? null,
+            versions: libItem?.versions ?? [],
           };
         });
 
@@ -2588,26 +2618,56 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         const tmdbIds = normalizedSimilar.map((m: any) => m.tmdb_id).filter(Boolean);
         const placeholders = tmdbIds.map(() => '?').join(',');
         const libraryRows = tmdbIds.length > 0 ? db.prepare(`
-          SELECT id, tmdb_id
+          SELECT id, tmdb_id, is_favorite
           FROM media_items
           WHERE deleted_at IS NULL AND tmdb_id IN (${placeholders})
         `).all(...tmdbIds) as any[] : [];
 
+        const libItemIds = libraryRows.map(r => r.id);
+        const metadataRows = libItemIds.length > 0
+          ? db.prepare(`
+              SELECT media_item_id, metadata_key, metadata_value
+              FROM media_metadata
+              WHERE media_item_id IN (${libItemIds.map(() => '?').join(',')})
+            `).all(...libItemIds) as any[]
+          : [];
+
         const libraryMap = new Map();
         for (const row of libraryRows) {
-          libraryMap.set(Number(row.tmdb_id), row.id);
+          const tmdbStr = Number(row.tmdb_id);
+          if (!tmdbStr) continue;
+
+          const meta = metadataRows.filter(m => m.media_item_id === row.id).reduce((acc: any, curr) => {
+            acc[curr.metadata_key] = curr.metadata_value;
+            return acc;
+          }, {});
+
+          if (!libraryMap.has(tmdbStr)) {
+            libraryMap.set(tmdbStr, { ...row, metadata: meta, versions: [] });
+          }
+
+          libraryMap.get(tmdbStr).versions.push({
+            id: row.id,
+            resolution: meta.resolution || meta.video_resolution || null
+          });
         }
 
-        const finalItems = normalizedSimilar.map((m: any) => ({
-          id: libraryMap.get(Number(m.tmdb_id)) || null,
-          tmdb_id: m.tmdb_id,
-          title: m.title,
-          year: m.year,
-          poster_path: m.poster_path,
-          type: movieType,
-          in_library: libraryMap.has(Number(m.tmdb_id)),
-          overview: m.overview
-        }));
+        const finalItems = normalizedSimilar.map((m: any) => {
+          const libItem = libraryMap.get(Number(m.tmdb_id));
+          return {
+            id: libItem?.id || null,
+            tmdb_id: m.tmdb_id,
+            title: m.title,
+            year: m.year,
+            poster_path: m.poster_path,
+            type: movieType,
+            in_library: !!libItem,
+            overview: m.overview,
+            is_favorite: libItem?.is_favorite === 1,
+            metadata: libItem?.metadata ?? null,
+            versions: libItem?.versions ?? [],
+          };
+        });
 
         return reply.send({
           id,

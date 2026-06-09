@@ -15,6 +15,8 @@ import 'person_details_screen.dart';
 import 'resume_playback_modal.dart';
 import 'video_player_screen.dart';
 import '../widgets/hoverable_builder.dart';
+import '../widgets/unified_poster_card.dart';
+import '../utils/media_actions_helper.dart';
 
 class MediaDetailsScreen extends StatefulWidget {
   final String mediaId;
@@ -57,6 +59,7 @@ class MediaDetailsScreen extends StatefulWidget {
 }
 
 class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
+  late final MediaActionsHelper _mediaActionsHelper;
   bool _isLoading = true;
   String? _error;
   Map<String, dynamic>? _mediaData;
@@ -270,6 +273,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    _mediaActionsHelper = MediaActionsHelper(
+      context: context,
+      apiService: widget.apiService,
+      onRefresh: _fetchDetails,
+      onNavigate: (type, id) {
+        Navigator.pushNamed(context, '/media_details', arguments: {'id': id});
+      },
+      onDelete: (item) {}, // No specific delete handling in details yet
+    );
     if (widget.initialSeasonNumber != null) {
       _selectedSeasonNumber = widget.initialSeasonNumber!;
       _seasonOverviewMode = false;
@@ -2745,180 +2757,39 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                       itemCount: parts.length,
                       itemBuilder: (context, index) {
                         final item = parts[index] as Map<String, dynamic>;
-                        final poster = item['poster_path'];
-                        final title = item['title'] ?? 'Okänd';
-                        final year =
-                            item['year'] != null ? ' (${item['year']})' : '';
                         final localId = item['id']?.toString() ?? '';
                         final tmdbId = item['tmdb_id']?.toString();
                         final inLibrary = localId.isNotEmpty;
-                        final isCurrent = localId == widget.mediaId;
+                        
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 14),
+                          child: SizedBox(
+                            width: 140,
+                            child: UnifiedPosterCard(
+                              item: item,
+                              isHomeCard: false,
+                              index: index,
+                              inLibrary: inLibrary,
+                              posterPrefix: 'col_chronology',
+                              titleDisplayStyle: _titleDisplayStyle,
+                              posterScale: 1.0,
 
-                        return HoverableBuilder(
-                          builder: (context, isHovered) {
-                            return Opacity(
-                              opacity: inLibrary ? 1.0 : 0.45,
-                              child: GestureDetector(
-                                onTap: () {
-                                  if (localId.isNotEmpty) {
-                                    widget.onMediaSelected?.call(localId);
-                                  } else if (tmdbId != null) {
-                                    widget.onMediaSelected?.call('external_movie_$tmdbId');
-                                  }
-                                },
-                                child: Container(
-                                  width: 140,
-                                  margin:
-                                      const EdgeInsets.symmetric(horizontal: 10),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Container(
-                                        height: 210,
-                                        clipBehavior: Clip.antiAlias,
-                                        decoration: BoxDecoration(
-                                          color: Colors.white10,
-                                          borderRadius: BorderRadius.circular(12),
-                                          border: Border.all(
-                                            color: Colors.white
-                                                .withValues(alpha: isHovered ? 0.3 : 0.06),
-                                            width: 1.0,
-                                          ),
-                                        ),
-                                        foregroundDecoration: isHovered
-                                            ? BoxDecoration(
-                                                color: Colors.white.withValues(alpha: 0.2),
-                                                borderRadius: BorderRadius.circular(12),
-                                              )
-                                            : null,
-                                        child: Stack(
-                                          fit: StackFit.expand,
-                                          children: [
-                                            if (poster != null)
-                                              Image.network(
-                                            poster.toString(),
-                                            fit: BoxFit.cover,
-                                            errorBuilder:
-                                                (context, error, stackTrace) {
-                                              return const Center(
-                                                  child: Icon(Icons.movie,
-                                                      size: 50,
-                                                      color: Colors.white24));
-                                            },
-                                          )
-                                        else
-                                          const Center(
-                                              child: Icon(Icons.movie,
-                                                  size: 50,
-                                                  color: Colors.white24)),
-
-                                        // Top-left watched checkmark badge
-                                        Positioned(
-                                          top: 8,
-                                          left: 8,
-                                          child: Builder(builder: (context) {
-                                            final itemMeta =
-                                                item['metadata'] ?? {};
-                                            if (itemMeta['watch_status'] ==
-                                                'watched') {
-                                              return Container(
-                                                padding:
-                                                    const EdgeInsets.all(3),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.black
-                                                      .withValues(alpha: 0.6),
-                                                  shape: BoxShape.circle,
-                                                  border: Border.all(
-                                                      color: const Color(
-                                                          0xFF00E676),
-                                                      width: 1.5),
-                                                  boxShadow: [
-                                                    BoxShadow(
-                                                      color: const Color(
-                                                              0xFF00E676)
-                                                          .withValues(
-                                                              alpha: 0.3),
-                                                      blurRadius: 4,
-                                                    )
-                                                  ],
-                                                ),
-                                                child: const Icon(Icons.check,
-                                                    color: Color(0xFF00E676),
-                                                    size: 10),
-                                              );
-                                            }
-                                            return const SizedBox.shrink();
-                                          }),
-                                        ),
-
-                                        // Thumbnail progress bar for in-progress items
-                                        Builder(builder: (context) {
-                                          final itemMeta =
-                                              item['metadata'] ?? {};
-                                          final progress = int.tryParse(
-                                                  (itemMeta['playback_progress']
-                                                          ?.toString() ??
-                                                      '0')) ??
-                                              0;
-                                          if (progress > 0) {
-                                            int duration = int.tryParse(
-                                                    (itemMeta['duration']
-                                                            ?.toString() ??
-                                                        '0')) ??
-                                                0;
-                                            if (duration == 0) {
-                                              final runtimeMinutes =
-                                                  int.tryParse((itemMeta[
-                                                                  'runtime']
-                                                              ?.toString() ??
-                                                          '0')) ??
-                                                      0;
-                                              duration = runtimeMinutes * 60;
-                                            }
-                                            if (duration == 0) {
-                                              duration =
-                                                  7200; // 120 min default fallback
-                                            }
-                                            final ratio = (progress / duration)
-                                                .clamp(0.0, 1.0);
-                                            return Positioned(
-                                              left: 0,
-                                              right: 0,
-                                              bottom: 0,
-                                              child: Container(
-                                                height: 4,
-                                                color: Colors.white12,
-                                                child: LinearProgressIndicator(
-                                                  value: ratio,
-                                                  color:
-                                                      const Color(0xFF8A5BFF),
-                                                  backgroundColor:
-                                                      Colors.transparent,
-                                                ),
-                                              ),
-                                            );
-                                          }
-                                          return const SizedBox.shrink();
-                                        }),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text('$title$year',
-                                      style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 14),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis),
-                                ],
-                              ),
+                              selectedItems: const {},
+                              selectionMode: false,
+                              onPlayTap: inLibrary ? (i) => widget.onMediaSelected?.call(localId) : null,
+                              onContextMenu: (i, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(i, isHomeCard: isHome, globalPos: pos),
+                                onEdit: inLibrary ? _mediaActionsHelper.openMediaEditor : null,
+                              onPosterTap: (i, isHome) {
+                                if (inLibrary) {
+                                  widget.onMediaSelected?.call(localId);
+                                } else if (tmdbId != null) {
+                                  widget.onMediaSelected?.call('external_movie_$tmdbId');
+                                }
+                              },
                             ),
                           ),
                         );
                       }
-                    );
-                      },
                     ),
                   );
                 },
@@ -3329,149 +3200,47 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 30),
                 scrollDirection: Axis.horizontal,
                 itemCount: similarItems.length,
-                itemBuilder: (context, index) {
-                  final item = similarItems[index];
-                  final itemId = item['id']?.toString();
-                  final tmdbId = item['tmdb_id']?.toString();
-                  final title = item['title'] ?? 'Unknown';
-                  final year = item['year'] != null ? ' (${item['year']})' : '';
-                  final poster = item['poster_path'] as String?;
-                  final inLibrary = item['in_library'] as bool? ?? true;
-                  final type = (item['type'] as String?)?.toLowerCase() == 'show' ? 'show' : 'movie';
-                  final targetId = itemId ?? 'external_${type}_$tmdbId';
+                  itemBuilder: (context, index) {
+                    final item = similarItems[index];
+                    final itemId = item['id']?.toString();
+                    final tmdbId = item['tmdb_id']?.toString();
+                    final inLibrary = item['in_library'] as bool? ?? true;
+                    final type = (item['type'] as String?)?.toLowerCase() == 'show' ? 'show' : 'movie';
+                    final targetId = itemId ?? 'external_${type}_$tmdbId';
 
-                  return HoverableBuilder(
-                    builder: (context, isHovered) {
-                      return GestureDetector(
-                        onTap: () {
-                          if (widget.onMediaSelected != null) {
-                            widget.onMediaSelected!(targetId);
-                          } else {
-                            if (targetId.startsWith('external_')) {
-                               Navigator.push(
-                                 context,
-                                 MaterialPageRoute(
-                                   builder: (context) => MediaDetailsScreen(
-                                     mediaId: targetId,
-                                     apiService: widget.apiService,
-                                   ),
-                                 ),
-                               );
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 14),
+                      child: SizedBox(
+                        width: 140,
+                        child: UnifiedPosterCard(
+                          item: item,
+                          isHomeCard: false,
+                          index: index,
+                          inLibrary: inLibrary,
+                          posterPrefix: 'col_similar',
+                          titleDisplayStyle: _titleDisplayStyle,
+                          posterScale: 1.0,
+
+                          selectedItems: const {},
+                          selectionMode: false,
+                          onPlayTap: inLibrary && itemId != null ? (i) => widget.onMediaSelected?.call(itemId) : null,
+                          onContextMenu: (i, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(i, isHomeCard: isHome, globalPos: pos),
+                                onEdit: inLibrary ? _mediaActionsHelper.openMediaEditor : null,
+                          onPosterTap: (i, isHome) {
+                            if (widget.onMediaSelected != null) {
+                              widget.onMediaSelected!(targetId);
                             } else {
-                              setState(() {
-                                _mediaData = null;
-                                _isLoading = true;
-                              });
-                              _fetchDetails();
-                            }
-                          }
-                        },
-                        onSecondaryTapDown: (details) async {
-                          final position = details.globalPosition;
-                          final value = await showMenu(
-                            context: context,
-                              position: RelativeRect.fromLTRB(
-                                position.dx, position.dy, position.dx + 1, position.dy + 1,
-                              ),
-                              items: [
-                                const PopupMenuItem(
-                                  value: 'watchlist',
-                                  child: Text('Lägg till i bevakningslista'),
-                                ),
-                              ],
-                            );
-                            if (value == 'watchlist' && tmdbId != null) {
-                              try {
-                                await widget.apiService.addToWatchlist(
-                                  tmdbId: tmdbId,
-                                  title: title,
-                                  type: type,
-                                  year: item['year'] != null ? int.tryParse(item['year'].toString()) : null,
-                                  posterPath: poster,
-                                );
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('$title lades till i bevakningslistan!')),
-                                  );
-                                }
-                              } catch (e) {
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('Kunde inte lägga till: $e')),
-                                  );
-                                }
+                              if (targetId.startsWith('external_')) {
+                                Navigator.pushNamed(context, '/media_details', arguments: {'id': targetId, 'isExternal': true});
+                              } else {
+                                Navigator.pushNamed(context, '/media_details', arguments: {'id': targetId});
                               }
                             }
                           },
-                          child: Container(
-                            width: 140,
-                            margin: const EdgeInsets.symmetric(horizontal: 10),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Opacity(
-                                  opacity: inLibrary ? 1.0 : 0.4,
-                                  child: Stack(
-                                    children: [
-                                      Container(
-                                        height: 180,
-                                        decoration: BoxDecoration(
-                                          color: Colors.white10,
-                                          borderRadius: BorderRadius.circular(12),
-                                          border: Border.all(
-                                              color:
-                                                  Colors.white.withValues(alpha: isHovered ? 0.3 : 0.04)),
-                                          image: poster != null
-                                              ? DecorationImage(
-                                                  image: NetworkImage(poster),
-                                                  fit: BoxFit.cover)
-                                              : null,
-                                        ),
-                                        foregroundDecoration: isHovered
-                                            ? BoxDecoration(
-                                                color: Colors.white.withValues(alpha: 0.2),
-                                                borderRadius: BorderRadius.circular(12),
-                                              )
-                                            : null,
-                                        child: poster == null
-                                            ? const Center(
-                                                child: Icon(Icons.movie,
-                                                    size: 50, color: Colors.white24))
-                                            : null,
-                                      ),
-                                      if (!inLibrary)
-                                        Positioned.fill(
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              color: Colors.black.withValues(alpha: 0.2),
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                            child: const Center(
-                                              child: Icon(Icons.cloud_off, color: Colors.white70, size: 36),
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Opacity(
-                                  opacity: inLibrary ? 1.0 : 0.6,
-                                  child: Text('$title$year',
-                                      style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 12),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }
+                        ),
+                      ),
                     );
-                  },
+                  }
               ),
             ),
             const SizedBox(height: 60),
@@ -5029,120 +4798,50 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                 child: snapshot.connectionState == ConnectionState.waiting
                     ? const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator(color: Color(0xFF8A5BFF))))
                     : items.isEmpty
-                        ? const Text('Inga titlar hittades.', style: TextStyle(color: Colors.white70))
-                        : ListView.separated(
-                            shrinkWrap: true,
-                            itemCount: items.length,
-                            separatorBuilder: (_, __) => const Divider(color: Colors.white10, height: 1),
-                            itemBuilder: (ctx2, index) {
-                              final item = items[index] as Map<String, dynamic>;
-                              final inLibrary = item['in_library'] as bool? ?? false;
-                              final libId = item['id']?.toString();
-                              final tmdbId = item['tmdb_id']?.toString();
-                              final poster = item['poster_path']?.toString();
-                              final title = item['title']?.toString() ?? 'Okänd titel';
-                              final year = item['year']?.toString() ?? '';
+                          ? const Text('Inga titlar hittades.', style: TextStyle(color: Colors.white70))
+                          : GridView.builder(
+                              shrinkWrap: true,
+                              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 160,
+                                mainAxisSpacing: 16,
+                                crossAxisSpacing: 16,
+                                childAspectRatio: 0.65,
+                              ),
+                              itemCount: items.length,
+                              itemBuilder: (ctx2, index) {
+                                final item = items[index] as Map<String, dynamic>;
+                                final inLibrary = item['in_library'] as bool? ?? false;
+                                final localId = item['id']?.toString();
+                                final tmdbId = item['tmdb_id']?.toString();
 
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                child: Row(
-                                  children: [
-                                    // Poster
-                                    MouseRegion(
-                                      cursor: tmdbId != null ? SystemMouseCursors.click : MouseCursor.defer,
-                                      child: GestureDetector(
-                                        onTap: () {
-                                          if (inLibrary && libId != null) {
-                                            Navigator.pop(dialogCtx);
-                                            widget.onMediaSelected?.call(libId);
-                                          } else if (tmdbId != null) {
-                                            Navigator.pop(dialogCtx);
-                                            widget.onMediaSelected?.call('external_movie_$tmdbId');
-                                          }
-                                        },
-                                        child: ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: poster != null
-                                              ? Image.network(poster, width: 48, height: 72, fit: BoxFit.cover)
-                                              : Container(width: 48, height: 72, color: Colors.white10, child: const Icon(Icons.movie, color: Colors.white24)),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    // Title + year
-                                    Expanded(
-                                      child: MouseRegion(
-                                        cursor: tmdbId != null ? SystemMouseCursors.click : MouseCursor.defer,
-                                        child: GestureDetector(
-                                        onTap: () {
-                                          if (inLibrary && libId != null) {
-                                            Navigator.pop(dialogCtx);
-                                            widget.onMediaSelected?.call(libId);
-                                          } else if (tmdbId != null) {
-                                            Navigator.pop(dialogCtx);
-                                            widget.onMediaSelected?.call('external_movie_$tmdbId');
-                                          }
-                                        },
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(title,
-                                                style: TextStyle(
-                                                    color: inLibrary ? Colors.white : Colors.white54,
-                                                    fontWeight: inLibrary ? FontWeight.w600 : FontWeight.normal)),
-                                            if (year.isNotEmpty)
-                                              Text(year, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                                          ],
-                                        ),
-                                      ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    // Badge or button
-                                    if (inLibrary)
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF2ECC71).withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(20),
-                                          border: Border.all(color: const Color(0xFF2ECC71).withValues(alpha: 0.5)),
-                                        ),
-                                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                                          Icon(Icons.check_circle_outline, color: Color(0xFF2ECC71), size: 13),
-                                          SizedBox(width: 4),
-                                          Text('I samling', style: TextStyle(color: Color(0xFF2ECC71), fontSize: 12, fontWeight: FontWeight.w600)),
-                                        ]),
-                                      )
-                                    else
-                                      TextButton(
-                                        onPressed: tmdbId == null ? null : () async {
-                                          Navigator.pop(dialogCtx);
-                                          await widget.apiService.addToWatchlist(
-                                            tmdbId: tmdbId,
-                                            title: title,
-                                            type: 'Movie',
-                                            year: year.isNotEmpty ? int.tryParse(year) : null,
-                                            posterPath: poster,
-                                          );
-                                          if (mounted) {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text('"$title" lagd i bevakningslistan!'), backgroundColor: const Color(0xFF8A5BFF)),
-                                            );
-                                          }
-                                        },
-                                        style: TextButton.styleFrom(
-                                          foregroundColor: const Color(0xFF8A5BFF),
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                          side: const BorderSide(color: Color(0xFF8A5BFF), width: 0.5),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                                        ),
-                                        child: const Text('+ Bevakningslista', style: TextStyle(fontSize: 12)),
-                                      ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
+                                return UnifiedPosterCard(
+                                  item: item,
+                                  isHomeCard: false,
+                                  index: index,
+                                  inLibrary: inLibrary,
+                                  posterPrefix: 'col_dialog',
+                                  titleDisplayStyle: _titleDisplayStyle,
+                                  posterScale: 1.0,
+
+                                  selectedItems: const {},
+                                  selectionMode: false,
+                                  onPlayTap: inLibrary && localId != null ? (i) {
+                                    Navigator.pop(dialogCtx);
+                                    widget.onMediaSelected?.call(localId);
+                                  } : null,
+                                  onContextMenu: (i, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(i, isHomeCard: isHome, globalPos: pos),
+                                onEdit: inLibrary ? _mediaActionsHelper.openMediaEditor : null,
+                                  onPosterTap: (i, isHome) {
+                                    Navigator.pop(dialogCtx);
+                                    if (inLibrary && localId != null) {
+                                      widget.onMediaSelected?.call(localId);
+                                    } else if (tmdbId != null) {
+                                      widget.onMediaSelected?.call('external_movie_$tmdbId');
+                                    }
+                                  },
+                                );
+                              },
+                            )
               ),
               actions: [
                 ElevatedButton(

@@ -22,9 +22,6 @@ import 'settings_screen.dart';
 import 'user_picker_overlay.dart';
 import 'calendar_screen.dart';
 
-import '../widgets/unified_poster_card.dart';
-import '../utils/media_actions_helper.dart';
-
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
 
@@ -34,7 +31,6 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-  late final MediaActionsHelper _mediaActionsHelper;
 class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   
@@ -845,14 +841,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-
-    _mediaActionsHelper = MediaActionsHelper(
-      context: context,
-      apiService: widget.apiService,
-      onRefresh: _loadAllMedia,
-      onNavigate: _navigateTo,
-      onDelete: (item) => _loadAllMedia(),
-    );
     _tabController = TabController(length: 4, vsync: this);
     _homeSections = _defaultHomeSections();
     _loadAllMedia();
@@ -1593,8 +1581,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                     onPersonSelected: (personId) {
                                       _navigateTo('person', personId);
                                     },
-                                    onEdit: () => _mediaActionsHelper.openMediaEditor({'id': _selectedMediaId}),
-                                    onContextMenu: (id, pos) => _mediaActionsHelper.openPosterActionsMenu({'id': id}, isHomeCard: false, globalPos: pos),
+                                    onEdit: () => _openMediaEditor({'id': _selectedMediaId}),
+                                    onContextMenu: (id, pos) => _openPosterActionsMenu({'id': id}, isHomeCard: false, globalPos: pos),
                                     onEpisodeSelected: (episode, showData) {
                                       setState(() {
                                         _navHistory.add({'type': 'media', 'id': _selectedMediaId!});
@@ -1618,7 +1606,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                           initialSelectedDay: _calendarSelectedDay,
                                           onDayChanged: (d) { _calendarSelectedDay = d; },
                                           onShowTap: (showId) => _navigateTo('media', showId),
-                                          onContextMenu: (localId, pos) => _mediaActionsHelper.openPosterActionsMenu(
+                                          onContextMenu: (localId, pos) => _openPosterActionsMenu(
                                             {'id': localId},
                                             isHomeCard: false,
                                             globalPos: pos,
@@ -2248,29 +2236,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       width: cardWidth,
       child: Padding(
         padding: const EdgeInsets.only(right: 14),
-        child: UnifiedPosterCard(
-          item: item,
-          isHomeCard: true,
-          index: 0,
-          posterPrefix: 'home',
-          continueEpisodeLabel: episodeLabel,
-          titleDisplayStyle: _titleDisplayStyle,
-          posterScale: _posterScale,
-
-          selectedItems: _selectedMediaIds,
-          selectionMode: _selectedMediaIds.isNotEmpty,
-          onPlayTap: _handlePlayTap,
-          onToggleSelection: _toggleMediaSelection,
-          onContextMenu: (item, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: pos),
-          onEdit: _mediaActionsHelper.openMediaEditor,
-          onHoverChanged: (key, isHovered) {
-             setState(() {
-                if (isHovered) _hoveredPosterKey = key;
-                else if (_hoveredPosterKey == key) _hoveredPosterKey = null;
-             });
-          },
-          onPosterTap: (item, isHomeCard) => _handlePosterTap(item, isHomeCard: isHomeCard),
-        ),
+        child: _buildUnifiedPosterCard(item, isHomeCard: true, posterPrefix: 'home', continueEpisodeLabel: episodeLabel),
       ),
     );
   }
@@ -2533,9 +2499,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     });
   }
 
+  String _posterKeyFor(dynamic item, String prefix) {
+    return '$prefix:${item['id']?.toString() ?? item['tmdb_id']?.toString() ?? item.hashCode.toString()}';
+  }
 
-
-
+  Future<void> _showInfoMessage(String message) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
 
   Future<bool> _confirmAction(String title, String message) async {
     final result = await showDialog<bool>(
@@ -2755,7 +2726,21 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
 
-
+  Widget _buildPosterActionButton({required IconData icon, VoidCallback? onPressed, GestureTapDownCallback? onTapDown}) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.45),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onPressed,
+        onTapDown: onTapDown,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, color: Colors.white, size: 18),
+        ),
+      ),
+    );
+  }
 
   Future<void> _handlePosterTap(dynamic item, {required bool isHomeCard}) async {
     final itemId = item['id']?.toString();
@@ -3327,29 +3312,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       width: cardWidth,
       child: Padding(
         padding: const EdgeInsets.only(right: 14),
-        child: UnifiedPosterCard(
-          item: movie,
-          isHomeCard: true,
-          index: 0,
-          posterPrefix: 'home',
-          continueEpisodeLabel: null,
-          titleDisplayStyle: _titleDisplayStyle,
-          posterScale: _posterScale,
-
-          selectedItems: _selectedMediaIds,
-          selectionMode: _selectedMediaIds.isNotEmpty,
-          onPlayTap: _handlePlayTap,
-          onToggleSelection: _toggleMediaSelection,
-          onContextMenu: (item, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: pos),
-          onEdit: _mediaActionsHelper.openMediaEditor,
-          onHoverChanged: (key, isHovered) {
-             setState(() {
-                if (isHovered) _hoveredPosterKey = key;
-                else if (_hoveredPosterKey == key) _hoveredPosterKey = null;
-             });
-          },
-          onPosterTap: (item, isHomeCard) => _handlePosterTap(item, isHomeCard: isHomeCard),
-        ),
+        child: _buildUnifiedPosterCard(movie, isHomeCard: true, posterPrefix: 'home'),
       ),
     );
   }
@@ -3358,7 +3321,31 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   /// Handles height-only ("1080p"), dimension pairs ("1920x800"), and keywords ("4K").
   /// For dimension pairs, both width AND height are checked so Scope-format films
   /// like 1920×800 are correctly reported as 1080P (not 720P).
+  static String? _normaliseResolution(String? raw) {
+    if (raw == null) return null;
+    final s = raw.trim();
+    if (s.isEmpty) return null;
+    final u = s.toUpperCase();
 
+    // Try to parse as WxH (e.g. "1920X800" or "1920x1080")
+    final dimMatch = RegExp(r'^(\d+)[Xx](\d+)$').firstMatch(s);
+    if (dimMatch != null) {
+      final w = int.parse(dimMatch.group(1)!);
+      final h = int.parse(dimMatch.group(2)!);
+      if (w >= 3200 || h >= 2000) return '4K';
+      if (w >= 1900 || h >= 1000) return '1080P';
+      if (w >= 1100 || h >= 650)  return '720P';
+      if (w >= 700  || h >= 420)  return '480P';
+      return '${h}P';
+    }
+
+    if (u.contains('4K') || u.contains('2160') || u.contains('3840')) return '4K';
+    if (u.contains('1080')) return '1080P';
+    if (u.contains('720'))  return '720P';
+    if (u.contains('480'))  return '480P';
+    if (u.contains('360'))  return '360P';
+    return u;
+  }
 
   /// Shared card widget used for both the home-strip and the movies/shows grid.
 
@@ -3574,29 +3561,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   }
 
   Widget _buildMediaCard(dynamic item, {required int index}) {
-    return UnifiedPosterCard(
-          item: item,
-          isHomeCard: false,
-          index: index,
-          posterPrefix: 'media',
-          continueEpisodeLabel: null,
-          titleDisplayStyle: _titleDisplayStyle,
-          posterScale: _posterScale,
-
-          selectedItems: _selectedMediaIds,
-          selectionMode: _selectedMediaIds.isNotEmpty,
-          onPlayTap: _handlePlayTap,
-          onToggleSelection: _toggleMediaSelection,
-          onContextMenu: (item, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: pos),
-          onEdit: _mediaActionsHelper.openMediaEditor,
-          onHoverChanged: (key, isHovered) {
-             setState(() {
-                if (isHovered) _hoveredPosterKey = key;
-                else if (_hoveredPosterKey == key) _hoveredPosterKey = null;
-             });
-          },
-          onPosterTap: (item, isHomeCard) => _handlePosterTap(item, isHomeCard: isHomeCard),
-        );
+    return _buildUnifiedPosterCard(item, isHomeCard: false, index: index, posterPrefix: 'media');
   }
 
   Widget _buildEmptyState(String title, String subtitle) {
