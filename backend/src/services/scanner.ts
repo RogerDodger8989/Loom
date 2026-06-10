@@ -1298,6 +1298,7 @@ export class ScannerService {
       const files = fs.readdirSync(dirPath);
 
       files.forEach((file) => {
+        if (file === '.trash') return;
         const fullPath = path.join(dirPath, file);
         if (fs.statSync(fullPath).isDirectory()) {
           arrayOfFiles = this.getAllFiles(fullPath, arrayOfFiles);
