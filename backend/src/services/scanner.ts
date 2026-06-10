@@ -18,6 +18,7 @@ function triggerChapterScan(filePath: string, mediaItemId: string | null, episod
 }
 
 const ffprobe = require('@ffprobe-installer/ffprobe');
+const ptt = require('parse-torrent-title');
 
 export class ScannerService {
   /**
@@ -476,60 +477,80 @@ export class ScannerService {
         return 'skipped';
       } else {
         // Insert new
-        const id = uuidv4();
-        db.prepare(`
-          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id, imdb_id, collection_name, collection_id, director, original_title, file_path, release_date)
-          VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          id,
-          metadata.title,
-          metadata.plot,
-          metadata.year,
-          metadata.genre,
-          metadata.poster_path,
-          metadata.fanart_path,
-          metadata.tmdb_id || null,
-          metadata.imdb_id || null,
-          metadata.collection_name || null,
-          metadata.collection_id || null,
-          directorName,
-          metadata.original_title || null,
-          filePath,
-          (metadata as any).release_date || null
-        );
-        
-        if (tmdbRatings) upsertMetadata(id, 'ratings', JSON.stringify(tmdbRatings));
-        if (tmdbCast) upsertMetadata(id, 'cast', JSON.stringify(tmdbCast));
-        if (tmdbProviders) upsertMetadata(id, 'watch_providers', JSON.stringify(tmdbProviders));
-        if (tmdbTrailer) upsertMetadata(id, 'trailer_url', tmdbTrailer);
-        if (omdbAwards || tmdbAwards) upsertMetadata(id, 'awards', omdbAwards || tmdbAwards as string);
-        if (omdbImdbRating) upsertMetadata(id, 'imdb_rating', omdbImdbRating);
-        if (omdbImdbVotes) upsertMetadata(id, 'imdb_votes', omdbImdbVotes);
-        if (omdbMetascore) upsertMetadata(id, 'metascore', omdbMetascore);
-        if (omdbRtRating) upsertMetadata(id, 'rt_rating', omdbRtRating);
-        if (simklRating) upsertMetadata(id, 'simkl_rating', simklRating);
-        if (simklVotes) upsertMetadata(id, 'simkl_votes', simklVotes);
-        if (traktRating) upsertMetadata(id, 'trakt_rating', traktRating);
-        if (traktVotes) upsertMetadata(id, 'trakt_votes', traktVotes);
-        if (tmdbTagline) upsertMetadata(id, 'tagline', tmdbTagline);
-        if (tmdbKeywords) upsertMetadata(id, 'keywords', JSON.stringify(tmdbKeywords));
-        if (tmdbProductionCompanies) upsertMetadata(id, 'production_companies', JSON.stringify(tmdbProductionCompanies));
-        if (tmdbProductionCountries) upsertMetadata(id, 'production_countries', JSON.stringify(tmdbProductionCountries));
-        if (metadata.director && typeof metadata.director === 'object') {
-          upsertMetadata(id, 'director', JSON.stringify(metadata.director));
+        let movieId: string | null = null;
+        const tmdbMovieId = metadata.tmdb_id;
+        const displayTitle = metadata.title;
+
+        // Before inserting, check if a movie with this tmdb_id already exists!
+        if (tmdbMovieId) {
+          const existingTmdbMovie = db.prepare('SELECT id FROM media_items WHERE type="Movie" AND tmdb_id=? AND deleted_at IS NULL').get(tmdbMovieId) as any;
+          if (existingTmdbMovie) {
+            movieId = existingTmdbMovie.id;
+            
+            // Only update file_path if it changed
+            const currentRecord = db.prepare('SELECT file_path FROM media_items WHERE id=?').get(movieId) as any;
+            if (currentRecord && currentRecord.file_path !== filePath) {
+              db.prepare(`UPDATE media_items SET file_path = ? WHERE id = ?`).run(filePath, movieId);
+            }
+          }
         }
-        if (probeResult.audioTracks.length > 0) upsertMetadata(id, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
-        if (probeResult.subtitleTracks.length > 0) upsertMetadata(id, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+
+        if (!movieId) {
+          movieId = uuidv4();
+          db.prepare(`
+            INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id, imdb_id, collection_name, collection_id, director, original_title, file_path, release_date)
+            VALUES (?, ?, 'Movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            movieId,
+            metadata.title,
+            metadata.plot,
+            metadata.year,
+            metadata.genre,
+            metadata.poster_path,
+            metadata.fanart_path,
+            metadata.tmdb_id || null,
+            metadata.imdb_id || null,
+            metadata.collection_name || null,
+            metadata.collection_id || null,
+            directorName,
+            metadata.original_title || null,
+            filePath,
+            (metadata as any).release_date || null
+          );
+        }
+        
+        if (tmdbRatings) upsertMetadata(movieId, 'ratings', JSON.stringify(tmdbRatings));
+        if (tmdbCast) upsertMetadata(movieId, 'cast', JSON.stringify(tmdbCast));
+        if (tmdbProviders) upsertMetadata(movieId, 'watch_providers', JSON.stringify(tmdbProviders));
+        if (tmdbTrailer) upsertMetadata(movieId, 'trailer_url', tmdbTrailer);
+        if (omdbAwards || tmdbAwards) upsertMetadata(movieId, 'awards', omdbAwards || tmdbAwards as string);
+        if (omdbImdbRating) upsertMetadata(movieId, 'imdb_rating', omdbImdbRating);
+        if (omdbImdbVotes) upsertMetadata(movieId, 'imdb_votes', omdbImdbVotes);
+        if (omdbMetascore) upsertMetadata(movieId, 'metascore', omdbMetascore);
+        if (omdbRtRating) upsertMetadata(movieId, 'rt_rating', omdbRtRating);
+        if (simklRating) upsertMetadata(movieId, 'simkl_rating', simklRating);
+        if (simklVotes) upsertMetadata(movieId, 'simkl_votes', simklVotes);
+        if (traktRating) upsertMetadata(movieId, 'trakt_rating', traktRating);
+        if (traktVotes) upsertMetadata(movieId, 'trakt_votes', traktVotes);
+        if (tmdbTagline) upsertMetadata(movieId, 'tagline', tmdbTagline);
+        if (tmdbKeywords) upsertMetadata(movieId, 'keywords', JSON.stringify(tmdbKeywords));
+        if (tmdbProductionCompanies) upsertMetadata(movieId, 'production_companies', JSON.stringify(tmdbProductionCompanies));
+        if (tmdbProductionCountries) upsertMetadata(movieId, 'production_countries', JSON.stringify(tmdbProductionCountries));
+        if (metadata.director && typeof metadata.director === 'object') {
+          upsertMetadata(movieId, 'director', JSON.stringify(metadata.director));
+        }
+        if (probeResult.audioTracks.length > 0) upsertMetadata(movieId, 'audio_tracks', JSON.stringify(probeResult.audioTracks));
+        if (probeResult.subtitleTracks.length > 0) upsertMetadata(movieId, 'subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
         if (probeResult.resolution) {
-          db.prepare('INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) VALUES (?,?,\'resolution\',?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value').run(uuidv4(), id, probeResult.resolution);
+          db.prepare('INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) VALUES (?,?,\'resolution\',?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value').run(uuidv4(), movieId, probeResult.resolution);
         }
 
         const edition = this.parseEditionFromFilename(fileNameWithoutExt);
         if (edition) {
-          upsertMetadata(id, 'release_version', edition);
+          upsertMetadata(movieId, 'release_version', edition);
         }
 
-        triggerChapterScan(filePath, id, null);
+        triggerChapterScan(filePath, movieId, null);
         emitScanEvent('item_added', `Tillagd: ${metadata.title || path.basename(filePath)} ${metadata.year ? `(${metadata.year})` : ''}`, 'Movie');
         return 'added';
       }
@@ -618,6 +639,9 @@ export class ScannerService {
       const showTitle = this.parseTitleFromFilename(showDirName);
       const showYear = this.parseYearFromFilename(showDirName) ?? undefined;
 
+      console.log(`[Scanner Debug] filePath: ${filePath}`);
+      console.log(`[Scanner Debug] showDirName: "${showDirName}", showTitle: "${showTitle}", showYear: ${showYear}`);
+
       // ── 1. Find or create show in media_items ──────────────────
       let showRow = db.prepare(`
         SELECT id, title, tmdb_id FROM media_items WHERE type='Show' AND (
@@ -625,7 +649,9 @@ export class ScannerService {
         ) AND deleted_at IS NULL LIMIT 1
       `).get(showTitle, showDirName) as any;
 
-      let showId: string;
+      console.log(`[Scanner Debug] showRow found:`, showRow);
+
+      let showId: string | undefined = undefined;
       let tmdbShowId: string | null = null;
 
       if (!showRow) {
@@ -639,12 +665,22 @@ export class ScannerService {
         const displayTitle = tmdbShow?.name || showTitle;
         tmdbShowId = tmdbShow?.id?.toString() || null;
 
-        showId = uuidv4();
-        db.prepare(`
-          INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id)
-          VALUES (?, ?, 'Show', ?, ?, ?, ?, ?, ?)
-        `).run(showId, displayTitle, plot, year, genre, posterUrl, fanartUrl, tmdbShowId);
-        console.log(`[Scanner] Created show: ${displayTitle}`);
+        // Before inserting, check if a show with this tmdb_id already exists!
+        if (tmdbShowId) {
+          const existingTmdbShow = db.prepare('SELECT id FROM media_items WHERE type=\'Show\' AND tmdb_id=? AND deleted_at IS NULL').get(tmdbShowId) as any;
+          if (existingTmdbShow) {
+            showId = existingTmdbShow.id;
+          }
+        }
+
+        if (!showId) {
+          showId = uuidv4();
+          db.prepare(`
+            INSERT INTO media_items (id, title, type, plot, year, genre, poster_path, fanart_path, tmdb_id)
+            VALUES (?, ?, 'Show', ?, ?, ?, ?, ?, ?)
+          `).run(showId, displayTitle, plot, year, genre, posterUrl, fanartUrl, tmdbShowId);
+          console.log(`[Scanner] Created show: ${displayTitle}`);
+        }
 
         // Fetch full show data to store seasons metadata
         if (tmdbShowId) {
@@ -653,13 +689,19 @@ export class ScannerService {
             if (fullShow?.external_ids?.imdb_id) {
               db.prepare(`UPDATE media_items SET imdb_id = ? WHERE id = ?`).run(fullShow.external_ids.imdb_id, showId);
             }
-            if (fullShow?.number_of_seasons) {
+            if (fullShow) {
               const upsertShowMeta = (key: string, val: string) => {
                 db.prepare(`INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
                   VALUES (?,?,?,?) ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value`)
                   .run(uuidv4(), showId, key, val);
               };
-              upsertShowMeta('number_of_seasons', String(fullShow.number_of_seasons));
+              if (fullShow.number_of_seasons) upsertShowMeta('number_of_seasons', String(fullShow.number_of_seasons));
+              if (fullShow.status) upsertShowMeta('status', fullShow.status);
+              if (fullShow.next_episode_to_air) upsertShowMeta('next_episode_to_air', JSON.stringify(fullShow.next_episode_to_air));
+              if (fullShow.vote_average != null) {
+                upsertShowMeta('tmdb_rating', String(fullShow.vote_average));
+                upsertShowMeta('ratings', JSON.stringify({ tmdb: fullShow.vote_average, tmdb_votes: fullShow.vote_count }));
+              }
               if (fullShow.seasons?.length) {
                 const seasonsData = fullShow.seasons.map((s: any) => ({
                   season_number: s.season_number,
@@ -682,11 +724,43 @@ export class ScannerService {
       // ── 2. Probe file for audio/subtitle tracks ────────────────
       const probeResult = await this.probeMediaFile(filePath);
 
-      // ── 3. Look up TMDB episode title if available ─────────────
+      // ── 3. Check if episode already exists to avoid unnecessary TMDB lookups
+      const existing = db.prepare(`
+        SELECT id, file_path FROM episodes WHERE show_id = ? AND season_number = ? AND episode_number = ?
+      `).get(showId, season, episodeNum) as any;
+
+      let episodeId: string;
+
+      if (existing) {
+        episodeId = existing.id;
+        
+        // Update file path if it changed
+        if (existing.file_path !== filePath) {
+          db.prepare(`UPDATE episodes SET file_path = ? WHERE id = ?`).run(filePath, episodeId);
+        }
+
+        // Always update track metadata in case the file was replaced or probed differently
+        if (probeResult.audioTracks.length > 0 || probeResult.subtitleTracks.length > 0) {
+          const upsertEpMeta = (key: string, val: string) => {
+            db.prepare(`
+              INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+            `).run(uuidv4(), showId, `ep_${episodeId}_${key}`, val);
+          };
+          if (probeResult.audioTracks.length > 0) upsertEpMeta('audio_tracks', JSON.stringify(probeResult.audioTracks));
+          if (probeResult.subtitleTracks.length > 0) upsertEpMeta('subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+        }
+
+        return existing.file_path === filePath ? 'skipped' : 'updated';
+      }
+
+      // ── 4. Look up TMDB episode title if available (ONLY FOR NEW EPISODES)
       let episodeTitle: string | null = null;
       let episodeAirDate: string | null = null;
       let episodeOverview: string | null = null;
       let episodeStillPath: string | null = null;
+      let episodeGuestStars: any[] | null = null;
       if (tmdbShowId) {
         try {
           const apiKey = (db.prepare("SELECT value FROM system_settings WHERE key='TMDB_API_KEY'").get() as any)?.value;
@@ -702,6 +776,14 @@ export class ScannerService {
             if (epResp.data?.still_path) {
               episodeStillPath = tmdbService.getImageUrl(epResp.data.still_path, 'w500');
             }
+            if (epResp.data?.guest_stars?.length) {
+              episodeGuestStars = epResp.data.guest_stars.map((g: any) => ({
+                id: String(g.id),
+                name: g.name,
+                character: g.character || '',
+                profile_path: g.profile_path ? tmdbService.getImageUrl(g.profile_path, 'w185') : null
+              }));
+            }
             // Fallback overview in English if missing
             if (!episodeOverview && prefLang !== 'en-US') {
               try {
@@ -716,51 +798,25 @@ export class ScannerService {
         } catch (_) {}
       }
 
-      // ── 4. Upsert episode ─────────────────────────────────────
-      const existing = db.prepare(`
-        SELECT id FROM episodes WHERE show_id = ? AND season_number = ? AND episode_number = ?
-      `).get(showId, season, episodeNum) as any;
+      // ── 5. Insert new episode ─────────────────────────────────────
+      episodeId = uuidv4();
+      db.prepare(`
+        INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate, episodeOverview, episodeStillPath);
+      console.log(`[Scanner] Added S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')} of ${showDirName}`);
 
-      let episodeId: string;
-      if (existing) {
-        db.prepare(`UPDATE episodes SET file_path = ?, title = COALESCE(?, title), air_date = COALESCE(?, air_date), overview = COALESCE(?, overview), still_path = COALESCE(?, still_path) WHERE id = ?`)
-          .run(filePath, episodeTitle, episodeAirDate, episodeOverview, episodeStillPath, existing.id);
-        episodeId = existing.id;
-
-        // Update track metadata
-        if (probeResult.audioTracks.length > 0 || probeResult.subtitleTracks.length > 0) {
-          const upsertEpMeta = (key: string, val: string) => {
-            db.prepare(`
-              INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-            `).run(uuidv4(), showId, `ep_${episodeId}_${key}`, val);
-          };
-          if (probeResult.audioTracks.length > 0) upsertEpMeta('audio_tracks', JSON.stringify(probeResult.audioTracks));
-          if (probeResult.subtitleTracks.length > 0) upsertEpMeta('subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
-        }
-
-        triggerChapterScan(filePath, null, episodeId);
-        emitScanEvent('item_updated', `Uppdaterad: ${showDirName} S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')}`, 'Show');
-        return 'updated';
-      } else {
-        episodeId = uuidv4();
+      // Store track metadata on the show's media_item
+      const upsertEpMeta = (key: string, val: string) => {
         db.prepare(`
-          INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate, episodeOverview, episodeStillPath);
-        console.log(`[Scanner] Added S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')} of ${showDirName}`);
-
-        // Store track metadata on the show's media_item
-        const upsertEpMeta = (key: string, val: string) => {
-          db.prepare(`
-            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-          `).run(uuidv4(), showId, `ep_${episodeId}_${key}`, val);
-        };
-        if (probeResult.audioTracks.length > 0) upsertEpMeta('audio_tracks', JSON.stringify(probeResult.audioTracks));
-        if (probeResult.subtitleTracks.length > 0) upsertEpMeta('subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+        `).run(uuidv4(), showId, `ep_${episodeId}_${key}`, val);
+      };
+      if (probeResult.audioTracks.length > 0) upsertEpMeta('audio_tracks', JSON.stringify(probeResult.audioTracks));
+      if (probeResult.subtitleTracks.length > 0) upsertEpMeta('subtitle_tracks', JSON.stringify(probeResult.subtitleTracks));
+      if (episodeGuestStars) upsertEpMeta('guest_stars', JSON.stringify(episodeGuestStars));
 
         // Mark show as having a season premiere if this is E01 of a new season (season > 1)
         if (episodeNum === 1 && season > 1) {
@@ -776,7 +832,6 @@ export class ScannerService {
 
         triggerChapterScan(filePath, null, episodeId);
         return 'added';
-      }
     } catch (e) {
       console.error(`[Scanner] Error processing episode ${filePath}:`, e);
       emitScanEvent('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Show');
@@ -926,12 +981,20 @@ export class ScannerService {
    * Helper to extract a clean title from a typical piracy filename like "The.Matrix.1999.1080p.mkv"
    */
   private parseTitleFromFilename(filename: string): string {
-    // Remove year and anything after it
-    let title = filename.replace(/\.(19|20)\d{2}\..*/i, '');
-    // Remove common quality tags
-    title = title.replace(/\b(1080p|720p|2160p|4k|bluray|webrip|x264|x265)\b.*/i, '');
-    // Replace dots with spaces
+    const info = ptt.parse(filename);
+    if (info.title) {
+       let title = info.title;
+       title = title.replace(/\s*[\(\[]?(19|20)\d{2}[\)\]]?\s*$/i, '');
+       return title.trim();
+    }
+    
+    // Fallback
+    let title = filename;
+    title = title.replace(/[\.\s]*\b(1080p|720p|2160p|4k|bluray|webrip|x264|x265|h264|hevc)\b.*/i, '');
+    title = title.replace(/\.(19|20)\d{2}\..*/i, '');
+    title = title.replace(/\s*[\(\[]?(19|20)\d{2}[\)\]]?\s*$/i, '');
     title = title.replace(/\./g, ' ');
+    
     return title.trim();
   }
 
@@ -939,6 +1002,12 @@ export class ScannerService {
    * Helper to extract year from filename
    */
   private parseYearFromFilename(filename: string): number | null {
+    const info = ptt.parse(filename);
+    if (info.year) {
+      return info.year;
+    }
+    
+    // Fallback
     const match = filename.match(/\b(19|20)\d{2}\b/);
     if (match) {
       return parseInt(match[0], 10);

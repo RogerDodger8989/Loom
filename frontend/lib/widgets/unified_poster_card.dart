@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
@@ -407,6 +408,54 @@ class _UnifiedPosterCardState extends State<UnifiedPosterCard> {
                         ),
 
                       // Selection checkbox restored to top-right (no resolution badge here)
+
+                      // Next Episode to Air (bottom)
+                      Builder(builder: (context) {
+                        final nextEpisodeRaw = metadata['next_episode_to_air'];
+                        final nextEpisodeToAir = nextEpisodeRaw is Map
+                            ? nextEpisodeRaw
+                            : (nextEpisodeRaw is String && nextEpisodeRaw.isNotEmpty)
+                                ? (() { try { return jsonDecode(nextEpisodeRaw) as Map; } catch (_) { return null; } })()
+                                : null;
+                        
+                        if (nextEpisodeToAir == null || type != 'Show') return const SizedBox.shrink();
+
+                        final progress = int.tryParse((metadata['playback_progress']?.toString() ?? '0')) ?? 0;
+                        final hasProgressBar = progress > 0;
+
+                        return Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: hasProgressBar ? 6 : 0,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.8),
+                              border: Border(top: BorderSide(color: const Color(0xFF8A5BFF).withValues(alpha: 0.5), width: 1)),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.calendar_today_outlined, size: 10, color: Color(0xFFB593FF)),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    'Nästa: S${nextEpisodeToAir['season_number']}E${nextEpisodeToAir['episode_number']} (${nextEpisodeToAir['air_date'] ?? 'Okänt datum'})',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
 
                       // Progress bar (bottom)
                       Builder(builder: (context) {

@@ -8,6 +8,7 @@ import '../utils/platform_view_registry.dart' as ui_web;
 import '../services/api.dart';
 import '../screens/fix_match_dialog.dart';
 import '../screens/media_info_dialog.dart';
+import '../widgets/merge_media_dialog.dart';
 
 class MediaActionsHelper {
   final BuildContext context;
@@ -123,6 +124,7 @@ class MediaActionsHelper {
       ],
       const PopupMenuItem(value: 'refresh', child: Text('Uppdatera metadata')),
       if (!isShow) const PopupMenuItem(value: 'analyze', child: Text('Analysera')),
+      if (isShow) const PopupMenuItem(value: 'merge', child: Text('Slå ihop serie')),
       const PopupMenuItem(value: 'edit', child: Text('Redigera')),
       const PopupMenuItem(value: 'fix_match', child: Text('Fixa matchning')),
       const PopupMenuItem(value: 'unmatch', child: Text('Ta bort matchning')),
@@ -207,6 +209,18 @@ class MediaActionsHelper {
         break;
       case 'analyze':
         await apiService.analyzeMediaItem(itemId);
+        break;
+      case 'merge':
+        if (!context.mounted) break;
+        await showDialog(
+          context: context,
+          barrierDismissible: true,
+          builder: (_) => MergeMediaDialog(
+            sourceShow: item,
+            apiService: apiService,
+            onMergeSuccess: () => onRefresh(),
+          ),
+        );
         break;
       case 'fix_match':
         if (!context.mounted) break;

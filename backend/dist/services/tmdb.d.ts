@@ -101,6 +101,6 @@ export declare class TMDBService {
     /**
      * Helper to convert a TMDB image path to a full URL
      */
-    getImageUrl(path: string | null, size?: 'w500' | 'original'): string | null;
+    getImageUrl(path: string | null, size?: 'w185' | 'w342' | 'w500' | 'original'): string | null;
 }
 export declare const tmdbService: TMDBService;

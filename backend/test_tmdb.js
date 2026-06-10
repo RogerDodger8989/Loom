@@ -1,0 +1,1 @@
+const axios = require('axios'); async function test() { const r = await axios.get('https://api.themoviedb.org/3/tv/124364?api_key=89d7059dfbdc289fc3c695c5d877436f'); console.log(r.data.next_episode_to_air); } test();

@@ -540,7 +540,7 @@ export class TMDBService {
   /**
    * Helper to convert a TMDB image path to a full URL
    */
-  public getImageUrl(path: string | null, size: 'w500' | 'original' = 'w500'): string | null {
+  public getImageUrl(path: string | null, size: 'w185' | 'w342' | 'w500' | 'original' = 'w500'): string | null {
     if (!path) return null;
     return `https://image.tmdb.org/t/p/${size}${path}`;
   }

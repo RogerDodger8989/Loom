@@ -78,7 +78,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const { id } = request.params;
       let item = db.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id) as any;
-      if (!item) item = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(id) as any;
+      if (!item) item = db.prepare('SELECT file_path, show_id FROM episodes WHERE id = ?').get(id) as any;
       if (!item || !item.file_path || !fs.existsSync(item.file_path)) {
         return reply.code(404).send({ error: 'File missing' });
       }
@@ -94,7 +94,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       let item = db.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id) as any;
-      if (!item) item = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(id) as any;
+      if (!item) item = db.prepare('SELECT file_path, show_id FROM episodes WHERE id = ?').get(id) as any;
       if (!item || !item.file_path || !fs.existsSync(item.file_path)) {
         return reply.code(404).send({ error: 'File missing' });
       }
@@ -145,7 +145,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       const startSec = Math.max(0, parseInt(request.query.start || '0', 10));
 
       let item = db.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id) as any;
-      if (!item) item = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(id) as any;
+      if (!item) item = db.prepare('SELECT file_path, show_id FROM episodes WHERE id = ?').get(id) as any;
       if (!item || !fs.existsSync(item.file_path)) return reply.code(404).send('Not found');
 
       reply.header('Content-Type', 'video/mp4');
@@ -176,7 +176,9 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
         const subIndexNum = parseInt(subtitleIndex, 10);
         let isText = true;
         try {
-          const subMeta = db.prepare('SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?').get(id, 'subtitle_tracks') as any;
+          const subMeta = item.show_id
+            ? db.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?`).get(item.show_id, `ep_${id}_subtitle_tracks`) as any
+            : db.prepare('SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?').get(id, 'subtitle_tracks') as any;
           if (subMeta && subMeta.metadata_value) {
             const tracks = JSON.parse(subMeta.metadata_value);
             relativeIndex = tracks.findIndex((t: any) => t.index === subIndexNum);
@@ -266,7 +268,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       const subtitleIndex = request.query.subtitleIndex || 'none';
 
       let item = db.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id) as any;
-      if (!item) item = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(id) as any;
+      if (!item) item = db.prepare('SELECT file_path, show_id FROM episodes WHERE id = ?').get(id) as any;
       if (!item || !fs.existsSync(item.file_path)) return reply.code(404).send('Not found');
 
       try {
@@ -305,7 +307,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       const subtitleIndex = request.query.subtitleIndex || 'none';
 
       let item = db.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id) as any;
-      if (!item) item = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(id) as any;
+      if (!item) item = db.prepare('SELECT file_path, show_id FROM episodes WHERE id = ?').get(id) as any;
       if (!item || !fs.existsSync(item.file_path)) return reply.code(404).send('Not found');
 
       const sessionId = `hls_dynamic_${id}_${bitrate}_${subtitleIndex}`;
@@ -352,7 +354,9 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
         let isText = true;
         let relativeIndex = 0;
         try {
-          const subMeta = db.prepare('SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?').get(id, 'subtitle_tracks') as any;
+          const subMeta = item.show_id
+            ? db.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?`).get(item.show_id, `ep_${id}_subtitle_tracks`) as any
+            : db.prepare('SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?').get(id, 'subtitle_tracks') as any;
           if (subMeta && subMeta.metadata_value) {
             const tracks = JSON.parse(subMeta.metadata_value);
             relativeIndex = tracks.findIndex((t: any) => t.index === subIndexNum);
@@ -426,7 +430,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       let item = db.prepare('SELECT file_path FROM media_items WHERE id = ? AND deleted_at IS NULL').get(id) as any;
-      if (!item) item = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(id) as any;
+      if (!item) item = db.prepare('SELECT file_path, show_id FROM episodes WHERE id = ?').get(id) as any;
       if (!item || !fs.existsSync(item.file_path)) {
         return reply.code(404).send({ error: 'Not found' });
       }

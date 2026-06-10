@@ -605,6 +605,17 @@ class ApiService {
     }
   }
 
+  Future<void> mergeMediaItems(String sourceId, String targetId) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/media/items/$sourceId/merge'),
+      headers: _token != null ? {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'} : {'Content-Type': 'application/json'},
+      body: jsonEncode({'targetId': targetId}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to merge media items: ${response.body}');
+    }
+  }
+
   Future<List<dynamic>> fetchImdbCalendar(String start, {int days = 90}) async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/calendar/imdb?start=$start&days=$days'),

@@ -1035,6 +1035,11 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
               watch_status: mergedWatchStatus,
               playback_progress: mergedProgress,
               'watch/providers': tmdbData['watch/providers'] || null,
+              status: tmdbData.status,
+              next_episode_to_air: tmdbData.next_episode_to_air,
+              last_air_date: tmdbData.last_air_date,
+              number_of_seasons: tmdbData.number_of_seasons,
+              number_of_episodes: tmdbData.number_of_episodes,
             };
 
             return reply.send({
@@ -1226,6 +1231,37 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
               upsertMeta('trailer_url', tmdbData.trailer_url);
             }
 
+            if (isShowType) {
+              if (tmdbData.next_episode_to_air) {
+                metadata.next_episode_to_air = tmdbData.next_episode_to_air;
+                upsertMeta('next_episode_to_air', JSON.stringify(tmdbData.next_episode_to_air));
+              } else {
+                // If it no longer has a next episode, we should remove it or set it to null
+                metadata.next_episode_to_air = null;
+                db.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'next_episode_to_air'`).run(movie.id);
+              }
+
+              if (tmdbData.last_air_date) {
+                metadata.last_air_date = tmdbData.last_air_date;
+                upsertMeta('last_air_date', tmdbData.last_air_date);
+              }
+              
+              if (tmdbData.status) {
+                metadata.status = tmdbData.status;
+                upsertMeta('status', tmdbData.status);
+              }
+              
+              if (tmdbData.number_of_seasons) {
+                metadata.number_of_seasons = tmdbData.number_of_seasons;
+                upsertMeta('number_of_seasons', tmdbData.number_of_seasons.toString());
+              }
+              
+              if (tmdbData.number_of_episodes) {
+                metadata.number_of_episodes = tmdbData.number_of_episodes;
+                upsertMeta('number_of_episodes', tmdbData.number_of_episodes.toString());
+              }
+            }
+
             const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
             if (imdbId) {
               const omdbKey = tmdbService.getSetting('OMDB_API_KEY');
@@ -1347,7 +1383,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           type: movie.type,
           plot: movie.plot,
           year: movie.year,
-          genre: movie.genre || metadata.genre || 'Movie',
+          genre: movie.genre || metadata.genre || (movie.type === 'Show' ? 'Show' : 'Movie'),
           poster_path: movie.poster_path,
           fanart_path: movie.fanart_path,
           tmdb_id: movie.tmdb_id,
@@ -1367,12 +1403,19 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
                        e.overview, e.still_path,
                        COALESCE(wh.is_watched, 0) as is_watched,
                        COALESCE(wh.last_position_seconds, 0) as playback_progress,
-                       COALESCE(wh.total_duration_seconds, 0) as duration
+                       COALESCE(wh.total_duration_seconds, 0) as duration,
+                       (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_guest_stars') as guest_stars,
+                       (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_subtitle_tracks') as subtitle_tracks,
+                       (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_audio_tracks') as audio_tracks
                 FROM episodes e
                 LEFT JOIN watch_history wh ON wh.episode_id = e.id AND wh.user_id = ?
                 WHERE e.show_id = ? AND (e.deleted_at IS NULL OR e.deleted_at = '')
                 ORDER BY e.season_number ASC, e.episode_number ASC
-              `).all(user.id, movie.id)
+              `).all(user.id, movie.id).map((ep: any) => ({
+                ...ep,
+                subtitle_tracks: (() => { try { return ep.subtitle_tracks ? JSON.parse(ep.subtitle_tracks) : []; } catch { return []; } })(),
+                audio_tracks: (() => { try { return ep.audio_tracks ? JSON.parse(ep.audio_tracks) : []; } catch { return []; } })()
+              }))
             : undefined,
           versions: (() => {
             try {
@@ -1467,7 +1510,8 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
                    e.still_path, e.overview,
                    COALESCE(wh.is_watched, 0) as is_watched,
                    COALESCE(wh.last_position_seconds, 0) as playback_progress,
-                   COALESCE(wh.total_duration_seconds, 0) as duration
+                   COALESCE(wh.total_duration_seconds, 0) as duration,
+                   (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_guest_stars') as guest_stars
             FROM episodes e
             LEFT JOIN watch_history wh ON wh.episode_id = e.id AND wh.user_id = ?
             WHERE e.show_id = ? AND (e.deleted_at IS NULL OR e.deleted_at = '')
@@ -2451,6 +2495,57 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
       } catch (err: any) {
         console.error(err);
         return reply.code(500).send({ error: 'Failed to analyze media item', details: err.message });
+      }
+    }
+  );
+
+  // POST /api/media/items/:id/merge
+  fastify.post(
+    '/api/media/items/:id/merge',
+    async (request: FastifyRequest<{ Params: { id: string }; Body: { targetId: string } }>, reply: FastifyReply) => {
+      const { id } = request.params;
+      const { targetId } = request.body;
+
+      if (!targetId || id === targetId) {
+        return reply.code(400).send({ error: 'Ogiltigt mål-id' });
+      }
+
+      try {
+        const sourceShow = db.prepare(`SELECT id, type FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id) as any;
+        const targetShow = db.prepare(`SELECT id, type FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(targetId) as any;
+
+        if (!sourceShow || !targetShow || sourceShow.type !== 'Show' || targetShow.type !== 'Show') {
+          return reply.code(404).send({ error: 'En eller båda serierna hittades inte, eller är inte av typen Show' });
+        }
+
+        // Get all episodes from source
+        const sourceEpisodes = db.prepare(`SELECT id, season_number, episode_number FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).all(sourceShow.id) as any[];
+
+        for (const ep of sourceEpisodes) {
+          // Check if target already has this episode
+          const conflict = db.prepare(`
+            SELECT id FROM episodes WHERE show_id = ? AND season_number = ? AND episode_number = ? AND deleted_at IS NULL
+          `).get(targetShow.id, ep.season_number, ep.episode_number) as any;
+
+          if (conflict) {
+            // Hard delete source episode and its metadata
+            db.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key LIKE ?`).run(sourceShow.id, `ep_${ep.id}_%`);
+            db.prepare(`DELETE FROM episodes WHERE id = ?`).run(ep.id);
+          } else {
+            // Move source episode and its metadata to target
+            db.prepare(`UPDATE media_metadata SET media_item_id = ? WHERE media_item_id = ? AND metadata_key LIKE ?`).run(targetShow.id, sourceShow.id, `ep_${ep.id}_%`);
+            db.prepare(`UPDATE episodes SET show_id = ? WHERE id = ?`).run(targetShow.id, ep.id);
+          }
+        }
+
+        // Hard delete the source show and its remaining metadata
+        db.prepare(`DELETE FROM media_metadata WHERE media_item_id = ?`).run(sourceShow.id);
+        db.prepare(`DELETE FROM media_items WHERE id = ?`).run(sourceShow.id);
+
+        return reply.send({ success: true, message: 'Serien slogs ihop framgångsrikt' });
+      } catch (err: any) {
+        console.error('[Merge] Error:', err);
+        return reply.code(500).send({ error: 'Kunde inte slå ihop serierna', details: err.message });
       }
     }
   );

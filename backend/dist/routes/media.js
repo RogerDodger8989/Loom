@@ -922,6 +922,11 @@ async function mediaRoutes(fastify) {
                         watch_status: mergedWatchStatus,
                         playback_progress: mergedProgress,
                         'watch/providers': tmdbData['watch/providers'] || null,
+                        status: tmdbData.status,
+                        next_episode_to_air: tmdbData.next_episode_to_air,
+                        last_air_date: tmdbData.last_air_date,
+                        number_of_seasons: tmdbData.number_of_seasons,
+                        number_of_episodes: tmdbData.number_of_episodes,
                     };
                     return reply.send({
                         id: id,
@@ -1095,6 +1100,33 @@ async function mediaRoutes(fastify) {
                         metadata.trailer_url = tmdbData.trailer_url;
                         upsertMeta('trailer_url', tmdbData.trailer_url);
                     }
+                    if (isShowType) {
+                        if (tmdbData.next_episode_to_air) {
+                            metadata.next_episode_to_air = tmdbData.next_episode_to_air;
+                            upsertMeta('next_episode_to_air', JSON.stringify(tmdbData.next_episode_to_air));
+                        }
+                        else {
+                            // If it no longer has a next episode, we should remove it or set it to null
+                            metadata.next_episode_to_air = null;
+                            database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key = 'next_episode_to_air'`).run(movie.id);
+                        }
+                        if (tmdbData.last_air_date) {
+                            metadata.last_air_date = tmdbData.last_air_date;
+                            upsertMeta('last_air_date', tmdbData.last_air_date);
+                        }
+                        if (tmdbData.status) {
+                            metadata.status = tmdbData.status;
+                            upsertMeta('status', tmdbData.status);
+                        }
+                        if (tmdbData.number_of_seasons) {
+                            metadata.number_of_seasons = tmdbData.number_of_seasons;
+                            upsertMeta('number_of_seasons', tmdbData.number_of_seasons.toString());
+                        }
+                        if (tmdbData.number_of_episodes) {
+                            metadata.number_of_episodes = tmdbData.number_of_episodes;
+                            upsertMeta('number_of_episodes', tmdbData.number_of_episodes.toString());
+                        }
+                    }
                     const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
                     if (imdbId) {
                         const omdbKey = tmdb_1.tmdbService.getSetting('OMDB_API_KEY');
@@ -1211,7 +1243,7 @@ async function mediaRoutes(fastify) {
                 type: movie.type,
                 plot: movie.plot,
                 year: movie.year,
-                genre: movie.genre || metadata.genre || 'Movie',
+                genre: movie.genre || metadata.genre || (movie.type === 'Show' ? 'Show' : 'Movie'),
                 poster_path: movie.poster_path,
                 fanart_path: movie.fanart_path,
                 tmdb_id: movie.tmdb_id,
@@ -1231,12 +1263,29 @@ async function mediaRoutes(fastify) {
                        e.overview, e.still_path,
                        COALESCE(wh.is_watched, 0) as is_watched,
                        COALESCE(wh.last_position_seconds, 0) as playback_progress,
-                       COALESCE(wh.total_duration_seconds, 0) as duration
+                       COALESCE(wh.total_duration_seconds, 0) as duration,
+                       (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_guest_stars') as guest_stars,
+                       (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_subtitle_tracks') as subtitle_tracks,
+                       (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_audio_tracks') as audio_tracks
                 FROM episodes e
                 LEFT JOIN watch_history wh ON wh.episode_id = e.id AND wh.user_id = ?
                 WHERE e.show_id = ? AND (e.deleted_at IS NULL OR e.deleted_at = '')
                 ORDER BY e.season_number ASC, e.episode_number ASC
-              `).all(user.id, movie.id)
+              `).all(user.id, movie.id).map((ep) => ({
+                        ...ep,
+                        subtitle_tracks: (() => { try {
+                            return ep.subtitle_tracks ? JSON.parse(ep.subtitle_tracks) : [];
+                        }
+                        catch {
+                            return [];
+                        } })(),
+                        audio_tracks: (() => { try {
+                            return ep.audio_tracks ? JSON.parse(ep.audio_tracks) : [];
+                        }
+                        catch {
+                            return [];
+                        } })()
+                    }))
                     : undefined,
                 versions: (() => {
                     try {
@@ -1319,7 +1368,8 @@ async function mediaRoutes(fastify) {
                    e.still_path, e.overview,
                    COALESCE(wh.is_watched, 0) as is_watched,
                    COALESCE(wh.last_position_seconds, 0) as playback_progress,
-                   COALESCE(wh.total_duration_seconds, 0) as duration
+                   COALESCE(wh.total_duration_seconds, 0) as duration,
+                   (SELECT metadata_value FROM media_metadata WHERE media_item_id = e.show_id AND metadata_key = 'ep_' || e.id || '_guest_stars') as guest_stars
             FROM episodes e
             LEFT JOIN watch_history wh ON wh.episode_id = e.id AND wh.user_id = ?
             WHERE e.show_id = ? AND (e.deleted_at IS NULL OR e.deleted_at = '')
@@ -2204,18 +2254,83 @@ async function mediaRoutes(fastify) {
             return reply.code(500).send({ error: 'Failed to analyze media item', details: err.message });
         }
     });
+    // POST /api/media/items/:id/merge
+    fastify.post('/api/media/items/:id/merge', async (request, reply) => {
+        const { id } = request.params;
+        const { targetId } = request.body;
+        if (!targetId || id === targetId) {
+            return reply.code(400).send({ error: 'Ogiltigt mål-id' });
+        }
+        try {
+            const sourceShow = database_1.default.prepare(`SELECT id, type FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
+            const targetShow = database_1.default.prepare(`SELECT id, type FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(targetId);
+            if (!sourceShow || !targetShow || sourceShow.type !== 'Show' || targetShow.type !== 'Show') {
+                return reply.code(404).send({ error: 'En eller båda serierna hittades inte, eller är inte av typen Show' });
+            }
+            // Get all episodes from source
+            const sourceEpisodes = database_1.default.prepare(`SELECT id, season_number, episode_number FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).all(sourceShow.id);
+            for (const ep of sourceEpisodes) {
+                // Check if target already has this episode
+                const conflict = database_1.default.prepare(`
+            SELECT id FROM episodes WHERE show_id = ? AND season_number = ? AND episode_number = ? AND deleted_at IS NULL
+          `).get(targetShow.id, ep.season_number, ep.episode_number);
+                if (conflict) {
+                    // Hard delete source episode and its metadata
+                    database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ? AND metadata_key LIKE ?`).run(sourceShow.id, `ep_${ep.id}_%`);
+                    database_1.default.prepare(`DELETE FROM episodes WHERE id = ?`).run(ep.id);
+                }
+                else {
+                    // Move source episode and its metadata to target
+                    database_1.default.prepare(`UPDATE media_metadata SET media_item_id = ? WHERE media_item_id = ? AND metadata_key LIKE ?`).run(targetShow.id, sourceShow.id, `ep_${ep.id}_%`);
+                    database_1.default.prepare(`UPDATE episodes SET show_id = ? WHERE id = ?`).run(targetShow.id, ep.id);
+                }
+            }
+            // Hard delete the source show and its remaining metadata
+            database_1.default.prepare(`DELETE FROM media_metadata WHERE media_item_id = ?`).run(sourceShow.id);
+            database_1.default.prepare(`DELETE FROM media_items WHERE id = ?`).run(sourceShow.id);
+            return reply.send({ success: true, message: 'Serien slogs ihop framgångsrikt' });
+        }
+        catch (err) {
+            console.error('[Merge] Error:', err);
+            return reply.code(500).send({ error: 'Kunde inte slå ihop serierna', details: err.message });
+        }
+    });
     // GET /api/media/collections/:collectionId
     fastify.get('/api/media/collections/:collectionId', async (request, reply) => {
         const { collectionId } = request.params;
         try {
             // Library items in this collection
             const libraryItems = database_1.default.prepare(`
-          SELECT id, title, year, poster_path, tmdb_id
+          SELECT id, title, year, poster_path, tmdb_id, is_favorite
           FROM media_items
           WHERE collection_id = ? AND deleted_at IS NULL
           ORDER BY COALESCE(year, 9999) ASC
         `).all(collectionId);
-            const libraryByTmdbId = new Map(libraryItems.map(i => [i.tmdb_id?.toString(), i]));
+            const itemIds = libraryItems.map(i => i.id);
+            const metadataRows = itemIds.length > 0
+                ? database_1.default.prepare(`
+              SELECT media_item_id, metadata_key, metadata_value
+              FROM media_metadata
+              WHERE media_item_id IN (${itemIds.map(() => '?').join(',')})
+            `).all(...itemIds)
+                : [];
+            const libraryByTmdbId = new Map();
+            for (const i of libraryItems) {
+                const tmdbStr = i.tmdb_id?.toString();
+                if (!tmdbStr)
+                    continue;
+                const meta = metadataRows.filter(m => m.media_item_id === i.id).reduce((acc, curr) => {
+                    acc[curr.metadata_key] = curr.metadata_value;
+                    return acc;
+                }, {});
+                if (!libraryByTmdbId.has(tmdbStr)) {
+                    libraryByTmdbId.set(tmdbStr, { ...i, metadata: meta, versions: [] });
+                }
+                libraryByTmdbId.get(tmdbStr).versions.push({
+                    id: i.id,
+                    resolution: meta.resolution || meta.video_resolution || meta.quality || null
+                });
+            }
             // Fetch full collection from TMDB
             const tmdbKey = database_1.default.prepare(`SELECT value FROM system_settings WHERE key='TMDB_API_KEY'`).get()?.value;
             let allParts = [];
@@ -2253,6 +2368,9 @@ async function mediaRoutes(fastify) {
                     poster_path: posterPath,
                     in_library: !!libItem,
                     release_date: part.release_date ?? null,
+                    is_favorite: libItem?.is_favorite === 1,
+                    metadata: libItem?.metadata ?? null,
+                    versions: libItem?.versions ?? [],
                 };
             });
             return reply.send({ collectionId, collectionName, items });
@@ -2262,13 +2380,28 @@ async function mediaRoutes(fastify) {
             return reply.code(500).send({ error: 'Failed to fetch collection items', details: error.message });
         }
     });
-    // GET /api/media/:id/similar — Get similar/recommended movies from library
+    // GET /api/media/:id/similar - Get similar/recommended media from TMDB (both in library and not)
     fastify.get('/api/media/:id/similar', async (request, reply) => {
         const { id } = request.params;
         try {
-            const movie = database_1.default.prepare(`SELECT tmdb_id, title FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
-            if (!movie || !movie.tmdb_id) {
-                return reply.code(404).send({ error: 'Movie not found or no TMDB ID' });
+            let movieTmdbId;
+            let movieType;
+            if (id.startsWith('external_')) {
+                const match = id.match(/^external_(movie|show)_(.+)$/);
+                if (match) {
+                    movieType = match[1] === 'show' ? 'Show' : 'Movie';
+                    movieTmdbId = match[2];
+                }
+            }
+            else {
+                const movie = database_1.default.prepare(`SELECT tmdb_id, type FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
+                if (movie && movie.tmdb_id) {
+                    movieTmdbId = movie.tmdb_id;
+                    movieType = movie.type;
+                }
+            }
+            if (!movieTmdbId) {
+                return reply.code(404).send({ error: 'Media not found or no TMDB ID' });
             }
             // Fetch similar movies from TMDB
             const apiKey = database_1.default.prepare(`SELECT value FROM system_settings WHERE key = 'TMDB_API_KEY'`).get();
@@ -2277,7 +2410,8 @@ async function mediaRoutes(fastify) {
             }
             let similarMovies = [];
             try {
-                const response = await axios_1.default.get(`https://api.themoviedb.org/3/movie/${movie.tmdb_id}/similar`, {
+                const endpoint = movieType === 'Show' ? 'tv' : 'movie';
+                const response = await axios_1.default.get(`https://api.themoviedb.org/3/${endpoint}/${movieTmdbId}/recommendations`, {
                     params: {
                         api_key: apiKey.value,
                         language: 'sv-SE'
@@ -2286,32 +2420,70 @@ async function mediaRoutes(fastify) {
                 similarMovies = response.data.results || [];
             }
             catch (tmdbErr) {
-                request.log.warn('Failed to fetch similar movies from TMDB:', tmdbErr.message);
+                request.log.warn(`Failed to fetch similar ${movieType}s from TMDB:`, tmdbErr.message);
                 return reply.send({ id, items: [] });
             }
-            // Filter to only items in library. Prefer TMDB ID, fall back to title match.
             const normalizedSimilar = similarMovies.map((m) => ({
-                id: m.id,
-                title: (m.title || '').toString().trim().toLowerCase(),
+                tmdb_id: m.id,
+                title: m.title || m.name || '',
+                year: m.release_date ? new Date(m.release_date).getFullYear() : (m.first_air_date ? new Date(m.first_air_date).getFullYear() : null),
+                poster_path: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null,
+                overview: m.overview || '',
             }));
             if (normalizedSimilar.length === 0) {
                 return reply.send({ id, items: [] });
             }
-            const tmdbIds = normalizedSimilar.map((m) => m.id).filter(Boolean);
-            const libraryRows = database_1.default.prepare(`
-          SELECT id, title, year, poster_path, tmdb_id
+            const tmdbIds = normalizedSimilar.map((m) => m.tmdb_id).filter(Boolean);
+            const placeholders = tmdbIds.map(() => '?').join(',');
+            const libraryRows = tmdbIds.length > 0 ? database_1.default.prepare(`
+          SELECT id, tmdb_id, is_favorite
           FROM media_items
-          WHERE deleted_at IS NULL
-          ORDER BY year DESC
-        `).all();
-            const libraryItems = libraryRows.filter((row) => {
-                const tmdbIdMatch = row.tmdb_id && tmdbIds.includes(Number(row.tmdb_id));
-                const titleMatch = normalizedSimilar.some((item) => item.title && item.title === (row.title || '').toString().trim().toLowerCase());
-                return tmdbIdMatch || titleMatch;
+          WHERE deleted_at IS NULL AND tmdb_id IN (${placeholders})
+        `).all(...tmdbIds) : [];
+            const libItemIds = libraryRows.map(r => r.id);
+            const metadataRows = libItemIds.length > 0
+                ? database_1.default.prepare(`
+              SELECT media_item_id, metadata_key, metadata_value
+              FROM media_metadata
+              WHERE media_item_id IN (${libItemIds.map(() => '?').join(',')})
+            `).all(...libItemIds)
+                : [];
+            const libraryMap = new Map();
+            for (const row of libraryRows) {
+                const tmdbStr = Number(row.tmdb_id);
+                if (!tmdbStr)
+                    continue;
+                const meta = metadataRows.filter(m => m.media_item_id === row.id).reduce((acc, curr) => {
+                    acc[curr.metadata_key] = curr.metadata_value;
+                    return acc;
+                }, {});
+                if (!libraryMap.has(tmdbStr)) {
+                    libraryMap.set(tmdbStr, { ...row, metadata: meta, versions: [] });
+                }
+                libraryMap.get(tmdbStr).versions.push({
+                    id: row.id,
+                    resolution: meta.resolution || meta.video_resolution || null
+                });
+            }
+            const finalItems = normalizedSimilar.map((m) => {
+                const libItem = libraryMap.get(Number(m.tmdb_id));
+                return {
+                    id: libItem?.id || null,
+                    tmdb_id: m.tmdb_id,
+                    title: m.title,
+                    year: m.year,
+                    poster_path: m.poster_path,
+                    type: movieType,
+                    in_library: !!libItem,
+                    overview: m.overview,
+                    is_favorite: libItem?.is_favorite === 1,
+                    metadata: libItem?.metadata ?? null,
+                    versions: libItem?.versions ?? [],
+                };
             });
             return reply.send({
                 id,
-                items: libraryItems,
+                items: finalItems,
             });
         }
         catch (error) {

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Process;
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api.dart';
@@ -56,6 +57,7 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    _loadPlaybackSettings();
     final ep = widget.episode;
     _isWatched = ep['is_watched'] == 1 || ep['is_watched'] == true;
     _progress  = int.tryParse(ep['playback_progress']?.toString() ?? '0') ?? 0;
@@ -63,6 +65,80 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
     if (meta is Map) {
       _showMyRating = double.tryParse(meta['my_rating']?.toString() ?? '0') ?? 0.0;
     }
+  }
+
+
+  bool _langMatch(String? trackLang, String prefLang) {
+    if (trackLang == null) return false;
+    final t = trackLang.toLowerCase();
+    final p = prefLang.toLowerCase();
+    if (t == p) return true;
+    if (t.startsWith(p)) return true;
+    if (p.startsWith(t)) return true;
+    return false;
+  }
+
+  String _pendingSubtitleLang = '';
+  String _pendingFallbackSubtitleLang = '';
+  String _pendingAudioLang = '';
+
+  void _applyLanguageDefaults(Map<String, dynamic> metadata) {
+    final subtitleTracks = _parseTrackList(metadata['subtitle_tracks'] ?? _showMeta['subtitle_tracks']);
+    final audioTracks = _parseTrackList(metadata['audio_tracks'] ?? _showMeta['audio_tracks']);
+
+    String resolvedSub = 'none';
+    String resolvedAudio = 'auto';
+
+    // Rule: if exactly 1 subtitle track exists, always select it!
+    if (subtitleTracks.length == 1) {
+      resolvedSub = subtitleTracks.first['index']?.toString() ?? 'none';
+    } else if (_pendingSubtitleLang.isNotEmpty) {
+      try {
+        final match = subtitleTracks.firstWhere(
+          (t) => _langMatch(t['language'], _pendingSubtitleLang),
+        );
+        resolvedSub = match['index'].toString();
+      } catch (_) {
+        if (_pendingFallbackSubtitleLang.isNotEmpty) {
+          try {
+            final fallbackMatch = subtitleTracks.firstWhere(
+              (t) => _langMatch(t['language'], _pendingFallbackSubtitleLang),
+            );
+            resolvedSub = fallbackMatch['index'].toString();
+          } catch (_) {}
+        }
+      }
+    }
+
+    if (_pendingAudioLang.isNotEmpty) {
+      try {
+        final match = audioTracks.firstWhere(
+          (t) => _langMatch(t['language'], _pendingAudioLang),
+        );
+        resolvedAudio = match['index'].toString();
+      } catch (_) {}
+    }
+
+    setState(() {
+      _selectedSubtitleIndex = resolvedSub;
+      _selectedAudioIndex = resolvedAudio;
+    });
+  }
+
+  Future<void> _loadPlaybackSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedQuality = prefs.getString('loom_player_quality_pref') ?? 'direct';
+    final savedSubLang = prefs.getString('loom_player_subtitle_lang') ?? '';
+    final savedFallbackSub = prefs.getString('loom_player_fallback_subtitle_lang') ?? '';
+    final savedAudioLang = prefs.getString('loom_player_audio_lang') ?? '';
+
+    setState(() {
+      _selectedQuality = savedQuality;
+      _pendingSubtitleLang = savedSubLang;
+      _pendingFallbackSubtitleLang = savedFallbackSub;
+      _pendingAudioLang = savedAudioLang;
+    });
+    _applyLanguageDefaults(widget.episode);
   }
 
   @override
@@ -291,16 +367,27 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
 
   // ── Subtitle / audio tracks from episode file or show fallback ───────────
 
+  List<Map<String, dynamic>> _parseTrackList(dynamic raw) {
+    if (raw is List) return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+    return [];
+  }
+
   List<Map<String, dynamic>> get _subtitleTracks {
     final raw = widget.episode['subtitle_tracks'] ?? _showMeta['subtitle_tracks'];
-    if (raw is List) return raw.cast<Map<String, dynamic>>();
-    return [];
+    final parsed = _parseTrackList(raw);
+    print("EPISODE_SUBTITLES RAW: $raw => PARSED: $parsed");
+    return parsed;
   }
 
   List<Map<String, dynamic>> get _audioTracks {
     final raw = widget.episode['audio_tracks'] ?? _showMeta['audio_tracks'];
-    if (raw is List) return raw.cast<Map<String, dynamic>>();
-    return [];
+    return _parseTrackList(raw);
   }
 
   // ── Playback ─────────────────────────────────────────────────────────────
