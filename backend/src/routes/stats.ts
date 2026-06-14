@@ -217,20 +217,40 @@ export default async function statsRoutes(fastify: FastifyInstance) {
     let plays: any[];
 
     if (mediaItem.type === 'Movie') {
+      // Primary: individual play events from play_history (Trakt/SIMKL/local with real timestamps)
       plays = db.prepare(`
         SELECT
-          u.id                                                          AS userId,
+          u.id       AS userId,
           u.username,
-          wh.updated_at,
-          wh.is_watched,
-          wh.last_position_seconds,
-          wh.total_duration_seconds,
-          datetime(wh.updated_at, '-' || wh.last_position_seconds || ' seconds') AS started_at_approx
-        FROM watch_history wh
-        JOIN users u ON u.id = wh.user_id
-        WHERE wh.media_item_id = ?
-        ORDER BY wh.updated_at DESC
+          ph.watched_at,
+          ph.source,
+          ph.id      AS play_id
+        FROM play_history ph
+        JOIN users u ON u.id = ph.user_id
+        WHERE ph.media_item_id = ?
+        ORDER BY ph.watched_at DESC
       `).all(mediaId) as any[];
+
+      // Fallback: if no play_history yet, use watch_history (old behaviour)
+      if (plays.length === 0) {
+        plays = db.prepare(`
+          SELECT
+            u.id                                                                    AS userId,
+            u.username,
+            wh.updated_at                                                           AS watched_at,
+            'local'                                                                 AS source,
+            wh.id                                                                   AS play_id,
+            wh.is_watched,
+            wh.last_position_seconds,
+            wh.total_duration_seconds,
+            COALESCE(wh.play_count, 0)                                              AS play_count,
+            datetime(wh.updated_at, '-' || wh.last_position_seconds || ' seconds') AS started_at_approx
+          FROM watch_history wh
+          JOIN users u ON u.id = wh.user_id
+          WHERE wh.media_item_id = ?
+          ORDER BY wh.updated_at DESC
+        `).all(mediaId) as any[];
+      }
     } else {
       // TV-serie — aggregerat per användare
       plays = db.prepare(`

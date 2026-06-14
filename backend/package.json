@@ -44,6 +44,7 @@
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.0",
+    "music-metadata": "^10.9.1",
     "nodemailer": "^8.0.10",
     "parse-torrent-title": "^3.0.1",
     "uuid": "^14.0.0",

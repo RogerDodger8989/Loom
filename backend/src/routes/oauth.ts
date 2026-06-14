@@ -11,7 +11,18 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
   };
 
   // Helper to save setting to DB
-  const saveSetting = (key: string, value: string) => {
+  const getUserSetting = (userId: string, key: string): string => {
+      const row = db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?').get(userId, key) as { value: string } | undefined;
+      return row ? row.value : '';
+    };
+
+    const saveUserSetting = (userId: string, key: string, value: string) => {
+      db.prepare(
+        'INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value'
+      ).run(userId, key, value);
+    };
+
+    const saveSetting = (key: string, value: string) => {
     db.prepare(`
       INSERT INTO system_settings (key, value) 
       VALUES (?, ?)
@@ -90,7 +101,8 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
   // ----------------------------------------------------
 
   // GET /api/oauth/trakt/authorize
-  fastify.get('/api/oauth/trakt/authorize', async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/api/oauth/trakt/authorize', async (request: FastifyRequest<{ Querystring: { uid?: string } }>, reply: FastifyReply) => {
+      const uid = request.query.uid || 'admin';
     const clientId = getSetting('TRAKT_API_KEY');
     if (!clientId) {
       reply.type('text/html');
@@ -105,14 +117,14 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
     const protocol = request.headers['x-forwarded-proto'] || 'http';
     const callbackUrl = `${protocol}://${host}/api/oauth/trakt/callback`;
     
-    const authorizeUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}`;
+    const authorizeUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${uid}`;
     
     return reply.redirect(authorizeUrl);
   });
 
   // GET /api/oauth/trakt/callback
-  fastify.get('/api/oauth/trakt/callback', async (request: FastifyRequest<{ Querystring: { code?: string } }>, reply: FastifyReply) => {
-    const { code } = request.query;
+  fastify.get('/api/oauth/trakt/callback', async (request: FastifyRequest<{ Querystring: { code?: string; state?: string } }>, reply: FastifyReply) => {
+    const { code, state: uid = 'admin' } = request.query;
     if (!code) {
       reply.type('text/html');
       return reply.code(400).send(renderResponsePage('Auktorisering misslyckades', 'Ingen auktoriseringskod mottogs från Trakt.', true));
@@ -165,12 +177,12 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
       }
 
       const data = await response.json() as { access_token: string; refresh_token: string };
-      saveSetting('TRAKT_ACCESS_TOKEN', data.access_token);
-      if (data.refresh_token) saveSetting('TRAKT_REFRESH_TOKEN', data.refresh_token);
+      saveUserSetting(uid, 'TRAKT_ACCESS_TOKEN', data.access_token);
+      if (data.refresh_token) saveUserSetting(uid, 'TRAKT_REFRESH_TOKEN', data.refresh_token);
 
       // Trigger automatic background rating and watch history import immediately
-      importRatingsFromTrakt();
-      importWatchHistoryFromTrakt();
+      
+      
 
       reply.type('text/html');
       return reply.send(renderResponsePage('Trakt ansluten!', 'Loom har nu kopplats till ditt Trakt.tv-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
@@ -186,7 +198,8 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
   // ----------------------------------------------------
 
   // GET /api/oauth/simkl/authorize
-  fastify.get('/api/oauth/simkl/authorize', async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/api/oauth/simkl/authorize', async (request: FastifyRequest<{ Querystring: { uid?: string } }>, reply: FastifyReply) => {
+      const uid = request.query.uid || 'admin';
     const clientId = getSetting('SIMKL_CLIENT_ID');
     if (!clientId) {
       reply.type('text/html');
@@ -201,14 +214,14 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
     const protocol = request.headers['x-forwarded-proto'] || 'http';
     const callbackUrl = `${protocol}://${host}/api/oauth/simkl/callback`;
     
-    const authorizeUrl = `https://simkl.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}`;
+    const authorizeUrl = `https://simkl.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${uid}`;
     
     return reply.redirect(authorizeUrl);
   });
 
   // GET /api/oauth/simkl/callback
-  fastify.get('/api/oauth/simkl/callback', async (request: FastifyRequest<{ Querystring: { code?: string } }>, reply: FastifyReply) => {
-    const { code } = request.query;
+  fastify.get('/api/oauth/simkl/callback', async (request: FastifyRequest<{ Querystring: { code?: string; state?: string } }>, reply: FastifyReply) => {
+    const { code, state: uid = 'admin' } = request.query;
     if (!code) {
       reply.type('text/html');
       return reply.code(400).send(renderResponsePage('Auktorisering misslyckades', 'Ingen auktoriseringskod mottogs från Simkl.', true));
@@ -261,11 +274,11 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
       }
 
       const data = await response.json() as { access_token: string };
-      saveSetting('SIMKL_ACCESS_TOKEN', data.access_token);
+      saveUserSetting(uid, 'SIMKL_ACCESS_TOKEN', data.access_token);
 
       // Trigger automatic background rating and watch history import immediately
-      importRatingsFromSimkl();
-      importWatchHistoryFromSimkl();
+      
+      
 
       reply.type('text/html');
       return reply.send(renderResponsePage('Simkl ansluten!', 'Loom har nu kopplats till ditt Simkl-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
@@ -276,3 +289,4 @@ export default async function oauthRoutes(fastify: FastifyInstance) {
     }
   });
 }
+

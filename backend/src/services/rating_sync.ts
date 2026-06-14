@@ -1,12 +1,31 @@
+import db from '../config/database';
+import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { tmdbService } from './tmdb';
 
+
 // Refresh Trakt access token using stored refresh_token.
 // Returns new access token on success, null on failure.
-async function refreshTraktToken(): Promise<string | null> {
-  const clientId     = tmdbService.getSetting('TRAKT_API_KEY');
-  const clientSecret = tmdbService.getSetting('TRAKT_CLIENT_SECRET');
-  const refreshToken = tmdbService.getSetting('TRAKT_REFRESH_TOKEN');
+function getUserSetting(userId: string, key: string): string {
+  try {
+    const row = db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?').get(userId, key) as { value: string } | undefined;
+    if (row) return row.value;
+    if (key.startsWith('sync_')) return 'true';
+    return '';
+  } catch (e) {
+    if (key.startsWith('sync_')) return 'true';
+    return '';
+  }
+}
+
+function setUserSetting(userId: string, key: string, value: string) {
+  db.prepare('INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value').run(userId, key, value);
+}
+
+async function refreshTraktToken(userId: string): Promise<string | null> {
+  const clientId     = getUserSetting(userId, 'TRAKT_API_KEY');
+  const clientSecret = getUserSetting(userId, 'TRAKT_CLIENT_SECRET');
+  const refreshToken = getUserSetting(userId, 'TRAKT_REFRESH_TOKEN');
   if (!clientId || !clientSecret || !refreshToken) return null;
   try {
     const res = await fetch('https://api.trakt.tv/oauth/token', {
@@ -16,8 +35,8 @@ async function refreshTraktToken(): Promise<string | null> {
     });
     if (!res.ok) { console.error('[Trakt] Token refresh failed:', res.status); return null; }
     const data = await res.json() as { access_token: string; refresh_token: string };
-    tmdbService.setSetting('TRAKT_ACCESS_TOKEN', data.access_token);
-    if (data.refresh_token) tmdbService.setSetting('TRAKT_REFRESH_TOKEN', data.refresh_token);
+    setUserSetting(userId, 'TRAKT_ACCESS_TOKEN', data.access_token);
+    if (data.refresh_token) setUserSetting(userId, 'TRAKT_REFRESH_TOKEN', data.refresh_token);
     console.log('[Trakt] Access token refreshed successfully.');
     return data.access_token;
   } catch (e) {
@@ -27,14 +46,14 @@ async function refreshTraktToken(): Promise<string | null> {
 }
 
 // Make a Trakt API GET request, auto-refreshing token on 401.
-async function traktGet(url: string, headers: Record<string, string>): Promise<any> {
+async function traktGet(userId: string, url: string, headers: Record<string, string>): Promise<any> {
   try {
     const res = await axios.get(url, { headers });
     return res.data;
   } catch (err: any) {
     if (err?.response?.status === 401) {
       console.log('[Trakt] 401 received — attempting token refresh...');
-      const newToken = await refreshTraktToken();
+      const newToken = await refreshTraktToken(userId);
       if (!newToken) throw err;
       const newHeaders = { ...headers, Authorization: `Bearer ${newToken}` };
       const res = await axios.get(url, { headers: newHeaders });
@@ -85,7 +104,7 @@ function hasExternalId(media: MediaLike): boolean {
   return Boolean(media.imdb_id || media.tmdb_id);
 }
 
-function upsertExternalState(args: {
+function upsertExternalState(userId: string, args: {
   tmdbId?: string | null;
   imdbId?: string | null;
   myRating?: string | null;
@@ -98,17 +117,20 @@ function upsertExternalState(args: {
 
   const existing = db.prepare(`
     SELECT tmdb_id FROM external_media_state
-    WHERE (tmdb_id = ? AND tmdb_id IS NOT NULL)
-       OR (imdb_id = ? AND imdb_id IS NOT NULL)
+    WHERE user_id = ? 
+      AND (
+           (tmdb_id = ? AND tmdb_id IS NOT NULL)
+        OR (imdb_id = ? AND imdb_id IS NOT NULL)
+      )
     LIMIT 1
-  `).get(tmdbId || null, imdbId || null) as { tmdb_id?: string } | undefined;
+  `).get(userId, tmdbId || null, imdbId || null) as { tmdb_id?: string } | undefined;
 
   const resolvedTmdbId = existing?.tmdb_id || tmdbId || imdbId;
 
   db.prepare(`
-    INSERT INTO external_media_state (tmdb_id, imdb_id, my_rating, watch_status, source, updated_at)
-    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(tmdb_id) DO UPDATE SET
+    INSERT INTO external_media_state (tmdb_id, user_id, imdb_id, my_rating, watch_status, source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(tmdb_id, user_id) DO UPDATE SET
       imdb_id = COALESCE(excluded.imdb_id, external_media_state.imdb_id),
       my_rating = COALESCE(excluded.my_rating, external_media_state.my_rating),
       watch_status = COALESCE(excluded.watch_status, external_media_state.watch_status),
@@ -116,6 +138,7 @@ function upsertExternalState(args: {
       updated_at = CURRENT_TIMESTAMP
   `).run(
     resolvedTmdbId,
+    userId,
     imdbId || null,
     args.myRating ?? null,
     args.watchStatus ?? null,
@@ -123,14 +146,14 @@ function upsertExternalState(args: {
   );
 }
 
-async function syncTrakt(media: MediaLike, rating: number) {
-  if (tmdbService.getSetting('sync_trakt_ratings') === 'false') {
+async function syncTrakt(userId: string, media: MediaLike, rating: number) {
+  if (getUserSetting(userId, 'sync_trakt_ratings') === 'false') {
     console.log('[Sync] Trakt ratings sync disabled by user settings.');
     return;
   }
 
-  const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
-  const traktAccessToken = tmdbService.getSetting('TRAKT_ACCESS_TOKEN');
+  const traktApiKey = getUserSetting(userId, 'TRAKT_API_KEY');
+  const traktAccessToken = getUserSetting(userId, 'TRAKT_ACCESS_TOKEN');
 
   if (!traktApiKey || !traktAccessToken || !hasExternalId(media)) return;
 
@@ -153,14 +176,14 @@ async function syncTrakt(media: MediaLike, rating: number) {
   await axios.post('https://api.trakt.tv/sync/ratings', body, { headers });
 }
 
-async function syncSimkl(media: MediaLike, rating: number) {
-  if (tmdbService.getSetting('sync_simkl_ratings') === 'false') {
+async function syncSimkl(userId: string, media: MediaLike, rating: number) {
+  if (getUserSetting(userId, 'sync_simkl_ratings') === 'false') {
     console.log('[Sync] Simkl ratings sync disabled by user settings.');
     return;
   }
 
-  const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
-  const simklAccessToken = tmdbService.getSetting('SIMKL_ACCESS_TOKEN');
+  const simklClientId = getUserSetting(userId, 'SIMKL_CLIENT_ID');
+  const simklAccessToken = getUserSetting(userId, 'SIMKL_ACCESS_TOKEN');
 
   if (!simklClientId || !simklAccessToken || !hasExternalId(media)) return;
 
@@ -217,14 +240,14 @@ async function syncTmdb(media: MediaLike, rating: number) {
 
   await axios.post(path, { value: rating }, config);
 }
-async function syncTraktWatchStatus(media: MediaLike, isWatched: boolean) {
-  if (tmdbService.getSetting('sync_trakt_watched') === 'false') {
+async function syncTraktWatchStatus(userId: string, media: MediaLike, isWatched: boolean) {
+  if (getUserSetting(userId, 'sync_trakt_watched') === 'false') {
     console.log('[Sync] Trakt watched status sync disabled by user settings.');
     return;
   }
 
-  const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
-  const traktAccessToken = tmdbService.getSetting('TRAKT_ACCESS_TOKEN');
+  const traktApiKey = getUserSetting(userId, 'TRAKT_API_KEY');
+  const traktAccessToken = getUserSetting(userId, 'TRAKT_ACCESS_TOKEN');
 
   if (!traktApiKey || !traktAccessToken || !hasExternalId(media)) return;
 
@@ -246,14 +269,14 @@ async function syncTraktWatchStatus(media: MediaLike, isWatched: boolean) {
   await axios.post(path, body, { headers });
 }
 
-async function syncSimklWatchStatus(media: MediaLike, isWatched: boolean) {
-  if (tmdbService.getSetting('sync_simkl_watched') === 'false') {
+async function syncSimklWatchStatus(userId: string, media: MediaLike, isWatched: boolean) {
+  if (getUserSetting(userId, 'sync_simkl_watched') === 'false') {
     console.log('[Sync] Simkl watched status sync disabled by user settings.');
     return;
   }
 
-  const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
-  const simklAccessToken = tmdbService.getSetting('SIMKL_ACCESS_TOKEN');
+  const simklClientId = getUserSetting(userId, 'SIMKL_CLIENT_ID');
+  const simklAccessToken = getUserSetting(userId, 'SIMKL_ACCESS_TOKEN');
 
   if (!simklClientId || !simklAccessToken || !hasExternalId(media)) return;
 
@@ -273,34 +296,34 @@ async function syncSimklWatchStatus(media: MediaLike, isWatched: boolean) {
   await axios.post(path, body, { headers });
 }
 
-export async function syncExternalWatchStatus(media: MediaLike, isWatched: boolean) {
+export async function syncExternalWatchStatus(userId: string, media: MediaLike, isWatched: boolean) {
   try {
-    await syncTraktWatchStatus(media, isWatched);
+    await syncTraktWatchStatus(userId, media, isWatched);
   } catch (error) {
     console.error('[Playback Sync] Trakt watch status sync failed:', error);
   }
 
   try {
-    await syncSimklWatchStatus(media, isWatched);
+    await syncSimklWatchStatus(userId, media, isWatched);
   } catch (error) {
     console.error('[Playback Sync] Simkl watch status sync failed:', error);
   }
 }
 
-import db from '../config/database';
-import { v4 as uuidv4 } from 'uuid';
 
-export async function syncExternalRatings(media: MediaLike, rawRating: any) {
+
+
+export async function syncExternalRatings(userId: string, media: MediaLike, rawRating: any) {
   const rating = normalizeRating(rawRating);
 
   try {
-    await syncTrakt(media, rating);
+    await syncTrakt(userId, media, rating);
   } catch (error) {
     console.error('[Rating Sync] Trakt sync failed:', error);
   }
 
   try {
-    await syncSimkl(media, rating);
+    await syncSimkl(userId, media, rating);
   } catch (error) {
     console.error('[Rating Sync] Simkl sync failed:', error);
   }
@@ -313,14 +336,14 @@ export async function syncExternalRatings(media: MediaLike, rawRating: any) {
 }
 
 // Background Import for Trakt.tv Ratings
-export async function importRatingsFromTrakt(): Promise<number> {
-  if (tmdbService.getSetting('sync_trakt_ratings') === 'false') {
+export async function importRatingsFromTrakt(userId: string): Promise<number> {
+  if (getUserSetting(userId, 'sync_trakt_ratings') === 'false') {
     console.log('[Rating Sync] Trakt ratings import disabled by user settings.');
     return 0;
   }
 
-  const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
-  const traktAccessToken = tmdbService.getSetting('TRAKT_ACCESS_TOKEN');
+  const traktApiKey = getUserSetting(userId, 'TRAKT_API_KEY');
+  const traktAccessToken = getUserSetting(userId, 'TRAKT_ACCESS_TOKEN');
 
   if (!traktApiKey || !traktAccessToken) {
     console.log('[Rating Sync] Trakt credentials missing for ratings import.');
@@ -339,7 +362,7 @@ export async function importRatingsFromTrakt(): Promise<number> {
     };
 
     // Fetch rated movies from Trakt (auto-refreshes token on 401)
-    const ratedMovies = await traktGet('https://api.trakt.tv/sync/ratings/movies', headers) as Array<{ rating: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
+    const ratedMovies = await traktGet(userId, 'https://api.trakt.tv/sync/ratings/movies', headers) as Array<{ rating: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
 
     if (!Array.isArray(ratedMovies)) return 0;
 
@@ -350,7 +373,7 @@ export async function importRatingsFromTrakt(): Promise<number> {
 
       if (!imdbId && !tmdbId) continue;
 
-      upsertExternalState({
+      upsertExternalState(userId, {
         tmdbId,
         imdbId,
         myRating: ratingValue.toString(),
@@ -382,14 +405,14 @@ export async function importRatingsFromTrakt(): Promise<number> {
 }
 
 // Background Import for Simkl Ratings
-export async function importRatingsFromSimkl(): Promise<number> {
-  if (tmdbService.getSetting('sync_simkl_ratings') === 'false') {
+export async function importRatingsFromSimkl(userId: string): Promise<number> {
+  if (getUserSetting(userId, 'sync_simkl_ratings') === 'false') {
     console.log('[Rating Sync] Simkl ratings import disabled by user settings.');
     return 0;
   }
 
-  const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
-  const simklAccessToken = tmdbService.getSetting('SIMKL_ACCESS_TOKEN');
+  const simklClientId = getUserSetting(userId, 'SIMKL_CLIENT_ID');
+  const simklAccessToken = getUserSetting(userId, 'SIMKL_ACCESS_TOKEN');
 
   if (!simklClientId || !simklAccessToken) {
     console.log('[Rating Sync] Simkl credentials missing for ratings import.');
@@ -422,7 +445,7 @@ export async function importRatingsFromSimkl(): Promise<number> {
 
       if (!imdbId && !tmdbId) continue;
 
-      upsertExternalState({
+      upsertExternalState(userId, {
         tmdbId: tmdbId?.toString() ?? null,
         imdbId,
         myRating: ratingValue.toString(),
@@ -454,14 +477,14 @@ export async function importRatingsFromSimkl(): Promise<number> {
 }
 
 // Background Import for Trakt Watch History / Seen Status
-export async function importWatchHistoryFromTrakt(): Promise<number> {
-  if (tmdbService.getSetting('sync_trakt_watched') === 'false') {
+export async function importWatchHistoryFromTrakt(userId: string): Promise<number> {
+  if (getUserSetting(userId, 'sync_trakt_watched') === 'false') {
     console.log('[Playback Sync] Trakt watched status import disabled by user settings.');
     return 0;
   }
 
-  const traktApiKey = tmdbService.getSetting('TRAKT_API_KEY');
-  const traktAccessToken = tmdbService.getSetting('TRAKT_ACCESS_TOKEN');
+  const traktApiKey = getUserSetting(userId, 'TRAKT_API_KEY');
+  const traktAccessToken = getUserSetting(userId, 'TRAKT_ACCESS_TOKEN');
 
   if (!traktApiKey || !traktAccessToken) {
     console.log('[Playback Sync] Trakt credentials missing for watch history import.');
@@ -479,20 +502,18 @@ export async function importWatchHistoryFromTrakt(): Promise<number> {
       Authorization: `Bearer ${traktAccessToken}`,
     };
 
-    const watchedMovies = await traktGet('https://api.trakt.tv/sync/watched/movies', headers) as Array<{ movie: { ids: { imdb?: string; tmdb?: number } } }>;
+    const watchedMovies = await traktGet(userId, 'https://api.trakt.tv/sync/watched/movies', headers) as Array<{ plays: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
 
     if (!Array.isArray(watchedMovies)) return 0;
-
-    const defaultUser = db.prepare(`SELECT id FROM users LIMIT 1`).get() as { id: string } | undefined;
-    const userId = defaultUser?.id || 'admin';
 
     for (const entry of watchedMovies) {
       const imdbId = entry.movie?.ids?.imdb;
       const tmdbId = entry.movie?.ids?.tmdb?.toString();
+      const plays  = typeof entry.plays === 'number' && entry.plays > 0 ? entry.plays : 1;
 
       if (!imdbId && !tmdbId) continue;
 
-      upsertExternalState({
+      upsertExternalState(userId, {
         tmdbId,
         imdbId,
         watchStatus: 'watched',
@@ -500,36 +521,36 @@ export async function importWatchHistoryFromTrakt(): Promise<number> {
       });
 
       const movie = db.prepare(`
-        SELECT id FROM media_items 
-        WHERE (imdb_id = ? AND imdb_id IS NOT NULL) 
+        SELECT id FROM media_items
+        WHERE (imdb_id = ? AND imdb_id IS NOT NULL)
            OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
       `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
 
       if (movie) {
         // 1. Set watch_status = 'watched' in media_metadata
         db.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
           VALUES (?, ?, 'watch_status', 'watched')
           ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
         `).run(uuidv4(), movie.id);
 
-        // 2. Set watch_history
+        // 2. Set watch_history + play_count from Trakt
         const existingHistory = db.prepare(`
-          SELECT id FROM watch_history 
+          SELECT id FROM watch_history
           WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
         `).get(userId, movie.id) as { id: string } | undefined;
 
         if (existingHistory) {
           db.prepare(`
-            UPDATE watch_history 
-            SET is_watched = 1, updated_at = CURRENT_TIMESTAMP
+            UPDATE watch_history
+            SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(existingHistory.id);
+          `).run(plays, existingHistory.id);
         } else {
           db.prepare(`
-            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(uuidv4(), userId, movie.id, 7200, 7200, 1);
+            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(uuidv4(), userId, movie.id, 7200, 7200, 1, plays);
         }
         importCount++;
       }
@@ -543,14 +564,14 @@ export async function importWatchHistoryFromTrakt(): Promise<number> {
 }
 
 // Background Import for Simkl Watch History / Seen Status
-export async function importWatchHistoryFromSimkl(): Promise<number> {
-  if (tmdbService.getSetting('sync_simkl_watched') === 'false') {
+export async function importWatchHistoryFromSimkl(userId: string): Promise<number> {
+  if (getUserSetting(userId, 'sync_simkl_watched') === 'false') {
     console.log('[Playback Sync] Simkl watched status import disabled by user settings.');
     return 0;
   }
 
-  const simklClientId = tmdbService.getSetting('SIMKL_CLIENT_ID');
-  const simklAccessToken = tmdbService.getSetting('SIMKL_ACCESS_TOKEN');
+  const simklClientId = getUserSetting(userId, 'SIMKL_CLIENT_ID');
+  const simklAccessToken = getUserSetting(userId, 'SIMKL_ACCESS_TOKEN');
 
   if (!simklClientId || !simklAccessToken) {
     console.log('[Playback Sync] Simkl credentials missing for watch history import.');
@@ -578,16 +599,14 @@ export async function importWatchHistoryFromSimkl(): Promise<number> {
 
     if (!Array.isArray(watchedMovies) || watchedMovies.length === 0) return 0;
 
-    const defaultUser = db.prepare(`SELECT id FROM users LIMIT 1`).get() as { id: string } | undefined;
-    const userId = defaultUser?.id || 'admin';
-
     for (const entry of watchedMovies) {
-      const imdbId = entry.movie?.ids?.imdb;
-      const tmdbId = entry.movie?.ids?.tmdb;
+      const imdbId      = entry.movie?.ids?.imdb;
+      const tmdbId      = entry.movie?.ids?.tmdb;
+      const timesWatched = typeof entry.times_watched === 'number' && entry.times_watched > 0 ? entry.times_watched : 1;
 
       if (!imdbId && !tmdbId) continue;
 
-      upsertExternalState({
+      upsertExternalState(userId, {
         tmdbId: tmdbId?.toString() ?? null,
         imdbId,
         watchStatus: 'watched',
@@ -595,36 +614,36 @@ export async function importWatchHistoryFromSimkl(): Promise<number> {
       });
 
       const movie = db.prepare(`
-        SELECT id FROM media_items 
-        WHERE (imdb_id = ? AND imdb_id IS NOT NULL) 
+        SELECT id FROM media_items
+        WHERE (imdb_id = ? AND imdb_id IS NOT NULL)
            OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
       `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
 
       if (movie) {
         // 1. Set watch_status = 'watched' in media_metadata
         db.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
           VALUES (?, ?, 'watch_status', 'watched')
           ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
         `).run(uuidv4(), movie.id);
 
-        // 2. Set watch_history
+        // 2. Set watch_history + play_count from SIMKL
         const existingHistory = db.prepare(`
-          SELECT id FROM watch_history 
+          SELECT id FROM watch_history
           WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
         `).get(userId, movie.id) as { id: string } | undefined;
 
         if (existingHistory) {
           db.prepare(`
-            UPDATE watch_history 
-            SET is_watched = 1, updated_at = CURRENT_TIMESTAMP
+            UPDATE watch_history
+            SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(existingHistory.id);
+          `).run(timesWatched, existingHistory.id);
         } else {
           db.prepare(`
-            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(uuidv4(), userId, movie.id, 7200, 7200, 1);
+            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(uuidv4(), userId, movie.id, 7200, 7200, 1, timesWatched);
         }
         importCount++;
       }
@@ -633,6 +652,104 @@ export async function importWatchHistoryFromSimkl(): Promise<number> {
     console.log(`[Playback Sync] Simkl watch history import complete. Synced ${importCount} items as watched!`);
   } catch (err) {
     console.error('[Playback Sync] Failed to import watch history from Simkl:', err);
+  }
+  return importCount;
+}
+
+// Import full Trakt play history (individual play events with real timestamps).
+// Uses /sync/history/movies which is paginated and supports delta sync via start_at.
+export async function importPlayHistoryFromTrakt(userId: string): Promise<number> {
+  if (getUserSetting(userId, 'sync_trakt_watched') === 'false') return 0;
+
+  const traktApiKey     = getUserSetting(userId, 'TRAKT_API_KEY');
+  const traktAccessToken = getUserSetting(userId, 'TRAKT_ACCESS_TOKEN');
+  if (!traktApiKey || !traktAccessToken) return 0;
+
+  const headers = {
+    'trakt-api-key': traktApiKey,
+    'trakt-api-version': '2',
+    'Content-Type': 'application/json',
+    'User-Agent': 'Loom-Media-Server/1.0.0',
+    Authorization: `Bearer ${traktAccessToken}`,
+  };
+
+  const lastSync  = getUserSetting(userId, 'trakt_play_history_sync_at');
+  const startAt   = lastSync ? `&start_at=${encodeURIComponent(lastSync)}` : '';
+  let importCount = 0;
+  let page        = 1;
+
+  try {
+    console.log(`[Play History] Starting Trakt play history import (userId=${userId}, delta=${!!lastSync})...`);
+    while (true) {
+      const url = `https://api.trakt.tv/sync/history/movies?limit=1000&page=${page}${startAt}`;
+      // Use axios directly to capture response headers for pagination; traktGet only returns data
+      let res: import('axios').AxiosResponse;
+      try {
+        res = await axios.get(url, { headers });
+      } catch (err: any) {
+        if (err?.response?.status === 401) {
+          const newToken = await refreshTraktToken(userId);
+          if (!newToken) throw err;
+          headers.Authorization = `Bearer ${newToken}`;
+          res = await axios.get(url, { headers });
+        } else {
+          throw err;
+        }
+      }
+      const entries = res.data as Array<{
+        id: number;
+        watched_at: string;
+        movie: { ids: { imdb?: string; tmdb?: number } };
+      }>;
+      const pageCount = parseInt((res.headers as any)['x-pagination-page-count'] ?? '1', 10);
+
+      if (!Array.isArray(entries) || entries.length === 0) break;
+
+      for (const entry of entries) {
+        const imdbId = entry.movie?.ids?.imdb;
+        const tmdbId = entry.movie?.ids?.tmdb?.toString();
+        if (!imdbId && !tmdbId) continue;
+
+        const movie = db.prepare(`
+          SELECT id FROM media_items
+          WHERE ((imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL))
+            AND deleted_at IS NULL
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+
+        if (!movie) continue;
+
+        // INSERT OR IGNORE — trakt_history_id UNIQUE prevents duplicates on re-sync
+        db.prepare(`
+          INSERT OR IGNORE INTO play_history (id, user_id, media_item_id, watched_at, source, trakt_history_id)
+          VALUES (?, ?, ?, ?, 'trakt', ?)
+        `).run(uuidv4(), userId, movie.id, entry.watched_at, entry.id);
+
+        importCount++;
+      }
+
+      if (page >= pageCount) break;
+      page++;
+    }
+
+    // Update play_count in watch_history to reflect total plays from Trakt
+    const countRows = db.prepare(`
+      SELECT media_item_id, COUNT(*) as cnt
+      FROM play_history
+      WHERE user_id = ? AND source = 'trakt'
+      GROUP BY media_item_id
+    `).all(userId) as Array<{ media_item_id: string; cnt: number }>;
+
+    for (const row of countRows) {
+      db.prepare(`
+        UPDATE watch_history SET play_count = ?
+        WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+      `).run(row.cnt, userId, row.media_item_id);
+    }
+
+    setUserSetting(userId, 'trakt_play_history_sync_at', new Date().toISOString());
+    console.log(`[Play History] Trakt import complete. ${importCount} new entries.`);
+  } catch (err) {
+    console.error('[Play History] Trakt import failed:', err);
   }
   return importCount;
 }
@@ -649,38 +766,49 @@ export async function syncAllExternalData() {
   syncStatus.currentStep = 'Initierar synkning...';
   syncStatus.lastSyncResult = null;
 
-  let totalTraktRatings = 0;
-  let totalTraktWatched = 0;
-  let totalSimklRatings = 0;
-  let totalSimklWatched = 0;
+  let totalTraktRatings  = 0;
+  let totalTraktWatched  = 0;
+  let totalTraktHistory  = 0;
+  let totalSimklRatings  = 0;
+  let totalSimklWatched  = 0;
 
   try {
-    // Step 1: Trakt Ratings
-    syncStatus.progress = 10;
-    syncStatus.currentStep = 'Synkroniserar betyg från Trakt.tv...';
-    totalTraktRatings = await importRatingsFromTrakt();
+    const users = db.prepare('SELECT id FROM users').all() as { id: string }[];
+    for (const user of users) {
+      const userId = user.id;
 
-    // Step 2: Trakt Watched Status
-    syncStatus.progress = 35;
-    syncStatus.currentStep = 'Synkroniserar sedda filmer från Trakt.tv...';
-    totalTraktWatched = await importWatchHistoryFromTrakt();
+      // Step 1: Trakt Ratings
+      syncStatus.progress = 10;
+      syncStatus.currentStep = 'Synkroniserar betyg från Trakt.tv...';
+      totalTraktRatings += await importRatingsFromTrakt(userId);
 
-    // Step 3: Simkl Ratings
-    syncStatus.progress = 60;
-    syncStatus.currentStep = 'Synkroniserar betyg från Simkl...';
-    totalSimklRatings = await importRatingsFromSimkl();
+      // Step 2: Trakt Watched Status
+      syncStatus.progress = 30;
+      syncStatus.currentStep = 'Synkroniserar sedda filmer från Trakt.tv...';
+      totalTraktWatched += await importWatchHistoryFromTrakt(userId);
 
-    // Step 4: Simkl Watched Status
-    syncStatus.progress = 85;
-    syncStatus.currentStep = 'Synkroniserar sedda filmer från Simkl...';
-    totalSimklWatched = await importWatchHistoryFromSimkl();
+      // Step 3: Trakt Full Play History (individual plays with real timestamps)
+      syncStatus.progress = 50;
+      syncStatus.currentStep = 'Synkroniserar spelhistorik från Trakt.tv...';
+      totalTraktHistory += await importPlayHistoryFromTrakt(userId);
+
+      // Step 4: Simkl Ratings
+      syncStatus.progress = 70;
+      syncStatus.currentStep = 'Synkroniserar betyg från Simkl...';
+      totalSimklRatings += await importRatingsFromSimkl(userId);
+
+      // Step 5: Simkl Watched Status
+      syncStatus.progress = 85;
+      syncStatus.currentStep = 'Synkroniserar sedda filmer från Simkl...';
+      totalSimklWatched += await importWatchHistoryFromSimkl(userId);
+    }
 
     syncStatus.progress = 100;
     syncStatus.currentStep = 'Synkronisering klar!';
     syncStatus.lastSyncResult = {
       timestamp: new Date().toISOString(),
       success: true,
-      trakt: { ratings: totalTraktRatings, watched: totalTraktWatched },
+      trakt: { ratings: totalTraktRatings, watched: totalTraktWatched, history: totalTraktHistory },
       simkl: { ratings: totalSimklRatings, watched: totalSimklWatched }
     };
     console.log('[Sync] Full external data sync finished successfully.', syncStatus.lastSyncResult);

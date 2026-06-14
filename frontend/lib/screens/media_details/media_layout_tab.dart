@@ -1522,6 +1522,161 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
               const SizedBox(height: 30),
             ],
 
+            // --- SOUNDTRACK SEKTION ---
+            Builder(
+              builder: (context) {
+                final soundtrack = metadata['soundtrack'] as Map<String, dynamic>?;
+                if (soundtrack == null) {
+                  return const SizedBox.shrink();
+                }
+
+                final albumTitle = soundtrack['album']?.toString() ?? 'Okänt Album';
+                final artist = soundtrack['artist']?.toString() ?? 'Okänd Artist';
+                final coverPath = soundtrack['cover_path']?.toString();
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          const Text(
+                            'Soundtrack',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.5),
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => SoundtrackScreen(
+                                  soundtrackData: soundtrack,
+                                  movieTitle: title,
+                                  movieId: widget.mediaId,
+                                ),
+                              ),
+                            );
+                          },
+                          child: Container(
+                            width: 180,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              color: Colors.black.withValues(alpha: 0.3),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Stack(
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                                      child: AspectRatio(
+                                        aspectRatio: 1,
+                                        child: coverPath != null
+                                            ? Image.network(
+                                                coverPath,
+                                                fit: BoxFit.cover,
+                                              )
+                                            : Container(
+                                                color: const Color(0xFF2A2438),
+                                                child: const Icon(Icons.album, size: 50, color: Colors.white24),
+                                              ),
+                                      ),
+                                    ),
+                                    Positioned.fill(
+                                      child: Material(
+                                        color: Colors.transparent,
+                                        child: InkWell(
+                                          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                                          hoverColor: Colors.black.withValues(alpha: 0.4),
+                                          onTap: () {
+                                            debugPrint('Öppnar soundtrack vy för $albumTitle');
+                                          },
+                                          child: Align(
+                                            alignment: Alignment.center,
+                                            child: IconButton(
+                                              icon: const CircleAvatar(
+                                                radius: 24,
+                                                backgroundColor: Color(0xFF8A5BFF),
+                                                child: Icon(Icons.play_arrow, color: Colors.white, size: 28),
+                                              ),
+                                              onPressed: () {
+                                                debugPrint('Spelar soundtrack: $albumTitle');
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.all(10.0),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        albumTitle,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      const Text(
+                                        'FLAC • Lossless',
+                                        style: TextStyle(
+                                          color: Color(0xFF00E676),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+                  ],
+                );
+              },
+            ),
+
             // Collection Chronology horizontal scroll under Cast
             if (collectionId != null && collectionId.toString().isNotEmpty) ...[
               Padding(

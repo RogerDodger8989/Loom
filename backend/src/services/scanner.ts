@@ -48,11 +48,12 @@ export class ScannerService {
 
     // Common video extensions
     const videoExts = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'];
+    const musicExts = ['.flac', '.mp3', '.ogg', '.vorbis', '.opus', '.m4a'];
 
     for (const file of files) {
       const ext = path.extname(file).toLowerCase();
 
-      if (videoExts.includes(ext)) {
+      if (videoExts.includes(ext) || musicExts.includes(ext)) {
         // Check size filter
         if (minSizeBytes > 0) {
           try {
@@ -71,12 +72,16 @@ export class ScannerService {
 
         emitScanEvent('file_found', `Hittade: ${path.basename(file)}`, type);
 
-        if (type === 'Movie') {
+        if (type === 'Movie' && videoExts.includes(ext)) {
           const result = await this.processMovieFile(file, preferLocalNfo);
           if (result === 'added') itemsAdded++;
           else if (result === 'updated') itemsUpdated++;
-        } else if (type === 'Show') {
+        } else if (type === 'Show' && videoExts.includes(ext)) {
           const result = await this.processEpisodeFile(file, libraryPath, preferLocalNfo);
+          if (result === 'added') itemsAdded++;
+          else if (result === 'updated') itemsUpdated++;
+        } else if (type === 'Music' && musicExts.includes(ext)) {
+          const result = await this.processMusicFile(file, preferLocalNfo);
           if (result === 'added') itemsAdded++;
           else if (result === 'updated') itemsUpdated++;
         }
@@ -557,6 +562,117 @@ export class ScannerService {
     } catch (e) {
       console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
       emitScanEvent('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Movie');
+      return 'skipped';
+    }
+  }
+
+  /**
+   * Process a single music file
+   */
+  public async processMusicFile(filePath: string, _preferLocalNfo: boolean = true): Promise<'added' | 'updated' | 'skipped'> {
+    const dir = path.dirname(filePath);
+    const fileNameWithoutExt = path.parse(filePath).name;
+    const probeResult = await this.probeMediaFile(filePath);
+    
+    let metadata: any = {
+      title: fileNameWithoutExt,
+      artist: null,
+      album: null,
+      year: null,
+      genre: null,
+      track: null,
+      poster_path: null,
+      musicbrainz_id: null,
+      acoustid_id: null,
+      soundtrack_movie_id: null,
+    };
+
+    // 1. Läs interna taggar (ID3/Vorbis/FLAC)
+    if (probeResult.formatTags) {
+      const t = probeResult.formatTags;
+      if (t.title) metadata.title = t.title;
+      if (t.artist || t.album_artist) metadata.artist = t.artist || t.album_artist;
+      if (t.album) metadata.album = t.album;
+      if (t.date) metadata.year = parseInt(t.date.substring(0,4), 10);
+      if (t.genre) metadata.genre = t.genre;
+      if (t.track) metadata.track = t.track;
+      if (t.tracknumber) metadata.track = t.tracknumber;
+      if (t.musicbrainz_trackid) metadata.musicbrainz_id = t.musicbrainz_trackid;
+    }
+
+    // 1b. Fallback: parsa artist och album från mappstruktur när taggar saknas
+    // Förväntad struktur: .../ArtistBokstav/Artistnamn/År - Album/spår.flac
+    //                 eller .../Artistnamn/Album/spår.flac
+    const dirParts = dir.split(path.sep);
+    const albumFolder = dirParts[dirParts.length - 1]; // "2005 - Batman Begins"
+    const artistFolder = dirParts[dirParts.length - 2]; // "Hans Zimmer"  eller "H" (enbokstavs)
+    const grandFolder = dirParts[dirParts.length - 3];  // "H" om struktur är .../H/Hans Zimmer/...
+
+    if (!metadata.album && albumFolder) {
+      // Strippa ledande år: "2005 - Batman Begins" → "Batman Begins"
+      metadata.album = albumFolder.replace(/^\d{4}\s*[-–]\s*/, '').trim();
+    }
+    if (!metadata.artist) {
+      // Hoppa över enbokstavsmappar (indexeringsmappar som "H", "A")
+      if (artistFolder && artistFolder.length > 2) {
+        metadata.artist = artistFolder;
+      } else if (grandFolder && grandFolder.length > 2) {
+        metadata.artist = grandFolder;
+      }
+    }
+
+    // 2. Extrahera inbäddade covers eller hitta cover.jpg/folder.jpg i mappen
+    const possibleCovers = ['cover.jpg', 'cover.png', 'folder.jpg', 'album.jpg'];
+    for (const p of possibleCovers) {
+      const pPath = path.join(dir, p);
+      if (fs.existsSync(pPath)) {
+        metadata.poster_path = pPath;
+        break;
+      }
+    }
+
+    // 3. Länka soundtrack till film — testa IMDb-id i mappnamn, sen exakt titelmatch, sen partiell match
+    {
+      const folderName = path.basename(dir);
+      const imdbMatch = folderName.match(/tt\d{7,8}/);
+      if (imdbMatch) {
+        const movie = db.prepare('SELECT id FROM media_items WHERE imdb_id = ? AND deleted_at IS NULL').get(imdbMatch[0]) as any;
+        if (movie) metadata.soundtrack_movie_id = movie.id;
+      } else if (metadata.album) {
+        const movie = (
+          db.prepare("SELECT id FROM media_items WHERE title = ? AND type='Movie' AND deleted_at IS NULL").get(metadata.album) as any
+          ?? db.prepare("SELECT id FROM media_items WHERE title LIKE ? AND type='Movie' AND deleted_at IS NULL").get(`%${metadata.album}%`) as any
+        );
+        if (movie) metadata.soundtrack_movie_id = movie.id;
+      }
+    }
+
+    const trackNumber = metadata.track ? parseInt(metadata.track, 10) || null : null;
+
+    try {
+      const existing = db.prepare('SELECT id FROM music_tracks WHERE file_path = ?').get(filePath) as { id: string } | undefined;
+
+      if (existing) {
+        db.prepare(`
+          UPDATE music_tracks
+          SET title = ?, artist = ?, album = ?, track_number = ?, musicbrainz_id = ?, soundtrack_movie_id = ?
+          WHERE file_path = ?
+        `).run(metadata.title, metadata.artist, metadata.album, trackNumber, metadata.musicbrainz_id, metadata.soundtrack_movie_id, filePath);
+
+        emitScanEvent('item_updated', `Uppdaterad musik: ${metadata.title}`, 'Music');
+        return 'updated';
+      } else {
+        db.prepare(`
+          INSERT INTO music_tracks (id, title, artist, album, file_path, track_number, musicbrainz_id, soundtrack_movie_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(uuidv4(), metadata.title, metadata.artist, metadata.album, filePath, trackNumber, metadata.musicbrainz_id, metadata.soundtrack_movie_id);
+
+        emitScanEvent('item_added', `Tillagd musik: ${metadata.title}`, 'Music');
+        return 'added';
+      }
+    } catch (e: any) {
+      console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
+      require('fs').appendFileSync('C:/Users/denni/Desktop/Egna appar/Loom/backend/scanner_error.log', e.toString() + '\n');
       return 'skipped';
     }
   }
@@ -1182,13 +1298,14 @@ export class ScannerService {
     audioTracks: Array<{ index: number; language: string; codec: string; channels: number; label: string }>;
     subtitleTracks: Array<{ index: number; language: string; codec: string; label: string }>;
     resolution: string | null;
+    formatTags: any;
   }> {
     return new Promise((resolve) => {
       const ffprobePath = ffprobe.path;
-      const cmd = `"${ffprobePath}" -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
+      const cmd = `"${ffprobePath}" -v quiet -print_format json -show_format -show_streams "${filePath.replace(/"/g, '\\"')}"`;
       childProcess.exec(cmd, { timeout: 15000 }, (err, stdout) => {
         if (err) {
-          resolve({ audioTracks: [], subtitleTracks: [], resolution: null });
+          resolve({ audioTracks: [], subtitleTracks: [], resolution: null, formatTags: {} });
           return;
         }
         try {
@@ -1255,9 +1372,9 @@ export class ScannerService {
               return entry;
             });
 
-          resolve({ audioTracks, subtitleTracks, resolution });
+          resolve({ audioTracks, subtitleTracks, resolution, formatTags: probe.format?.tags || {} });
         } catch {
-          resolve({ audioTracks: [], subtitleTracks: [], resolution: null });
+          resolve({ audioTracks: [], subtitleTracks: [], resolution: null, formatTags: {} });
         }
       });
     });

@@ -308,15 +308,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   // ── Persistent settings ───────────────────────────────────────────────────
 
   Future<void> _loadPersistedSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedVolume = prefs.getDouble('loom_player_volume') ?? 100.0;
+    final savedVolumeStr = widget.apiService.getUserPref('loom_player_volume');
+    final savedVolume = savedVolumeStr != null ? double.tryParse(savedVolumeStr) ?? 100.0 : 100.0;
 
     // Only resolve language-based track selection if not pre-set from media details screen
     if (widget.initialSubtitleIndex == null) {
       String subtitleLang;
-      if (prefs.containsKey('loom_player_subtitle_lang')) {
+      if (widget.apiService.getUserPref('loom_player_subtitle_lang') != null) {
         // User has an explicit preference (possibly empty = "no subtitle")
-        subtitleLang = prefs.getString('loom_player_subtitle_lang') ?? '';
+        subtitleLang = widget.apiService.getUserPref('loom_player_subtitle_lang') ?? '';
       } else {
         // First time playing — fall back to the global default from settings
         final cache = widget.apiService.loadSettingsCache();
@@ -341,7 +341,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
 
     if (widget.initialAudioIndex == null) {
-      final savedAudioLang = prefs.getString('loom_player_audio_lang') ?? '';
+      final savedAudioLang = widget.apiService.getUserPref('loom_player_audio_lang') ?? '';
       if (savedAudioLang.isNotEmpty) {
         final match = _audioTracks.firstWhere(
           (t) => (t['language']?.toString() ?? '').toLowerCase() ==
@@ -358,13 +358,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<void> _savePlayerSettings() async {
-    final prefs = await SharedPreferences.getInstance();
     // Save language so it can match across different films
     final subTrack = _subtitleTracks.firstWhere(
       (t) => t['index']?.toString() == _subtitleIndex,
       orElse: () => <String, dynamic>{},
     );
-    await prefs.setString(
+    await widget.apiService.setUserPref(
         'loom_player_subtitle_lang', subTrack['language']?.toString() ?? '');
 
     if (_selectedAudioTrackIndex != null) {
@@ -372,12 +371,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         (t) => t['index']?.toString() == _selectedAudioTrackIndex,
         orElse: () => <String, dynamic>{},
       );
-      await prefs.setString(
+      await widget.apiService.setUserPref(
           'loom_player_audio_lang', audioTrack['language']?.toString() ?? '');
     } else {
-      await prefs.remove('loom_player_audio_lang');
+      await widget.apiService.removeUserPref('loom_player_audio_lang');
     }
-    await prefs.setDouble('loom_player_volume', _volume);
+    await widget.apiService.setUserPref('loom_player_volume', _volume.toString());
   }
 
   // ── Startup ───────────────────────────────────────────────────────────────

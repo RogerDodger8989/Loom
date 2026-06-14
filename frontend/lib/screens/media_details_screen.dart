@@ -14,6 +14,7 @@ import 'media_info_dialog.dart';
 import 'person_details_screen.dart';
 import 'resume_playback_modal.dart';
 import 'video_player_screen.dart';
+import 'soundtrack_screen.dart';
 import '../widgets/hoverable_builder.dart';
 import '../widgets/unified_poster_card.dart';
 import '../utils/media_actions_helper.dart';

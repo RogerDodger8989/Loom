@@ -36,24 +36,6 @@ extension BibliotekTabExtension on _SettingsScreenState {
                     ],
                   ),
                 ),
-                // Metadata section
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                  child: _buildSection('Metadata', Icons.translate_outlined, [
-                    Row(children: [
-                      Expanded(child: _buildDropdown('Metadataspråk', _metadataLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _metadataLanguage = v!); _scheduleSave(); })),
-                      const SizedBox(width: 16),
-                      Expanded(child: _buildDropdown('Fallback-språk', _fallbackLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _fallbackLanguage = v!); _scheduleSave(); })),
-                      const SizedBox(width: 16),
-                      Expanded(child: _buildDropdown('JustWatch-region', _watchProviderRegion, ['SE', 'US', 'NO', 'GB'], (v) { setState(() => _watchProviderRegion = v!); _scheduleSave(); })),
-                      const SizedBox(width: 16),
-                      Expanded(child: _buildDropdown('Titeldisplay', _titleDisplayStyle, ['Translated', 'Original'], (v) { setState(() => _titleDisplayStyle = v!); _scheduleSave(); })),
-                    ]),
-                    const SizedBox(height: 12),
-                    _switchTile('Föredra lokal NFO-metadata', 'Använd .nfo-filer framför online-metadata.', _preferLocalNfo, _setPreferLocalNfo),
-                    _switchTile('Visa utgåva/version i titel', 'T.ex. visar "[Director\'s Cut]" efter titeln.', _showReleaseVersion, (v) { setState(() => _showReleaseVersion = v); _scheduleSave(); }),
-                  ]),
-                ),
               ],
             ),
           ),
@@ -125,7 +107,49 @@ extension BibliotekTabExtension on _SettingsScreenState {
           const Divider(color: Colors.white10),
           const SizedBox(height: 16),
           _buildScanFilterSection(),
-          if (type == 'Show') ...[],
+          if (type != 'Music') ...[
+            const SizedBox(height: 24),
+            _buildSection('Metadata', Icons.translate_outlined, [
+              Row(children: [
+                Expanded(child: _buildDropdown('Metadataspråk', _metadataLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _metadataLanguage = v!); _scheduleSave(); })),
+                const SizedBox(width: 16),
+                Expanded(child: _buildDropdown('Fallback-språk', _fallbackLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _fallbackLanguage = v!); _scheduleSave(); })),
+                const SizedBox(width: 16),
+                Expanded(child: _buildDropdown('JustWatch-region', _watchProviderRegion, ['SE', 'US', 'NO', 'GB'], (v) { setState(() => _watchProviderRegion = v!); _scheduleSave(); })),
+                const SizedBox(width: 16),
+                Expanded(child: _buildDropdown('Titeldisplay', _titleDisplayStyle, ['Translated', 'Original'], (v) { setState(() => _titleDisplayStyle = v!); _scheduleSave(); })),
+              ]),
+              const SizedBox(height: 12),
+              _switchTile('Föredra lokal NFO-metadata', 'Använd .nfo-filer framför online-metadata.', _preferLocalNfo, _setPreferLocalNfo),
+              _switchTile('Visa utgåva/version i titel', 'T.ex. visar "[Director\'s Cut]" efter titeln.', _showReleaseVersion, (v) { setState(() => _showReleaseVersion = v); _scheduleSave(); }),
+            ]),
+          ],
+          if (type == 'Music') ...[
+            const SizedBox(height: 24),
+            _buildSection('Allmänt & Språk', Icons.language, [
+              Row(children: [
+                Expanded(child: _buildDropdown('Metadataspråk', _metadataLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _metadataLanguage = v!); _scheduleSave(); })),
+                const SizedBox(width: 16),
+                Expanded(child: _buildDropdown('Fallback-språk', _fallbackLanguage, ['sv-SE', 'en-US', 'no-NO'], (v) { setState(() => _fallbackLanguage = v!); _scheduleSave(); })),
+                const SizedBox(width: 16),
+                Expanded(child: _buildDropdown('Titeldisplay', _titleDisplayStyle, ['Translated', 'Original'], (v) { setState(() => _titleDisplayStyle = v!); _scheduleSave(); })),
+              ]),
+            ]),
+            const SizedBox(height: 16),
+            _buildSection('Skanning & Lokala taggar', Icons.tag, [
+              _switchTile('Föredra inbäddade taggar', 'Föredra ID3/Vorbis/FLAC-taggar inuti filerna framför online-metadata.', _preferLocalNfo, (v) { setState(() => _preferLocalNfo = v); _scheduleSave(); }),
+              _switchTile('Visa utgåva/version i titel', 'T.ex. visar "[Remastered]" efter titeln om det anges.', _showReleaseVersion, (v) { setState(() => _showReleaseVersion = v); _scheduleSave(); }),
+              _switchTile('Länka soundtracks', 'Automatiskt länka soundtracks till filmbiblioteket om de matchar i titel/ID.', _linkSoundtracksAutomatically, (v) { setState(() => _linkSoundtracksAutomatically = v); _scheduleSave(); }),
+            ]),
+            const SizedBox(height: 16),
+            _buildSection('Online-leverantörer', Icons.cloud_outlined, [
+              _switchTile('Använd MusicBrainz för spårmatchning', 'Används för att finna korrekt metadata online.', _useMusicBrainz, (v) { setState(() => _useMusicBrainz = v); _scheduleSave(); }),
+              _switchTile('Läs MusicBrainz-taggar', 'Använd om inbäddade MusicBrainz-ID:n redan finns i filerna.', _readMusicBrainzTags, (v) { setState(() => _readMusicBrainzTags = v); _scheduleSave(); }),
+              _switchTile('Aktivera AcoustID-fingeravtryck', 'Skanna ljudfilernas fingeravtryck om metadata saknas helt.', _enableAcoustId, (v) { setState(() => _enableAcoustId = v); _scheduleSave(); }),
+              _switchTile('Hämta fördjupad trivia från Wikidata', 'Kan innefatta artistfakta eller albumrecensioner.', _fetchWikidataTrivia, (v) { setState(() => _fetchWikidataTrivia = v); _scheduleSave(); }),
+              _switchTile('Hämta grafik från Fanart.tv & TheAudioDB', 'Hämtar högupplösta bakgrunder och logotyper.', _fetchFanartAndAudioDb, (v) { setState(() => _fetchFanartAndAudioDb = v); _scheduleSave(); }),
+            ]),
+          ],
         ],
       ),
     );

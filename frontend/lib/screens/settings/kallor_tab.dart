@@ -47,22 +47,24 @@ extension KallorTabExtension on _SettingsScreenState {
             ],
           ),
           const SizedBox(height: 20),
-          _buildSection('TMDB', Icons.movie_outlined, [
-            _buildField('TMDB API-nyckel', _tmdbKeyCtrl, obscure: true),
-            const SizedBox(height: 12),
-            _buildField('TMDB User Auth', _tmdbAuthCtrl, obscure: true),
-          ]),
-          const SizedBox(height: 16),
-          _buildSection('OMDb', Icons.star_outlined, [
-            _buildField('OMDb API-nyckel', _omdbKeyCtrl, obscure: true),
-            const SizedBox(height: 6),
-            InkWell(
-              onTap: () => _openUrl('https://www.omdbapi.com/apikey.aspx'),
-              child: const Text('Skaffa en gratis OMDb API-nyckel här',
-                  style: TextStyle(color: Colors.white38, fontSize: 11, decoration: TextDecoration.underline)),
-            ),
-          ]),
-          const SizedBox(height: 16),
+          if (widget.apiService.isAdmin) ...[
+            _buildSection('TMDB', Icons.movie_outlined, [
+              _buildField('TMDB API-nyckel', _tmdbKeyCtrl, obscure: true),
+              const SizedBox(height: 12),
+              _buildField('TMDB User Auth', _tmdbAuthCtrl, obscure: true),
+            ]),
+            const SizedBox(height: 16),
+            _buildSection('OMDb', Icons.star_outlined, [
+              _buildField('OMDb API-nyckel', _omdbKeyCtrl, obscure: true),
+              const SizedBox(height: 6),
+              InkWell(
+                onTap: () => _openUrl('https://www.omdbapi.com/apikey.aspx'),
+                child: const Text('Skaffa en gratis OMDb API-nyckel här',
+                    style: TextStyle(color: Colors.white38, fontSize: 11, decoration: TextDecoration.underline)),
+              ),
+            ]),
+            const SizedBox(height: 16),
+          ],
           _buildSection('Simkl', Icons.link_outlined, [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -93,7 +95,7 @@ extension KallorTabExtension on _SettingsScreenState {
                   await _saveSettings();
                 } else {
                   await _saveSettings();
-                  await _openUrl('${widget.apiService.baseUrl}/api/oauth/simkl/authorize');
+                  await _openUrl('${widget.apiService.baseUrl}/api/oauth/simkl/authorize?uid=${widget.apiService.currentUserId}');
                   Timer.periodic(const Duration(seconds: 2), (timer) async {
                     if (timer.tick > 30) { timer.cancel(); return; }
                     final s = await widget.apiService.getSettings();
@@ -149,7 +151,7 @@ extension KallorTabExtension on _SettingsScreenState {
                   await _saveSettings();
                 } else {
                   await _saveSettings();
-                  await _openUrl('${widget.apiService.baseUrl}/api/oauth/trakt/authorize');
+                  await _openUrl('${widget.apiService.baseUrl}/api/oauth/trakt/authorize?uid=${widget.apiService.currentUserId}');
                   Timer.periodic(const Duration(seconds: 2), (timer) async {
                     if (timer.tick > 30) { timer.cancel(); return; }
                     final s = await widget.apiService.getSettings();
@@ -512,3 +514,4 @@ extension KallorTabExtension on _SettingsScreenState {
   }
 
 }
+

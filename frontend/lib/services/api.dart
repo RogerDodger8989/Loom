@@ -59,6 +59,68 @@ class ApiService {
     return _token != null;
   }
 
+  String? get currentUserId {
+    if (_token == null) return null;
+    try {
+      final parts = _token!.split('.');
+      if (parts.length != 3) return null;
+      var payload = parts[1];
+      while (payload.length % 4 != 0) {
+        payload += '=';
+      }
+      final decoded = utf8.decode(base64Url.decode(payload));
+      final data = jsonDecode(decoded);
+      return data['id']?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? get currentUserRole {
+    if (_token == null) return null;
+    try {
+      final parts = _token!.split('.');
+      if (parts.length != 3) return null;
+      var payload = parts[1];
+      while (payload.length % 4 != 0) {
+        payload += '=';
+      }
+      final decoded = utf8.decode(base64Url.decode(payload));
+      final data = jsonDecode(decoded);
+      return data['role']?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool get isAdmin => currentUserRole?.toLowerCase() == 'admin';
+
+  // ---- User Specific Preferences ----
+  String? getUserPref(String key) {
+    final uid = currentUserId ?? 'guest';
+    return _readStorage('${uid}_$key');
+  }
+
+  bool? getUserPrefBool(String key) {
+    final uid = currentUserId ?? 'guest';
+    return _prefs?.getBool('${uid}_$key');
+  }
+
+  Future<void> setUserPref(String key, String value) async {
+    final uid = currentUserId ?? 'guest';
+    await _writeStorage('${uid}_$key', value);
+  }
+
+  Future<void> setUserPrefBool(String key, bool value) async {
+    final uid = currentUserId ?? 'guest';
+    await _prefs?.setBool('${uid}_$key', value);
+  }
+
+  Future<void> removeUserPref(String key) async {
+    final uid = currentUserId ?? 'guest';
+    await _removeStorage('${uid}_$key');
+  }
+
   Future<void> saveToken(String token) async {
     _token = token;
     await _writeStorage('loom_token', token);
@@ -67,6 +129,7 @@ class ApiService {
   Future<void> clearToken() async {
     _token = null;
     await _removeStorage('loom_token');
+    await _removeStorage('loom_settings_cache'); // Clear settings cache
   }
 
   Future<void> saveSettingsCache(Map<String, dynamic> settings) async {
@@ -367,7 +430,19 @@ class ApiService {
     }
   }
 
-  /// Fetch all configured library paths
+  /// Fetch music overview (legacy, kept for compatibility)
+  Future<Map<String, dynamic>> fetchMusicOverview() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/music'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } else {
+      throw Exception('Failed to fetch music: ${response.body}');
+    }
+  }
+
   Future<List<dynamic>> fetchLibraryPaths() async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/library/paths'),
@@ -1409,4 +1484,42 @@ class ApiService {
     if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
     throw Exception('diskCleanup failed: ${response.body}');
   }
+
+  // ── Music API ─────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> fetchMusicAlbums({String nav = 'albums', String? genre, String? year, String? artistId}) async {
+    final params = <String, String>{'nav': nav};
+    if (genre != null) params['genre'] = genre;
+    if (year != null) params['year'] = year;
+    if (artistId != null) params['artist_id'] = artistId;
+    final uri = Uri.parse('$baseUrl/api/music/albums').replace(queryParameters: params);
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchMusicAlbums failed: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> fetchMusicAlbum(String albumId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/music/albums/$albumId'), headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchMusicAlbum failed: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> fetchMusicTracks({String? albumId}) async {
+    final params = albumId != null ? {'album_id': albumId} : <String, String>{};
+    final uri = Uri.parse('$baseUrl/api/music/tracks').replace(queryParameters: params);
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchMusicTracks failed: ${response.statusCode}');
+  }
+
+  Future<void> triggerMusicScan({String? path}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/music/scan'),
+      headers: {..._authHeaders(), 'Content-Type': 'application/json'},
+      body: jsonEncode(path != null ? {'path': path} : {}),
+    );
+    if (response.statusCode != 200) throw Exception('triggerMusicScan failed: ${response.statusCode}');
+  }
+
+  String musicStreamUrl(String trackId) => '$baseUrl/api/music/stream/$trackId';
 }

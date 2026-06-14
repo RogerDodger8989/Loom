@@ -8,14 +8,15 @@ Loom är en självhostad mediaserver med premium-UI som ger dig precis den upple
 
 ## Vad skiljer Loom från andra mediaservrar?
 
+- **Multipla Användare & Isolerade Profiler** — varje användare har sin egen uppspelningshistorik, egen progress, egna inställningar, "Fortsätt titta", egen avatar och anpassad startsida ("HOME_LAYOUT").
 - **Upp till 5 betyg-källor** — TMDB, IMDb, Rotten Tomatoes (via OMDb), Simkl, Trakt — allt på samma sida
-- **Tvåvägssynk med Trakt & Simkl** — ett klick kopplar ihop, hela din historik importeras automatiskt
+- **Tvåvägssynk med Trakt & Simkl (Per Användare)** — varje användare kan koppla sina egna personliga Trakt- och Simkl-konton oberoende av varandra. All historik och betyg importeras och synkas i bakgrunden.
+- **Säker Papperskorg (`.trash`)** — Filer du raderar flyttas till en dold papperskorg för att förhindra oavsiktlig radering. Skannern ignorerar automatiskt `.trash`-mappar. Återställ via UI eller töm för att radera permanent.
 - **Zero-setup FFmpeg & FFprobe** — ingen manuell installation, bundlade binärer körs direkt
 - **Dynamisk HLS-transkodning** — seek direkt till vilken position som helst, inga inladdningsskärmar
 - **Inbyggd Trailer-uppspelning** — streama trailers i realtid direkt i appen via YouTube/TMDB utan att lämna videospelaren
 - **Teknisk mediainformation (Info)** — högerklicka på valfri titel och se fullständig FFprobe-data för alla filer/versioner
 - **Tautulli-inspirerad statistik** — spelningshistorik per media och per användare, datumintervall-filter, topplista med expanderbara spelsessioner
-- **Säker Papperskorg (`.trash`)** — Filer du raderar flyttas till papperskorgen där de ignoreras av skannern. Återställ dem eller töm papperskorgen för att radera dem permanent.
 - **Manuella TMDB-Matchningar** — Filmen hittades inte? Högerklicka och "Fixa Matchning" låter dig söka manuellt och applicera rätt metadata direkt.
 
 ---

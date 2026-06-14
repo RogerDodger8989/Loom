@@ -66,7 +66,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS media_items (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
-      type TEXT CHECK(type IN ('Movie', 'Show')) NOT NULL,
+      type TEXT CHECK(type IN ('Movie', 'Show', 'Music')) NOT NULL,
       year INTEGER,
       plot TEXT,
       genre TEXT,
@@ -125,14 +125,48 @@ db.exec(`
   );
 
   -- Musikmodul
+  CREATE TABLE IF NOT EXISTS music_artists (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      musicbrainz_id TEXT,
+      wikidata_id TEXT,
+      bio TEXT,
+      image_path TEXT,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS music_albums (
+      id TEXT PRIMARY KEY,
+      artist_id TEXT REFERENCES music_artists(id) ON DELETE SET NULL,
+      album_artist TEXT,
+      title TEXT NOT NULL,
+      year INTEGER,
+      genre TEXT,
+      cover_path TEXT,
+      discart_path TEXT,
+      musicbrainz_album_id TEXT,
+      disc_count INTEGER DEFAULT 1,
+      local_path TEXT,
+      linked_media_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS music_tracks (
       id TEXT PRIMARY KEY,
+      album_id TEXT REFERENCES music_albums(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       artist TEXT,
       album TEXT,
-      file_path TEXT NOT NULL,
+      file_path TEXT NOT NULL UNIQUE,
       track_number INTEGER,
-      duration_seconds INTEGER
+      disc_number INTEGER DEFAULT 1,
+      duration_seconds INTEGER,
+      codec TEXT,
+      bit_depth INTEGER,
+      sample_rate INTEGER,
+      replay_gain REAL,
+      musicbrainz_id TEXT,
+      soundtrack_movie_id TEXT REFERENCES media_items(id) ON DELETE SET NULL
   );
 
   CREATE TABLE IF NOT EXISTS music_history (
@@ -148,6 +182,14 @@ db.exec(`
       value TEXT NOT NULL
   );
 
+  -- Personliga användarinställningar (UI, Trakt, Simkl)
+  CREATE TABLE IF NOT EXISTS user_settings (
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT,
+      PRIMARY KEY (user_id, key)
+  );
+
   -- Watchlist för nedladdningar och bevakning
   CREATE TABLE IF NOT EXISTS watchlist (
       id TEXT PRIMARY KEY,
@@ -161,16 +203,27 @@ db.exec(`
   );
 
   -- Synkad användarstatus för externa titlar (ej lokalt bibliotek)
-  CREATE TABLE IF NOT EXISTS external_media_state (
-      tmdb_id TEXT PRIMARY KEY,
-      imdb_id TEXT,
-      my_rating TEXT,
-      watch_status TEXT CHECK(watch_status IN ('watched', 'unwatched')),
-      source TEXT,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    CREATE TABLE IF NOT EXISTS external_media_state (
+        tmdb_id TEXT NOT NULL,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        imdb_id TEXT,
+        my_rating TEXT,
+        watch_status TEXT CHECK(watch_status IN ('watched', 'unwatched')),
+        source TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tmdb_id, user_id)
+    );
 
   CREATE INDEX IF NOT EXISTS idx_external_media_state_imdb_id ON external_media_state (imdb_id);
+
+  -- Betyg per användare
+  CREATE TABLE IF NOT EXISTS user_ratings (
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE CASCADE,
+      rating REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, media_item_id)
+  );
 
   -- Markörer för intro/outro/kapitel (stöder både filmer och avsnitt)
   CREATE TABLE IF NOT EXISTS media_markers (
@@ -320,5 +373,137 @@ try {
 try {
   db.exec('ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT NULL;');
 } catch (e) { /* already exists */ }
+
+try {
+  db.exec('ALTER TABLE watch_history ADD COLUMN play_count INTEGER DEFAULT 0;');
+} catch (e) { /* already exists */ }
+
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS play_history (
+      id                TEXT PRIMARY KEY,
+      user_id           TEXT REFERENCES users(id) ON DELETE CASCADE,
+      media_item_id     TEXT REFERENCES media_items(id) ON DELETE CASCADE,
+      episode_id        TEXT REFERENCES episodes(id) ON DELETE CASCADE,
+      watched_at        TEXT NOT NULL,
+      source            TEXT DEFAULT 'local',
+      trakt_history_id  INTEGER UNIQUE
+    );
+    CREATE INDEX IF NOT EXISTS idx_play_history_media  ON play_history(media_item_id);
+    CREATE INDEX IF NOT EXISTS idx_play_history_user   ON play_history(user_id, watched_at DESC);
+  `);
+} catch (e) { /* already exists */ }
+
+// Music tracks column migrations
+const musicTracksColumns = [
+  'musicbrainz_id TEXT',
+  'soundtrack_movie_id TEXT',
+  'album_id TEXT',
+  'disc_number INTEGER DEFAULT 1',
+  'codec TEXT',
+  'bit_depth INTEGER',
+  'sample_rate INTEGER',
+  'replay_gain REAL',
+];
+for (const col of musicTracksColumns) {
+  try { db.exec(`ALTER TABLE music_tracks ADD COLUMN ${col};`); } catch (e) { /* already exists */ }
+}
+
+// Ensure music_albums and music_artists tables exist (idempotent)
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS music_artists (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, musicbrainz_id TEXT, wikidata_id TEXT,
+      bio TEXT, image_path TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS music_albums (
+      id TEXT PRIMARY KEY, artist_id TEXT, album_artist TEXT, title TEXT NOT NULL,
+      year INTEGER, genre TEXT, cover_path TEXT, discart_path TEXT,
+      musicbrainz_album_id TEXT, disc_count INTEGER DEFAULT 1, local_path TEXT,
+      linked_media_id TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+} catch (e) { /* already exists */ }
+
+// Migrera media_items CHECK-villkor för type om 'Music' saknas
+try {
+  // Testa om Music är tillåtet genom att kontrollera om vi kan insertera (rollback direkt)
+  db.exec('SAVEPOINT check_music_type;');
+  try {
+    db.exec("INSERT INTO media_items (id, title, type, file_path) VALUES ('_type_test_', '_test_', 'Music', '_test_');");
+    db.exec('ROLLBACK TO SAVEPOINT check_music_type;');
+  } catch (e) {
+    // Music inte tillåtet – återskapa tabellen med korrekt CHECK
+    db.exec('ROLLBACK TO SAVEPOINT check_music_type;');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS media_items_new (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          type TEXT CHECK(type IN ('Movie', 'Show', 'Music')) NOT NULL,
+          year INTEGER,
+          plot TEXT,
+          genre TEXT,
+          poster_path TEXT,
+          fanart_path TEXT,
+          tmdb_id TEXT,
+          imdb_id TEXT,
+          collection_name TEXT,
+          collection_id TEXT,
+          director TEXT,
+          original_title TEXT,
+          file_path TEXT,
+          added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          deleted_at DATETIME DEFAULT NULL,
+          release_date TEXT,
+          delete_source TEXT DEFAULT 'manual',
+          delete_rule TEXT DEFAULT NULL,
+          is_favorite INTEGER DEFAULT 0,
+          file_size INTEGER DEFAULT NULL
+      );
+      INSERT INTO media_items_new SELECT id, title, type, year, plot, genre, poster_path, fanart_path,
+          tmdb_id, imdb_id, collection_name, collection_id, director, original_title, file_path,
+          added_at, deleted_at,
+          NULL, 'manual', NULL, 0, NULL
+      FROM media_items;
+      DROP TABLE media_items;
+      ALTER TABLE media_items_new RENAME TO media_items;
+    `);
+    console.log('[Database] Migrerade media_items CHECK-villkor för att tillåta type=Music');
+  }
+  db.exec('RELEASE SAVEPOINT check_music_type;');
+} catch (e) {
+  console.error('[Database] Failed to migrate media_items type constraint:', e);
+}
+
+// Migrera external_media_state från (tmdb_id) till (tmdb_id, user_id)
+try {
+  // Check if we need to migrate
+  const tableInfo = db.prepare("PRAGMA table_info(external_media_state)").all() as {name: string}[];
+  const hasUserId = tableInfo.some(col => col.name === 'user_id');
+  if (!hasUserId) {
+    db.exec(`
+      CREATE TABLE external_media_state_new (
+          tmdb_id TEXT NOT NULL,
+          user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          imdb_id TEXT,
+          my_rating TEXT,
+          watch_status TEXT CHECK(watch_status IN ('watched', 'unwatched')),
+          source TEXT,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (tmdb_id, user_id)
+      );
+    `);
+    db.exec(`
+      INSERT INTO external_media_state_new (tmdb_id, user_id, imdb_id, my_rating, watch_status, source, updated_at)
+      SELECT tmdb_id, (SELECT id FROM users ORDER BY rowid LIMIT 1), imdb_id, my_rating, watch_status, source, updated_at 
+      FROM external_media_state;
+    `);
+    db.exec(`DROP TABLE external_media_state;`);
+    db.exec(`ALTER TABLE external_media_state_new RENAME TO external_media_state;`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_external_media_state_imdb_id ON external_media_state (imdb_id);`);
+  }
+} catch (e) {
+  console.error('[Database] Failed to migrate external_media_state:', e);
+}
 
 export default db;

@@ -19,6 +19,7 @@ import statsRoutes from './routes/stats';
 import rssRoutes from './routes/rss';
 import exportRoutes from './routes/export';
 import diskRoutes from './routes/disk';
+import musicRoutes from './routes/music';
 import multipart from '@fastify/multipart';
 import { addLog } from './services/log_store';
 import db from './config/database'; // Import ensures database gets initialized and seeded on boot
@@ -90,6 +91,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(rssRoutes);
   app.register(exportRoutes);
   app.register(diskRoutes);
+  app.register(musicRoutes);
 
   // Log every HTTP response to the in-memory log store (skip in test mode)
   if (!isTest) {

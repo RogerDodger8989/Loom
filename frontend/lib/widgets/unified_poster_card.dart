@@ -521,28 +521,46 @@ class _UnifiedPosterCardState extends State<UnifiedPosterCard> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            (widget.item['year'] != null && widget.item['year'].toString().isNotEmpty && widget.item['year'].toString() != 'null')
-                                ? widget.item['year'].toString()
-                                : '',
-                            style: TextStyle(color: Colors.white38, fontSize: 11.0 * posterTextScale),
+                          Flexible(
+                            flex: 1,
+                            child: Text(
+                              (widget.item['year'] != null && widget.item['year'].toString().isNotEmpty && widget.item['year'].toString() != 'null')
+                                  ? widget.item['year'].toString()
+                                  : '',
+                              style: TextStyle(color: Colors.white38, fontSize: 11.0 * posterTextScale),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
+                          const SizedBox(width: 4),
                           if (resolutionLabel != null)
-                            Text(
-                              resolutionLabel,
-                              style: TextStyle(
-                                color: const Color(0xFFB593FF),
-                                fontSize: 10.0 * posterTextScale,
-                                fontWeight: FontWeight.w600,
+                            Flexible(
+                              flex: 2,
+                              child: Text(
+                                resolutionLabel,
+                                style: TextStyle(
+                                  color: const Color(0xFFB593FF),
+                                  fontSize: 10.0 * posterTextScale,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.right,
                               ),
                             )
                           else if (!widget.isHomeCard && versionsCount > 1)
-                            Text(
-                              '$versionsCount ver.',
-                              style: TextStyle(
-                                color: const Color(0xFFB593FF).withValues(alpha: 0.8),
-                                fontSize: 11.0 * posterTextScale,
-                                fontWeight: FontWeight.w500,
+                            Flexible(
+                              flex: 2,
+                              child: Text(
+                                '$versionsCount ver.',
+                                style: TextStyle(
+                                  color: const Color(0xFFB593FF).withValues(alpha: 0.8),
+                                  fontSize: 11.0 * posterTextScale,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.right,
                               ),
                             ),
                         ],

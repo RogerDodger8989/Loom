@@ -253,8 +253,33 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
           const metadata: Record<string, string> = {};
           metadataRows.forEach(row => {
+            if (['watch_status', 'watch_completed_at', 'last_watched_at', 'my_rating'].includes(row.metadata_key)) return;
             metadata[row.metadata_key] = row.metadata_value;
           });
+
+          const userRatingRow = db.prepare('SELECT rating FROM user_ratings WHERE user_id = ? AND media_item_id = ?').get(user.id, movie.id) as any;
+          if (userRatingRow) {
+            metadata.my_rating = userRatingRow.rating.toString();
+          } else if (movie.tmdb_id || movie.imdb_id) {
+            const extState = db.prepare('SELECT my_rating, watch_status FROM external_media_state WHERE user_id = ? AND (tmdb_id = ? OR imdb_id = ?)').get(user.id, movie.tmdb_id, movie.imdb_id) as any;
+            if (extState) {
+              if (extState.my_rating) metadata.my_rating = extState.my_rating;
+              if (extState.watch_status) metadata.watch_status = extState.watch_status;
+            }
+          }
+          
+          const watchHistoryRow = db.prepare('SELECT is_watched, last_position_seconds, updated_at FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL').get(user.id, movie.id) as any;
+          if (watchHistoryRow) {
+            metadata.watch_status = watchHistoryRow.is_watched ? 'watched' : 'unwatched';
+            metadata.playback_progress = watchHistoryRow.last_position_seconds.toString();
+            metadata.last_watched_at = watchHistoryRow.updated_at;
+            if (watchHistoryRow.is_watched) {
+              metadata.watch_completed_at = watchHistoryRow.updated_at;
+            }
+            (movie as any).last_watched_at = watchHistoryRow.updated_at;
+          } else {
+            (movie as any).last_watched_at = null;
+          }
 
           return {
             ...movie,
@@ -328,16 +353,40 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         const movie = db.prepare(`SELECT * FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id) as any;
         if (!movie) return reply.code(404).send({ error: 'Media item not found' });
 
-        // Upsert into media_metadata (use JSON-stringified value for complex objects)
         const stringVal = typeof value === 'string' ? value : JSON.stringify(value);
-        db.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `).run(uuidv4(), movie.id, key, stringVal);
-
+        
         if (key === 'my_rating') {
-          await syncExternalRatings(movie, value);
+          const numVal = typeof value === 'number' ? value : parseFloat(value);
+          if (!isNaN(numVal)) {
+            db.prepare(`
+              INSERT INTO user_ratings (user_id, media_item_id, rating) 
+              VALUES (?, ?, ?)
+              ON CONFLICT(user_id, media_item_id) DO UPDATE SET rating=excluded.rating
+            `).run(user.id, movie.id, numVal);
+
+            if (movie.tmdb_id || movie.imdb_id) {
+              db.prepare(`
+                INSERT INTO external_media_state (tmdb_id, user_id, imdb_id, my_rating)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tmdb_id, user_id) DO UPDATE SET my_rating=excluded.my_rating
+              `).run(movie.tmdb_id || movie.imdb_id, user.id, movie.imdb_id || null, stringVal);
+            }
+          }
+          await syncExternalRatings(user.id, movie, value);
+        } else if (key === 'watch_status') {
+          const isWatched = stringVal === 'watched' ? 1 : 0;
+          const existingHistory = db.prepare(`SELECT id FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL`).get(user.id, movie.id) as any;
+          if (existingHistory) {
+            db.prepare('UPDATE watch_history SET is_watched = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(isWatched, existingHistory.id);
+          } else {
+            db.prepare('INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched) VALUES (?, ?, ?, 0, 0, ?)').run(uuidv4(), user.id, movie.id, isWatched);
+          }
+        } else {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id, key, stringVal);
         }
 
         return reply.code(200).send({ ok: true });
@@ -508,7 +557,7 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         // 3. Sync to external APIs in background
-        syncExternalWatchStatus(movie, isWatchedBool).catch(err => {
+        syncExternalWatchStatus((request.user as any).id, movie, isWatchedBool).catch(err => {
           console.error('[Seen Route] syncExternalWatchStatus failed:', err);
         });
 
@@ -802,11 +851,14 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         // 3. Update watch_history (best-effort — may fail for anonymous users lacking a users row)
+        let prevIsWatched = false;
         try {
           const existingHistory = db.prepare(`
-            SELECT id FROM watch_history
+            SELECT id, is_watched FROM watch_history
             WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
-          `).get(user.id, movie.id) as { id: string } | undefined;
+          `).get(user.id, movie.id) as { id: string; is_watched: number } | undefined;
+
+          prevIsWatched = existingHistory?.is_watched === 1;
 
           if (existingHistory) {
             db.prepare(`
@@ -824,9 +876,21 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           request.log.warn(`[Progress] watch_history skipped: ${histErr.message}`);
         }
 
-        // 4. Sync to Trakt/Simkl if threshold met
+        // 4. Record local play in play_history when crossing the completion threshold
+        if (autoWatch && !prevIsWatched && user.id !== 'anonymous') {
+          try {
+            db.prepare(`
+              INSERT INTO play_history (id, user_id, media_item_id, watched_at, source)
+              VALUES (?, ?, ?, datetime('now'), 'local')
+            `).run(uuidv4(), user.id, movie.id);
+          } catch (phErr: any) {
+            request.log.warn(`[Progress] play_history insert skipped: ${phErr.message}`);
+          }
+        }
+
+        // 5. Sync to Trakt/Simkl if threshold met
         if (autoWatch) {
-          syncExternalWatchStatus(movie, true).catch(err => {
+          syncExternalWatchStatus((request.user as any).id, movie, true).catch(err => {
             console.error('[Progress Route] syncExternalWatchStatus failed:', err);
           });
         }
@@ -1095,13 +1159,41 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
         const metadata: Record<string, any> = {};
         metadataRows.forEach(row => {
+          if (['watch_status', 'watch_completed_at', 'last_watched_at', 'my_rating'].includes(row.metadata_key)) return;
           try {
             // Try to parse JSON for cast/ratings
             metadata[row.metadata_key] = JSON.parse(row.metadata_value);
-          } catch (e) {
+          } catch {
             metadata[row.metadata_key] = row.metadata_value;
           }
         });
+
+        // Länkning av soundtrack: läs från music_tracks (ny metod) eller legacy soundtrack_data
+        const linkedTracks = db.prepare(`
+          SELECT id, title, artist, album, file_path, track_number, duration_seconds
+          FROM music_tracks
+          WHERE soundtrack_movie_id = ?
+          ORDER BY track_number ASC, title ASC
+        `).all(movie.id) as any[];
+
+        if (linkedTracks.length > 0) {
+          const firstTrack = linkedTracks[0];
+          metadata.soundtrack = {
+            album: firstTrack.album || movie.title,
+            artist: firstTrack.artist || 'Various Artists',
+            cover_path: null,
+            local_path: null,
+            tracks: linkedTracks.map(t => ({
+              id: t.id,
+              track_number: t.track_number,
+              title: t.title,
+              file_path: t.file_path,
+              duration_seconds: t.duration_seconds,
+            }))
+          };
+        } else if (metadata.soundtrack_data) {
+          metadata.soundtrack = metadata.soundtrack_data;
+        }
 
         const upsertMeta = (key: string, value: string) => {
           db.prepare(`
@@ -1376,6 +1468,28 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
           }
         }
 
+        // Override with user-specific data
+        const userRatingRow = db.prepare('SELECT rating FROM user_ratings WHERE user_id = ? AND media_item_id = ?').get(user.id, movie.id) as any;
+        if (userRatingRow) {
+          metadata.my_rating = userRatingRow.rating.toString();
+        } else if (movie.tmdb_id || movie.imdb_id) {
+          const extState = db.prepare('SELECT my_rating, watch_status FROM external_media_state WHERE user_id = ? AND (tmdb_id = ? OR imdb_id = ?)').get(user.id, movie.tmdb_id, movie.imdb_id) as any;
+          if (extState) {
+            if (extState.my_rating) metadata.my_rating = extState.my_rating;
+            if (extState.watch_status) metadata.watch_status = extState.watch_status;
+          }
+        }
+        
+        const watchHistoryRow = db.prepare('SELECT is_watched, last_position_seconds, updated_at FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL').get(user.id, movie.id) as any;
+        if (watchHistoryRow) {
+          metadata.watch_status = watchHistoryRow.is_watched ? 'watched' : 'unwatched';
+          metadata.playback_progress = watchHistoryRow.last_position_seconds.toString();
+          metadata.last_watched_at = watchHistoryRow.updated_at;
+          if (watchHistoryRow.is_watched) {
+            metadata.watch_completed_at = watchHistoryRow.updated_at;
+          }
+        }
+
         // Return combined data
         return {
           id: movie.id,
@@ -1501,8 +1615,33 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
           const metadata: Record<string, string> = {};
           metadataRows.forEach(row => {
+            if (['watch_status', 'watch_completed_at', 'last_watched_at', 'my_rating'].includes(row.metadata_key)) return;
             metadata[row.metadata_key] = row.metadata_value;
           });
+
+          const userRatingRow = db.prepare('SELECT rating FROM user_ratings WHERE user_id = ? AND media_item_id = ?').get(user.id, show.id) as any;
+          if (userRatingRow) {
+            metadata.my_rating = userRatingRow.rating.toString();
+          } else if (show.tmdb_id || show.imdb_id) {
+            const extState = db.prepare('SELECT my_rating, watch_status FROM external_media_state WHERE user_id = ? AND (tmdb_id = ? OR imdb_id = ?)').get(user.id, show.tmdb_id, show.imdb_id) as any;
+            if (extState) {
+              if (extState.my_rating) metadata.my_rating = extState.my_rating;
+              if (extState.watch_status) metadata.watch_status = extState.watch_status;
+            }
+          }
+          
+          const watchHistoryRow = db.prepare('SELECT is_watched, last_position_seconds, updated_at FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL').get(user.id, show.id) as any;
+          if (watchHistoryRow) {
+            metadata.watch_status = watchHistoryRow.is_watched ? 'watched' : 'unwatched';
+            metadata.playback_progress = watchHistoryRow.last_position_seconds.toString();
+            metadata.last_watched_at = watchHistoryRow.updated_at;
+            if (watchHistoryRow.is_watched) {
+              metadata.watch_completed_at = watchHistoryRow.updated_at;
+            }
+            (show as any).last_watched_at = watchHistoryRow.updated_at;
+          } else {
+            (show as any).last_watched_at = null;
+          }
 
           // Get episodes with per-user watch status
           const episodes = db.prepare(`
@@ -3197,3 +3336,7 @@ function probeTechInfo(filePath: string): Promise<Record<string, unknown>> {
     });
   });
 }
+
+
+
+

@@ -162,6 +162,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _syncSimklWatched = true;
   bool _isLoadingSettings = false;
 
+  // -- Music Settings --
+  bool _useMusicBrainz = true;
+  bool _readMusicBrainzTags = true;
+  bool _enableAcoustId = false;
+  bool _fetchWikidataTrivia = true;
+  bool _fetchFanartAndAudioDb = true;
+  bool _linkSoundtracksAutomatically = true;
+
   // auto-save
   Timer? _autoSaveTimer;
   String _autoSaveStatus = ''; // '' | 'saving' | 'saved'
@@ -421,6 +429,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _titleDisplayStyle = s['TITLE_DISPLAY_STYLE'] ?? 'Translated';
       _showReleaseVersion = s['SHOW_RELEASE_VERSION'] != 'false';
       _preferLocalNfo = s['PREFER_LOCAL_NFO'] != 'false';
+      _useMusicBrainz = s['USE_MUSICBRAINZ'] != 'false';
+      _readMusicBrainzTags = s['READ_MUSICBRAINZ_TAGS'] != 'false';
+      _enableAcoustId = s['ENABLE_ACOUSTID'] == 'true';
+      _fetchWikidataTrivia = s['FETCH_WIKIDATA_TRIVIA'] != 'false';
+      _fetchFanartAndAudioDb = s['FETCH_FANART_AUDIODB'] != 'false';
+      _linkSoundtracksAutomatically = s['LINK_SOUNDTRACKS_AUTO'] != 'false';
       _versionPriority = s['VERSION_PRIORITY'] ?? '1080p,720p,4K';
       _syncTraktRatings = s['sync_trakt_ratings'] != 'false';
       _syncTraktWatched = s['sync_trakt_watched'] != 'false';
@@ -488,6 +502,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'TITLE_DISPLAY_STYLE': _titleDisplayStyle,
         'SHOW_RELEASE_VERSION': _showReleaseVersion ? 'true' : 'false',
         'PREFER_LOCAL_NFO': _preferLocalNfo ? 'true' : 'false',
+        'USE_MUSICBRAINZ': _useMusicBrainz ? 'true' : 'false',
+        'READ_MUSICBRAINZ_TAGS': _readMusicBrainzTags ? 'true' : 'false',
+        'ENABLE_ACOUSTID': _enableAcoustId ? 'true' : 'false',
+        'FETCH_WIKIDATA_TRIVIA': _fetchWikidataTrivia ? 'true' : 'false',
+        'FETCH_FANART_AUDIODB': _fetchFanartAndAudioDb ? 'true' : 'false',
+        'LINK_SOUNDTRACKS_AUTO': _linkSoundtracksAutomatically ? 'true' : 'false',
         'sync_trakt_ratings': _syncTraktRatings ? 'true' : 'false',
         'sync_trakt_watched': _syncTraktWatched ? 'true' : 'false',
         'sync_simkl_ratings': _syncSimklRatings ? 'true' : 'false',
@@ -1069,6 +1089,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
               itemCount: _cats.length,
               itemBuilder: (_, i) {
+                if (!widget.apiService.isAdmin && ![0, 4, 5, 6, 7].contains(i)) {
+                  return const SizedBox.shrink();
+                }
                 final (outlineIcon, filledIcon, label) = _cats[i];
                 final selected = _selectedCategory == i;
                 return Padding(

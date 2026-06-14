@@ -10,6 +10,7 @@ import 'dart:ui' as ui;
 import 'package:window_manager/window_manager.dart';
 import '../utils/platform_view_registry.dart' as ui_web;
 import '../services/api.dart';
+import 'music_library_screen.dart';
 import 'episode_details_screen.dart';
 import 'fix_match_dialog.dart';
 import 'media_details_screen.dart';
@@ -853,7 +854,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       onNavigate: _navigateTo,
       onDelete: (item) => _loadAllMedia(),
     );
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
+    _tabController.addListener(() {
+      // Music tab (index 3) handled by MusicLibraryScreen internally
+    });
     _homeSections = _defaultHomeSections();
     _loadAllMedia();
     _checkScannerStatus();
@@ -1494,7 +1498,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                       if (_selectedMediaId == null && _selectedPersonId == null) ...[
                         _buildHeader(),
                         // Kalendern har egna chips direkt under — minimal gap
-                        SizedBox(height: _tabController.index == 3 ? 6 : 22),
+                        SizedBox(height: _tabController.index == 4 ? 6 : 22),
                       ],
                       Expanded(
                         child: _selectedPersonId != null
@@ -1613,6 +1617,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                                         _buildHomeView(),
                                         _buildMoviesView(),
                                         _buildShowsView(),
+                                        MusicLibraryScreen(apiService: widget.apiService),
                                         CalendarScreen(
                                           apiService: widget.apiService,
                                           initialSelectedDay: _calendarSelectedDay,
@@ -1754,7 +1759,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           _buildSidebarItem(0, Icons.home_outlined, Icons.home, 'Hem'),
           _buildSidebarItem(1, Icons.movie_outlined, Icons.movie, 'Filmer'),
           _buildSidebarItem(2, Icons.tv_outlined, Icons.tv, 'TV-Serier'),
-          _buildSidebarItem(3, Icons.calendar_month_outlined, Icons.calendar_month, 'Kalender'),
+          _buildSidebarItem(3, Icons.music_note_outlined, Icons.music_note, 'Musik'),
+          _buildSidebarItem(4, Icons.calendar_month_outlined, Icons.calendar_month, 'Kalender'),
 
           const Spacer(),
           
@@ -1933,14 +1939,16 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
             : _tabController.index == 2
                 ? 'TV-Serier'
                 : _tabController.index == 3
-                    ? 'Kalender'
-                    : 'Inställningar';
+                    ? 'Musik'
+                    : _tabController.index == 4
+                        ? 'Kalender'
+                        : 'Inställningar';
     final subtitle = isHome
         ? 'Din personliga mediadashboard'
-        : _tabController.index == 3
+        : _tabController.index == 4
             ? 'Din TV- och film-guide'
-            : _tabController.index == 4
-                ? 'Hantera betrodda enheter och serverinställningar'
+            : _tabController.index == 3
+                ? 'Din musiksamling'
                 : 'Hantera och strömma din mediesamling';
 
     return Row(
@@ -3572,6 +3580,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
     return gridContent;
   }
+
 
   Widget _buildMediaCard(dynamic item, {required int index}) {
     return UnifiedPosterCard(

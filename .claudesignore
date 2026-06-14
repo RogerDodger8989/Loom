@@ -1,0 +1,36 @@
+# Byggfiler och kompilerad kod
+node_modules/
+dist/
+build/
+out/
+.next/
+.nuxt/
+
+# Miljö och virtuella miljöer
+.env
+.venv/
+venv/
+env/
+
+# Loggfiler och databaser (tar enormt mycket inmatningstokens)
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+
+# Media och binära filer som AI:n ändå inte kan förstå i textform
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.pdf
+*.zip
+*.tar.gz
+
+# IDE och OS-specifika filer
+.DS_Store
+.idea/
+.vscode/
+.antigravity/

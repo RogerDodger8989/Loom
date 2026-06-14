@@ -186,15 +186,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ? _filteredEventsForDay(_selectedDay!)
         : <Map<String, dynamic>>[];
 
-    return Column(
-      children: [
-        _buildHeader(context, accent),
-        if (_error != null) _buildErrorBanner(context),
-        _buildCalendar(context, accent),
-        const Divider(height: 1),
-        _buildDayLabel(context, selectedEvents, accent),
-        SizedBox(height: 220, child: _buildDetailPanel(selectedEvents, context, accent)),
-      ],
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          _buildHeader(context, accent),
+          if (_error != null) _buildErrorBanner(context),
+          _buildCalendar(context, accent),
+          const Divider(height: 1),
+          _buildDayLabel(context, selectedEvents, accent),
+          SizedBox(height: 220, child: _buildDetailPanel(selectedEvents, context, accent)),
+        ],
+      ),
     );
   }
 

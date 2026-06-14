@@ -943,26 +943,66 @@ void _showMediaStatsDialog(dynamic item) {
                       String line2;
 
                       if (isMovie) {
-                        final isWatched = (p['is_watched'] as num?)?.toInt() == 1;
-                        final durSec    = (p['total_duration_seconds'] as num?)?.toInt() ?? 0;
-                        final posSec    = (p['last_position_seconds']  as num?)?.toInt() ?? 0;
-                        final pct       = durSec > 0 ? (posSec / durSec * 100).round() : 0;
-                        final updAt     = (p['updated_at']        as String?) ?? '';
-                        final startAt   = (p['started_at_approx'] as String?) ?? '';
-                        line1 = startAt.length >= 16
-                            ? 'Start: ${startAt.substring(0, 16)}'
-                            : startAt.isNotEmpty ? 'Start: $startAt' : null;
-                        line2 = updAt.length >= 16
-                            ? 'Slut: ${updAt.substring(0, 16)}'
-                            : 'Slut: $updAt';
-                        trailing = isWatched
-                            ? const Row(mainAxisSize: MainAxisSize.min, children: [
-                                Icon(Icons.check_circle, size: 14, color: Colors.greenAccent),
-                                SizedBox(width: 4),
-                                Text('Slutförd', style: TextStyle(color: Colors.greenAccent, fontSize: 12)),
-                              ])
-                            : Text('$pct% sedd',
-                                style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12));
+                        // play_history rows: watched_at + source are the key fields
+                        final watchedAt = (p['watched_at'] as String?) ?? '';
+                        final source    = (p['source']     as String?) ?? 'local';
+
+                        // Format ISO timestamp → "2018-01-28 19:29"
+                        String formatDate(String iso) {
+                          if (iso.length < 16) return iso;
+                          return iso.replaceFirst('T', ' ').substring(0, 16);
+                        }
+
+                        Widget sourceChip;
+                        if (source == 'trakt') {
+                          sourceChip = Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFED1C24).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('trakt',
+                                style: TextStyle(color: Color(0xFFED1C24), fontSize: 10, fontWeight: FontWeight.w600)),
+                          );
+                        } else if (source == 'simkl') {
+                          sourceChip = Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.blueAccent.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('simkl',
+                                style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontWeight: FontWeight.w600)),
+                          );
+                        } else {
+                          sourceChip = Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.07),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('lokal',
+                                style: TextStyle(color: Colors.white54, fontSize: 10)),
+                          );
+                        }
+
+                        line1 = null;
+                        line2 = watchedAt.isNotEmpty ? formatDate(watchedAt) : '—';
+                        trailing = sourceChip;
+
+                        // Fallback: old watch_history data (no watched_at field, has updated_at)
+                        if (watchedAt.isEmpty && p.containsKey('updated_at')) {
+                          final isWatched = (p['is_watched'] as num?)?.toInt() == 1;
+                          final durSec    = (p['total_duration_seconds'] as num?)?.toInt() ?? 0;
+                          final posSec    = (p['last_position_seconds']  as num?)?.toInt() ?? 0;
+                          final pct       = durSec > 0 ? (posSec / durSec * 100).round() : 0;
+                          final updAt     = (p['updated_at'] as String?) ?? '';
+                          line2    = updAt.length >= 16 ? updAt.substring(0, 16) : updAt;
+                          trailing = isWatched
+                              ? const Icon(Icons.check_circle, size: 14, color: Colors.greenAccent)
+                              : Text('$pct% sedd',
+                                    style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11));
+                        }
                       } else {
                         final epCount   = (p['episode_count']       as num?)?.toInt() ?? 0;
                         final compCount = (p['completed_count']     as num?)?.toInt() ?? 0;

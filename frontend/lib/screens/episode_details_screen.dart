@@ -126,11 +126,10 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
   }
 
   Future<void> _loadPlaybackSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedQuality = prefs.getString('loom_player_quality_pref') ?? 'direct';
-    final savedSubLang = prefs.getString('loom_player_subtitle_lang') ?? '';
-    final savedFallbackSub = prefs.getString('loom_player_fallback_subtitle_lang') ?? '';
-    final savedAudioLang = prefs.getString('loom_player_audio_lang') ?? '';
+    final savedQuality = widget.apiService.getUserPref('loom_player_quality_pref') ?? 'direct';
+    final savedSubLang = widget.apiService.getUserPref('loom_player_subtitle_lang') ?? '';
+    final savedFallbackSub = widget.apiService.getUserPref('loom_player_fallback_subtitle_lang') ?? '';
+    final savedAudioLang = widget.apiService.getUserPref('loom_player_audio_lang') ?? '';
 
     setState(() {
       _selectedQuality = savedQuality;
