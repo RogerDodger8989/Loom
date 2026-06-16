@@ -14,6 +14,8 @@ class Episode {
   final String? airDate;
   final String? overview;
   final bool isUpcoming;
+  final dynamic subtitleTracks;
+  final dynamic audioTracks;
 
   const Episode({
     required this.id,
@@ -28,6 +30,8 @@ class Episode {
     this.airDate,
     this.overview,
     this.isUpcoming = false,
+    this.subtitleTracks,
+    this.audioTracks,
   });
 
   factory Episode.fromJson(Map<String, dynamic> json) => Episode(
@@ -43,6 +47,8 @@ class Episode {
         airDate: json['air_date']?.toString(),
         overview: json['overview']?.toString(),
         isUpcoming: false,
+        subtitleTracks: json['subtitle_tracks'],
+        audioTracks: json['audio_tracks'],
       );
 
   static int _asInt(dynamic v, int fallback) =>
@@ -75,6 +81,8 @@ class Episode {
         airDate: airDate,
         overview: overview,
         isUpcoming: isUpcoming,
+        subtitleTracks: subtitleTracks,
+        audioTracks: audioTracks,
       );
 
   // Bridge for screens not yet migrated to Episode (e.g. EpisodeDetailsScreen)
@@ -90,5 +98,7 @@ class Episode {
         'still_path': stillPath,
         'air_date': airDate,
         'overview': overview,
+        'subtitle_tracks': subtitleTracks,
+        'audio_tracks': audioTracks,
       };
 }

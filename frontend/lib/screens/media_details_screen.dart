@@ -341,18 +341,15 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   Future<void> _loadPlaybackSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final savedQuality = prefs.getString('loom_player_quality_pref') ?? 'direct';
-    final savedSubLang = prefs.getString('loom_player_subtitle_lang') ?? '';
-    final savedAudioLang = prefs.getString('loom_player_audio_lang') ?? '';
-      final savedFallbackSubLang = prefs.getString('loom_player_fallback_subtitle_lang') ?? '';
     final savedEpGrid = prefs.getBool('loom_episode_view_is_grid') ?? false;
     if (!mounted) return;
     setState(() {
       _selectedQuality = savedQuality;
       _selectedSubtitleIndex = 'none';
       _selectedAudioIndex = null;
-      _pendingSubtitleLang = savedSubLang;
-      _pendingAudioLang = savedAudioLang;
-        _pendingFallbackSubtitleLang = savedFallbackSubLang;
+      _pendingSubtitleLang = '';
+      _pendingAudioLang = '';
+      _pendingFallbackSubtitleLang = '';
       _episodeViewIsGrid = savedEpGrid;
     });
   }

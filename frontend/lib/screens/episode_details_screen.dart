@@ -75,6 +75,24 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
     if (t == p) return true;
     if (t.startsWith(p)) return true;
     if (p.startsWith(t)) return true;
+    // ISO 639-1 → 639-2 for codes where 2-letter is not a prefix of 3-letter
+    const iso = <String, List<String>>{
+      'sv': ['swe', 'swedish'],
+      'en': ['eng', 'english'],
+      'no': ['nor', 'norwegian'],
+      'da': ['dan', 'danish'],
+      'fi': ['fin', 'finnish'],
+      'ja': ['jpn', 'japanese'],
+      'et': ['est', 'estonian'],
+      'lv': ['lav', 'latvian'],
+      'id': ['ind', 'indonesian'],
+      'bg': ['bul', 'bulgarian'],
+    };
+    final variants = iso[p];
+    if (variants != null && variants.contains(t)) return true;
+    for (final entry in iso.entries) {
+      if (entry.value.contains(p) && t == entry.key) return true;
+    }
     return false;
   }
 
@@ -82,9 +100,9 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
   String _pendingFallbackSubtitleLang = '';
   String _pendingAudioLang = '';
 
-  void _applyLanguageDefaults(Map<String, dynamic> metadata) {
-    final subtitleTracks = _parseTrackList(metadata['subtitle_tracks'] ?? _showMeta['subtitle_tracks']);
-    final audioTracks = _parseTrackList(metadata['audio_tracks'] ?? _showMeta['audio_tracks']);
+  void _applyLanguageDefaults() {
+    final subtitleTracks = _subtitleTracks;
+    final audioTracks    = _audioTracks;
 
     String resolvedSub = 'none';
     String resolvedAudio = 'auto';
@@ -127,17 +145,18 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
 
   Future<void> _loadPlaybackSettings() async {
     final savedQuality = widget.apiService.getUserPref('loom_player_quality_pref') ?? 'direct';
-    final savedSubLang = widget.apiService.getUserPref('loom_player_subtitle_lang') ?? '';
-    final savedFallbackSub = widget.apiService.getUserPref('loom_player_fallback_subtitle_lang') ?? '';
-    final savedAudioLang = widget.apiService.getUserPref('loom_player_audio_lang') ?? '';
+    final cache = widget.apiService.loadSettingsCache();
+    final rawSubLang   = cache?['DEFAULT_SUBTITLE_LANG']  ?? '';
+    final rawFallback  = cache?['FALLBACK_SUBTITLE_LANG'] ?? '';
+    final rawAudioLang = cache?['DEFAULT_AUDIO_LANG']     ?? '';
 
     setState(() {
-      _selectedQuality = savedQuality;
-      _pendingSubtitleLang = savedSubLang;
-      _pendingFallbackSubtitleLang = savedFallbackSub;
-      _pendingAudioLang = savedAudioLang;
+      _selectedQuality             = savedQuality;
+      _pendingSubtitleLang         = rawSubLang.toLowerCase() == 'none' ? '' : rawSubLang;
+      _pendingFallbackSubtitleLang = rawFallback.toLowerCase() == 'none' ? '' : rawFallback;
+      _pendingAudioLang            = rawAudioLang;
     });
-    _applyLanguageDefaults(widget.episode);
+    _applyLanguageDefaults();
   }
 
   @override
@@ -377,15 +396,28 @@ class _EpisodeDetailsScreenState extends State<EpisodeDetailsScreen> {
     return [];
   }
 
+  Map<String, dynamic>? _fullEpisodeData() {
+    final epId = _epId;
+    if (epId.isEmpty) return null;
+    final list = widget.showData['episodes'];
+    if (list is! List) return null;
+    try {
+      return list.cast<Map<String, dynamic>>()
+          .firstWhere((e) => e['id']?.toString() == epId);
+    } catch (_) { return null; }
+  }
+
   List<Map<String, dynamic>> get _subtitleTracks {
-    final raw = widget.episode['subtitle_tracks'] ?? _showMeta['subtitle_tracks'];
-    final parsed = _parseTrackList(raw);
-    print("EPISODE_SUBTITLES RAW: $raw => PARSED: $parsed");
-    return parsed;
+    final raw = widget.episode['subtitle_tracks']
+        ?? _fullEpisodeData()?['subtitle_tracks']
+        ?? _showMeta['subtitle_tracks'];
+    return _parseTrackList(raw);
   }
 
   List<Map<String, dynamic>> get _audioTracks {
-    final raw = widget.episode['audio_tracks'] ?? _showMeta['audio_tracks'];
+    final raw = widget.episode['audio_tracks']
+        ?? _fullEpisodeData()?['audio_tracks']
+        ?? _showMeta['audio_tracks'];
     return _parseTrackList(raw);
   }
 

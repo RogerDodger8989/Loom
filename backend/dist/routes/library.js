@@ -200,16 +200,16 @@ async function libraryRoutes(fastify) {
             e.show_id,
             mi.title          AS show_title,
             mi.poster_path,
+            mi.year           AS show_year,
             e.season_number,
             COUNT(*)          AS episode_count,
             MIN(e.id)         AS episode_id,
             MIN(e.episode_number) AS episode_number,
             MIN(e.title)      AS episode_title,
-            MAX(COALESCE(e.added_at, mi.added_at)) AS group_added_at
+            MAX(mi.added_at)  AS group_added_at
           FROM episodes e
           JOIN media_items mi ON mi.id = e.show_id
-          WHERE (e.deleted_at IS NULL OR e.deleted_at = '')
-            AND (mi.deleted_at IS NULL OR mi.deleted_at = '')
+          WHERE mi.deleted_at IS NULL
           GROUP BY e.show_id, e.season_number
           ORDER BY group_added_at DESC
           LIMIT 20
@@ -223,6 +223,7 @@ async function libraryRoutes(fastify) {
                 episode_id: r.episode_count === 1 ? r.episode_id : null,
                 episode_number: r.episode_count === 1 ? r.episode_number : null,
                 episode_title: r.episode_count === 1 ? r.episode_title : null,
+                year: r.show_year != null ? String(r.show_year) : null,
                 group_added_at: r.group_added_at,
             })));
         }

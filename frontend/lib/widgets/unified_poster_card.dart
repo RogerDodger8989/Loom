@@ -22,6 +22,7 @@ class UnifiedPosterCard extends StatefulWidget {
   final void Function(MediaSummary item)? onEdit;
   final void Function(String key, bool isHovered)? onHoverChanged;
   final void Function(MediaSummary item, bool isHomeCard)? onPosterTap;
+  final VoidCallback? onTitleTap;
 
   const UnifiedPosterCard({
     super.key,
@@ -41,6 +42,7 @@ class UnifiedPosterCard extends StatefulWidget {
     this.onEdit,
     this.onHoverChanged,
     this.onPosterTap,
+    this.onTitleTap,
   });
 
   @override
@@ -49,6 +51,7 @@ class UnifiedPosterCard extends StatefulWidget {
 
 class _UnifiedPosterCardState extends State<UnifiedPosterCard> {
   bool _isHovered = false;
+  bool _titleHovered = false;
 
   /// Normalise any resolution string to a human-friendly label.
   static String? _normaliseResolution(String? raw) {
@@ -441,16 +444,39 @@ class _UnifiedPosterCardState extends State<UnifiedPosterCard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 13.0 * posterTextScale,
-                          fontWeight: FontWeight.bold,
+                      if (widget.onTitleTap != null)
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          onEnter: (_) => setState(() => _titleHovered = true),
+                          onExit: (_) => setState(() => _titleHovered = false),
+                          child: GestureDetector(
+                            onTap: widget.onTitleTap,
+                            behavior: HitTestBehavior.opaque,
+                            child: Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 13.0 * posterTextScale,
+                                fontWeight: FontWeight.bold,
+                                decoration: _titleHovered ? TextDecoration.underline : TextDecoration.none,
+                                decorationColor: Colors.white,
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13.0 * posterTextScale,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
                       const SizedBox(height: 2),
                       if (widget.continueEpisodeLabel != null) ...[
                         Text(

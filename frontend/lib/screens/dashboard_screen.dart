@@ -45,6 +45,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   Map<String, dynamic>? _selectedEpisodeShowData;
   int? _autoPlaySecondsInNextOpen;
   int? _mediaInitialSeason;
+  List<dynamic> _recentEpisodeGroups = [];
   DateTime? _calendarSelectedDay;
   bool _isSidebarExpanded = true;
   bool _isFullscreen = false;
@@ -115,10 +116,11 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     });
   }
 
-  void _navigateTo(String type, String id, {int? autoPlaySeconds}) {
+  void _navigateTo(String type, String id, {int? autoPlaySeconds, int? initialSeason}) {
     _saveScrollOffsets();
     setState(() {
       _autoPlaySecondsInNextOpen = autoPlaySeconds;
+      _mediaInitialSeason = initialSeason;
       String? currentType;
       String? currentId;
       if (_selectedPersonId != null) {
@@ -163,8 +165,10 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   void _navigateHome() {
     setState(() {
-      // Push current detail page into navHistory so the Back button can return to it
-      if (_selectedMediaId != null) {
+      if (_selectedEpisode != null) {
+        _selectedEpisode = null;
+        _selectedEpisodeShowData = null;
+      } else if (_selectedMediaId != null) {
         _navHistory.add({'type': 'media', 'id': _selectedMediaId!});
         _selectedMediaId = null;
       } else if (_selectedPersonId != null) {
@@ -173,6 +177,27 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       }
       _tabController.animateTo(0);
     });
+  }
+
+  Future<void> _openEpisodeDirectly(String showId, String episodeId) async {
+    try {
+      final showData = await widget.apiService.fetchMediaDetails(showId);
+      final episodes = showData['episodes'];
+      if (episodes is! List) return;
+      final episode = episodes.cast<Map<String, dynamic>>().firstWhere(
+        (e) => e['id']?.toString() == episodeId,
+        orElse: () => <String, dynamic>{},
+      );
+      if (episode.isEmpty || !mounted) return;
+      setState(() {
+        _selectedEpisode = episode;
+        _selectedEpisodeShowData = showData;
+        _selectedMediaId = null;
+        _selectedPersonId = null;
+      });
+    } catch (_) {
+      _navigateTo('media', showId);
+    }
   }
 
   void _goBack() {
@@ -1140,9 +1165,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       final movies = await widget.apiService.fetchMovies(mergeVersions: true);
       final shows = await widget.apiService.fetchShows();
 
+      List<dynamic> groups = [];
+      try {
+        groups = await widget.apiService.fetchRecentEpisodeGroups();
+      } catch (e) {
+        debugPrint('fetchRecentEpisodeGroups failed (non-fatal): $e');
+      }
+
       setState(() {
         _movies = movies;
         _shows = shows;
+        _recentEpisodeGroups = groups;
         _loadingMedia = false;
       });
     } catch (e) {
@@ -1770,8 +1803,18 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
+  int _effectiveTabIndex() {
+    if (_selectedEpisode != null) return 2; // episode → TV-Serier
+    if (_selectedMediaId != null) {
+      if (_selectedMediaId!.startsWith('external_movie_')) return 1;
+      if (_movies.any((m) => (m as Map<String, dynamic>)['id']?.toString() == _selectedMediaId)) return 1;
+      if (_shows.any((s) => (s as Map<String, dynamic>)['id']?.toString() == _selectedMediaId)) return 2;
+    }
+    return _tabController.index;
+  }
+
   Widget _buildSidebarItem(int index, IconData outlineIcon, IconData filledIcon, String title) {
-    final isSelected = _tabController.index == index;
+    final isSelected = _effectiveTabIndex() == index;
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: _isSidebarExpanded ? 20 : 12, vertical: 6),
       child: InkWell(
@@ -3251,22 +3294,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   }
 
                   if (sectionId == 'recent_shows') {
-                    final recentShows = (List<dynamic>.from(_shows)
-                          ..sort((a, b) {
-                            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-                            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-                            return bTime.compareTo(aTime);
-                          }))
-                        .take(12)
-                        .toList();
-                    if (recentShows.isEmpty) return const SizedBox.shrink();
+                    if (_recentEpisodeGroups.isEmpty) return const SizedBox.shrink();
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 32),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _buildHomeSectionHeader(title),
-                          _buildHomePosterStrip(recentShows),
+                          _buildRecentGroupStrip(_recentEpisodeGroups),
                         ],
                       ),
                     );
@@ -3359,6 +3394,82 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
              });
           },
           onPosterTap: (s, isHomeCard) => _handlePosterTap(s.toJson(), isHomeCard: isHomeCard),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecentGroupStrip(List<dynamic> groups) {
+    final stripHeight = 115.0 * _posterScale * 1.5 + 48;
+    return SizedBox(
+      height: stripHeight,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: groups.length,
+        itemBuilder: (context, index) => _buildRecentGroupCard(groups[index]),
+      ),
+    );
+  }
+
+  Widget _buildRecentGroupCard(dynamic rawGroup) {
+    final group = rawGroup is Map<String, dynamic> ? rawGroup : Map<String, dynamic>.from(rawGroup as Map);
+    final cardWidth = 115 * _posterScale;
+    final episodeCount = (group['episode_count'] as num?)?.toInt() ?? 0;
+    final seasonNum    = (group['season_number'] as num?)?.toInt() ?? 0;
+    final epNum        = (group['episode_number'] as num?)?.toInt();
+    final year         = group['year']?.toString() ?? '';
+    final showId       = group['show_id']?.toString() ?? '';
+    final episodeId    = group['episode_id']?.toString();
+
+    final badge = (episodeCount == 1 && epNum != null)
+        ? 'S${seasonNum.toString().padLeft(2, '0')}E${epNum.toString().padLeft(2, '0')}'
+        : 'Season ${seasonNum.toString().padLeft(2, '0')}';
+    final subtitleLabel = year.isNotEmpty ? '$year   $badge' : badge;
+
+    final fakeItem = <String, dynamic>{
+      'id': showId,
+      'title': group['show_title'] ?? '',
+      'poster_path': group['poster_path'],
+      'type': 'Show',
+      'metadata': <String, dynamic>{'year': year},
+      'versions': <dynamic>[],
+    };
+    final summary = MediaSummary.fromJson(fakeItem);
+
+    return SizedBox(
+      width: cardWidth,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 14),
+        child: UnifiedPosterCard(
+          item: summary,
+          isHomeCard: true,
+          index: 0,
+          posterPrefix: 'recent_group',
+          continueEpisodeLabel: subtitleLabel,
+          titleDisplayStyle: _titleDisplayStyle,
+          posterScale: _posterScale,
+          selectedItems: const {},
+          selectionMode: false,
+          onTitleTap: () => _navigateTo('media', showId),
+          onPosterTap: (_, __) {
+            if (episodeCount == 1 && episodeId != null) {
+              _openEpisodeDirectly(showId, episodeId);
+            } else {
+              _navigateTo('media', showId, initialSeason: seasonNum);
+            }
+          },
+          onHoverChanged: (key, isHovered) {
+            setState(() {
+              if (isHovered) {
+                _hoveredPosterKey = key;
+              } else if (_hoveredPosterKey == key) {
+                _hoveredPosterKey = null;
+              }
+            });
+          },
+          onPlayTap: episodeId != null
+              ? (_) => _openEpisodeDirectly(showId, episodeId)
+              : null,
         ),
       ),
     );
