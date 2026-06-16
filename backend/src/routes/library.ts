@@ -163,7 +163,7 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
               count = row?.cnt ?? 0;
             } else if (p.type === 'Show') {
               const row = db.prepare(
-                "SELECT COUNT(*) as cnt FROM episodes WHERE file_path LIKE ?"
+                "SELECT COUNT(*) as cnt FROM episodes WHERE file_path LIKE ? AND (deleted_at IS NULL OR deleted_at = '')"
               ).get(p.path + '%') as { cnt: number };
               count = row?.cnt ?? 0;
             } else if (p.type === 'Music') {
@@ -200,6 +200,49 @@ export default async function libraryRoutes(fastify: FastifyInstance) {
       } catch (err) {
         console.error('[Library] Failed to toggle watch_for_changes:', err);
         return reply.code(500).send({ error: 'Failed to update watch setting' });
+      }
+    }
+  );
+
+  // GET /api/library/recent-episode-groups
+  // Returns recently-added episodes grouped by (show, season) for the home screen strip
+  fastify.get(
+    '/api/library/recent-episode-groups',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const rows = db.prepare(`
+          SELECT
+            e.show_id,
+            mi.title          AS show_title,
+            mi.poster_path,
+            e.season_number,
+            COUNT(*)          AS episode_count,
+            MIN(e.id)         AS episode_id,
+            MIN(e.episode_number) AS episode_number,
+            MIN(e.title)      AS episode_title,
+            MAX(mi.added_at) AS group_added_at
+          FROM episodes e
+          JOIN media_items mi ON mi.id = e.show_id
+          WHERE (e.deleted_at IS NULL OR e.deleted_at = '')
+            AND (mi.deleted_at IS NULL OR mi.deleted_at = '')
+          GROUP BY e.show_id, e.season_number
+          ORDER BY group_added_at DESC
+          LIMIT 20
+        `).all();
+        return reply.send((rows as any[]).map(r => ({
+          show_id: r.show_id,
+          show_title: r.show_title,
+          poster_path: r.poster_path,
+          season_number: r.season_number,
+          episode_count: r.episode_count,
+          episode_id: r.episode_count === 1 ? r.episode_id : null,
+          episode_number: r.episode_count === 1 ? r.episode_number : null,
+          episode_title: r.episode_count === 1 ? r.episode_title : null,
+          group_added_at: r.group_added_at,
+        })));
+      } catch (err) {
+        console.error('[Library] recent-episode-groups failed:', err);
+        return reply.code(500).send({ error: 'Failed to fetch episode groups' });
       }
     }
   );

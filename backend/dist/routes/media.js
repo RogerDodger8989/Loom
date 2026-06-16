@@ -47,22 +47,7 @@ const child_process_1 = require("child_process");
 const ffprobe_1 = __importDefault(require("@ffprobe-installer/ffprobe"));
 const yt_dlp_wrap_1 = __importDefault(require("yt-dlp-wrap"));
 const rating_sync_1 = require("../services/rating_sync");
-function computeTrashPath(filePath) {
-    const libraryPaths = database_1.default.prepare('SELECT path FROM library_paths').all();
-    let libraryBase = '';
-    for (const lp of libraryPaths) {
-        const normalizedLp = lp.path.replace(/[/\\]+$/, '');
-        if (filePath.startsWith(normalizedLp + path_1.default.sep) || filePath.startsWith(normalizedLp + '/')) {
-            libraryBase = normalizedLp;
-            break;
-        }
-    }
-    if (!libraryBase) {
-        libraryBase = path_1.default.dirname(path_1.default.dirname(filePath));
-    }
-    const relative = filePath.substring(libraryBase.length).replace(/^[/\\]/, '');
-    return path_1.default.join(libraryBase, '.trash', relative);
-}
+const trash_1 = require("../utils/trash");
 function normalizeRatingValue(value) {
     if (value === undefined || value === null)
         return null;
@@ -235,8 +220,36 @@ async function mediaRoutes(fastify) {
           `).all(movie.id);
                 const metadata = {};
                 metadataRows.forEach(row => {
+                    if (['watch_status', 'watch_completed_at', 'last_watched_at', 'my_rating'].includes(row.metadata_key))
+                        return;
                     metadata[row.metadata_key] = row.metadata_value;
                 });
+                const userRatingRow = database_1.default.prepare('SELECT rating FROM user_ratings WHERE user_id = ? AND media_item_id = ?').get(user.id, movie.id);
+                if (userRatingRow) {
+                    metadata.my_rating = userRatingRow.rating.toString();
+                }
+                else if (movie.tmdb_id || movie.imdb_id) {
+                    const extState = database_1.default.prepare('SELECT my_rating, watch_status FROM external_media_state WHERE user_id = ? AND (tmdb_id = ? OR imdb_id = ?)').get(user.id, movie.tmdb_id, movie.imdb_id);
+                    if (extState) {
+                        if (extState.my_rating)
+                            metadata.my_rating = extState.my_rating;
+                        if (extState.watch_status)
+                            metadata.watch_status = extState.watch_status;
+                    }
+                }
+                const watchHistoryRow = database_1.default.prepare('SELECT is_watched, last_position_seconds, updated_at FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL').get(user.id, movie.id);
+                if (watchHistoryRow) {
+                    metadata.watch_status = watchHistoryRow.is_watched ? 'watched' : 'unwatched';
+                    metadata.playback_progress = watchHistoryRow.last_position_seconds.toString();
+                    metadata.last_watched_at = watchHistoryRow.updated_at;
+                    if (watchHistoryRow.is_watched) {
+                        metadata.watch_completed_at = watchHistoryRow.updated_at;
+                    }
+                    movie.last_watched_at = watchHistoryRow.updated_at;
+                }
+                else {
+                    movie.last_watched_at = null;
+                }
                 return {
                     ...movie,
                     metadata,
@@ -300,15 +313,41 @@ async function mediaRoutes(fastify) {
             const movie = database_1.default.prepare(`SELECT * FROM media_items WHERE id = ? AND deleted_at IS NULL`).get(id);
             if (!movie)
                 return reply.code(404).send({ error: 'Media item not found' });
-            // Upsert into media_metadata (use JSON-stringified value for complex objects)
             const stringVal = typeof value === 'string' ? value : JSON.stringify(value);
-            database_1.default.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `).run((0, uuid_1.v4)(), movie.id, key, stringVal);
             if (key === 'my_rating') {
-                await (0, rating_sync_1.syncExternalRatings)(movie, value);
+                const numVal = typeof value === 'number' ? value : parseFloat(value);
+                if (!isNaN(numVal)) {
+                    database_1.default.prepare(`
+              INSERT INTO user_ratings (user_id, media_item_id, rating) 
+              VALUES (?, ?, ?)
+              ON CONFLICT(user_id, media_item_id) DO UPDATE SET rating=excluded.rating
+            `).run(user.id, movie.id, numVal);
+                    if (movie.tmdb_id || movie.imdb_id) {
+                        database_1.default.prepare(`
+                INSERT INTO external_media_state (tmdb_id, user_id, imdb_id, my_rating)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tmdb_id, user_id) DO UPDATE SET my_rating=excluded.my_rating
+              `).run(movie.tmdb_id || movie.imdb_id, user.id, movie.imdb_id || null, stringVal);
+                    }
+                }
+                await (0, rating_sync_1.syncExternalRatings)(user.id, movie, value);
+            }
+            else if (key === 'watch_status') {
+                const isWatched = stringVal === 'watched' ? 1 : 0;
+                const existingHistory = database_1.default.prepare(`SELECT id FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL`).get(user.id, movie.id);
+                if (existingHistory) {
+                    database_1.default.prepare('UPDATE watch_history SET is_watched = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(isWatched, existingHistory.id);
+                }
+                else {
+                    database_1.default.prepare('INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched) VALUES (?, ?, ?, 0, 0, ?)').run((0, uuid_1.v4)(), user.id, movie.id, isWatched);
+                }
+            }
+            else {
+                database_1.default.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run((0, uuid_1.v4)(), movie.id, key, stringVal);
             }
             return reply.code(200).send({ ok: true });
         }
@@ -453,7 +492,7 @@ async function mediaRoutes(fastify) {
           `).run((0, uuid_1.v4)(), user.id, movie.id, isWatchedBool ? 1 : 0);
             }
             // 3. Sync to external APIs in background
-            (0, rating_sync_1.syncExternalWatchStatus)(movie, isWatchedBool).catch(err => {
+            (0, rating_sync_1.syncExternalWatchStatus)(request.user.id, movie, isWatchedBool).catch(err => {
                 console.error('[Seen Route] syncExternalWatchStatus failed:', err);
             });
             return reply.code(200).send({ ok: true, watch_status: statusStr });
@@ -480,157 +519,6 @@ async function mediaRoutes(fastify) {
         catch (err) {
             request.log.error(err);
             return reply.code(500).send({ error: 'Failed to toggle favorite', details: err.message });
-        }
-    });
-    // POST /api/media/items/:id/season/:season/favorite
-    // Toggle favorite for a specific season of a TV show (stored as metadata).
-    fastify.post('/api/media/items/:id/season/:season/favorite', async (request, reply) => {
-        const { id, season } = request.params;
-        try {
-            const item = database_1.default.prepare(`SELECT id FROM media_items WHERE id = ? AND type = 'Show' AND deleted_at IS NULL`).get(id);
-            if (!item)
-                return reply.code(404).send({ error: 'Show not found' });
-            const key = `season_${season}_favorite`;
-            const existing = database_1.default.prepare(`SELECT metadata_value FROM media_metadata WHERE media_item_id = ? AND metadata_key = ?`).get(id, key);
-            const currentVal = existing?.metadata_value === '1';
-            const newVal = request.body?.is_favorite !== undefined ? request.body.is_favorite : !currentVal;
-            database_1.default.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `).run((0, uuid_1.v4)(), id, key, newVal ? '1' : '0');
-            return reply.code(200).send({ ok: true, is_favorite: newVal });
-        }
-        catch (err) {
-            request.log.error(err);
-            return reply.code(500).send({ error: 'Failed to toggle season favorite', details: err.message });
-        }
-    });
-    // POST /api/media/episodes/:episodeId/progress
-    // Save episode playback progress; also bubbles up last_watched_at to the parent show
-    fastify.post('/api/media/episodes/:episodeId/progress', async (request, reply) => {
-        const user = request.user ?? anonymousUser;
-        const { episodeId } = request.params;
-        const { position, duration, positionSeconds, durationSeconds } = request.body || {};
-        const posSec = positionSeconds !== undefined ? positionSeconds : (position ?? 0);
-        const durSec = durationSeconds !== undefined ? durationSeconds : (duration ?? 0);
-        if (durSec <= 0)
-            return reply.code(400).send({ error: 'Duration must be greater than 0' });
-        try {
-            const episode = database_1.default.prepare(`SELECT * FROM episodes WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')`).get(episodeId);
-            if (!episode)
-                return reply.code(404).send({ error: 'Episode not found' });
-            const progressPercent = posSec / durSec;
-            const autoWatch = progressPercent >= 0.90;
-            // Upsert watch_history for this episode
-            const existing = database_1.default.prepare(`
-          SELECT id FROM watch_history WHERE user_id = ? AND episode_id = ?
-        `).get(user.id, episodeId);
-            if (existing) {
-                database_1.default.prepare(`
-            UPDATE watch_history
-            SET last_position_seconds = ?, total_duration_seconds = ?, is_watched = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(posSec, durSec, autoWatch ? 1 : 0, existing.id);
-            }
-            else {
-                database_1.default.prepare(`
-            INSERT INTO watch_history (id, user_id, episode_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run((0, uuid_1.v4)(), user.id, episodeId, episode.show_id, posSec, durSec, autoWatch ? 1 : 0);
-            }
-            // Bubble up to parent show's media_metadata so continue-watching works
-            const upsertMeta = database_1.default.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `);
-            if (posSec >= 60) {
-                upsertMeta.run((0, uuid_1.v4)(), episode.show_id, 'last_watched_at', new Date().toISOString());
-            }
-            upsertMeta.run((0, uuid_1.v4)(), episode.show_id, 'last_watched_episode_id', episodeId);
-            upsertMeta.run((0, uuid_1.v4)(), episode.show_id, 'playback_progress', posSec.toString());
-            upsertMeta.run((0, uuid_1.v4)(), episode.show_id, 'duration', durSec.toString());
-            return reply.code(200).send({ ok: true, position: posSec, duration: durSec, is_watched: autoWatch });
-        }
-        catch (err) {
-            request.log.error(err);
-            return reply.code(500).send({ error: 'Failed to update episode progress', details: err.message });
-        }
-    });
-    // GET /api/media/episodes/:episodeId/status
-    fastify.get('/api/media/episodes/:episodeId/status', async (request, reply) => {
-        const user = request.user ?? anonymousUser;
-        const { episodeId } = request.params;
-        try {
-            const ep = database_1.default.prepare(`SELECT id FROM episodes WHERE id = ?`).get(episodeId);
-            if (!ep)
-                return reply.code(404).send({ error: 'Episode not found' });
-            const wh = database_1.default.prepare(`SELECT is_watched, last_position_seconds FROM watch_history WHERE user_id = ? AND episode_id = ?`).get(user.id, episodeId);
-            return reply.send({
-                is_watched: wh ? wh.is_watched === 1 : false,
-                playback_progress: wh ? wh.last_position_seconds : 0,
-            });
-        }
-        catch (err) {
-            return reply.code(500).send({ error: err.message });
-        }
-    });
-    // POST /api/media/episodes/:episodeId/seen
-    // Toggle watched status for a single episode
-    fastify.post('/api/media/episodes/:episodeId/seen', async (request, reply) => {
-        const user = request.user ?? anonymousUser;
-        const { episodeId } = request.params;
-        const { watched } = request.body || {};
-        try {
-            const episode = database_1.default.prepare(`SELECT * FROM episodes WHERE id = ?`).get(episodeId);
-            if (!episode)
-                return reply.code(404).send({ error: 'Episode not found' });
-            const existing = database_1.default.prepare(`SELECT id, total_duration_seconds FROM watch_history WHERE user_id = ? AND episode_id = ?`).get(user.id, episodeId);
-            if (existing) {
-                database_1.default.prepare(`
-            UPDATE watch_history SET is_watched = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-          `).run(watched ? 1 : 0, existing.id);
-            }
-            else {
-                database_1.default.prepare(`
-            INSERT INTO watch_history (id, user_id, episode_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
-            VALUES (?, ?, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP)
-          `).run((0, uuid_1.v4)(), user.id, episodeId, episode.show_id, watched ? 1 : 0);
-            }
-            return reply.code(200).send({ ok: true, is_watched: watched });
-        }
-        catch (err) {
-            request.log.error(err);
-            return reply.code(500).send({ error: 'Failed to toggle episode seen', details: err.message });
-        }
-    });
-    // POST /api/media/items/:showId/season/:season/seen
-    // Mark all episodes in a season as watched or unwatched
-    fastify.post('/api/media/items/:showId/season/:season/seen', async (request, reply) => {
-        const user = request.user ?? anonymousUser;
-        const { showId, season } = request.params;
-        const { watched } = request.body || {};
-        const seasonNum = parseInt(season, 10);
-        try {
-            const episodes = database_1.default.prepare(`SELECT id FROM episodes WHERE show_id = ? AND season_number = ?`).all(showId, seasonNum);
-            for (const ep of episodes) {
-                const existingEp = database_1.default.prepare(`SELECT id FROM watch_history WHERE user_id = ? AND episode_id = ?`).get(user.id, ep.id);
-                if (existingEp) {
-                    database_1.default.prepare(`UPDATE watch_history SET is_watched = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(watched ? 1 : 0, existingEp.id);
-                }
-                else {
-                    database_1.default.prepare(`
-              INSERT INTO watch_history (id, user_id, episode_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, updated_at)
-              VALUES (?, ?, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP)
-            `).run((0, uuid_1.v4)(), user.id, ep.id, showId, watched ? 1 : 0);
-                }
-            }
-            return reply.code(200).send({ ok: true, count: episodes.length });
-        }
-        catch (err) {
-            request.log.error(err);
-            return reply.code(500).send({ error: 'Failed to mark season', details: err.message });
         }
     });
     // POST /api/media/items/:id/progress
@@ -710,11 +598,13 @@ async function mediaRoutes(fastify) {
           `).run((0, uuid_1.v4)(), movie.id);
             }
             // 3. Update watch_history (best-effort — may fail for anonymous users lacking a users row)
+            let prevIsWatched = false;
             try {
                 const existingHistory = database_1.default.prepare(`
-            SELECT id FROM watch_history
+            SELECT id, is_watched FROM watch_history
             WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
           `).get(user.id, movie.id);
+                prevIsWatched = existingHistory?.is_watched === 1;
                 if (existingHistory) {
                     database_1.default.prepare(`
               UPDATE watch_history
@@ -732,9 +622,21 @@ async function mediaRoutes(fastify) {
             catch (histErr) {
                 request.log.warn(`[Progress] watch_history skipped: ${histErr.message}`);
             }
-            // 4. Sync to Trakt/Simkl if threshold met
+            // 4. Record local play in play_history when crossing the completion threshold
+            if (autoWatch && !prevIsWatched && user.id !== 'anonymous') {
+                try {
+                    database_1.default.prepare(`
+              INSERT INTO play_history (id, user_id, media_item_id, watched_at, source)
+              VALUES (?, ?, ?, datetime('now'), 'local')
+            `).run((0, uuid_1.v4)(), user.id, movie.id);
+                }
+                catch (phErr) {
+                    request.log.warn(`[Progress] play_history insert skipped: ${phErr.message}`);
+                }
+            }
+            // 5. Sync to Trakt/Simkl if threshold met
             if (autoWatch) {
-                (0, rating_sync_1.syncExternalWatchStatus)(movie, true).catch(err => {
+                (0, rating_sync_1.syncExternalWatchStatus)(request.user.id, movie, true).catch(err => {
                     console.error('[Progress Route] syncExternalWatchStatus failed:', err);
                 });
             }
@@ -978,14 +880,42 @@ async function mediaRoutes(fastify) {
         `).all(movie.id);
             const metadata = {};
             metadataRows.forEach(row => {
+                if (['watch_status', 'watch_completed_at', 'last_watched_at', 'my_rating'].includes(row.metadata_key))
+                    return;
                 try {
                     // Try to parse JSON for cast/ratings
                     metadata[row.metadata_key] = JSON.parse(row.metadata_value);
                 }
-                catch (e) {
+                catch {
                     metadata[row.metadata_key] = row.metadata_value;
                 }
             });
+            // Länkning av soundtrack: läs från music_tracks (ny metod) eller legacy soundtrack_data
+            const linkedTracks = database_1.default.prepare(`
+          SELECT id, title, artist, album, file_path, track_number, duration_seconds
+          FROM music_tracks
+          WHERE soundtrack_movie_id = ?
+          ORDER BY track_number ASC, title ASC
+        `).all(movie.id);
+            if (linkedTracks.length > 0) {
+                const firstTrack = linkedTracks[0];
+                metadata.soundtrack = {
+                    album: firstTrack.album || movie.title,
+                    artist: firstTrack.artist || 'Various Artists',
+                    cover_path: null,
+                    local_path: null,
+                    tracks: linkedTracks.map(t => ({
+                        id: t.id,
+                        track_number: t.track_number,
+                        title: t.title,
+                        file_path: t.file_path,
+                        duration_seconds: t.duration_seconds,
+                    }))
+                };
+            }
+            else if (metadata.soundtrack_data) {
+                metadata.soundtrack = metadata.soundtrack_data;
+            }
             const upsertMeta = (key, value) => {
                 database_1.default.prepare(`
             INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
@@ -1127,101 +1057,103 @@ async function mediaRoutes(fastify) {
                             upsertMeta('number_of_episodes', tmdbData.number_of_episodes.toString());
                         }
                     }
-                    const imdbId = movie.imdb_id || tmdbData.external_ids?.imdb_id || null;
-                    if (imdbId) {
-                        const omdbKey = tmdb_1.tmdbService.getSetting('OMDB_API_KEY');
-                        if (omdbKey && (!metadata.awards || metadata.awards === awardsPlaceholder || !metadata.imdb_rating)) {
-                            try {
-                                const omdbRes = await axios_1.default.get(`http://www.omdbapi.com/`, {
-                                    params: { apikey: omdbKey, i: imdbId }
-                                });
-                                if (omdbRes.data) {
-                                    if (omdbRes.data.Awards) {
-                                        metadata.awards = omdbRes.data.Awards;
-                                        upsertMeta('awards', omdbRes.data.Awards);
-                                    }
-                                    if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
-                                        metadata.imdb_rating = omdbRes.data.imdbRating;
-                                        upsertMeta('imdb_rating', omdbRes.data.imdbRating);
-                                    }
-                                    if (omdbRes.data.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
-                                        metadata.imdb_votes = omdbRes.data.imdbVotes;
-                                        upsertMeta('imdb_votes', omdbRes.data.imdbVotes);
-                                    }
-                                    if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
-                                        metadata.metascore = omdbRes.data.Metascore;
-                                        upsertMeta('metascore', omdbRes.data.Metascore);
-                                    }
-                                    if (Array.isArray(omdbRes.data.Ratings)) {
-                                        const rtEntry = omdbRes.data.Ratings.find((r) => r.Source === 'Rotten Tomatoes');
-                                        if (rtEntry) {
-                                            metadata.rt_rating = rtEntry.Value;
-                                            upsertMeta('rt_rating', rtEntry.Value);
-                                        }
-                                    }
-                                }
-                            }
-                            catch (omdbErr) {
-                                console.error('[Media Details] OMDb enrichment failed:', omdbErr);
-                            }
-                        }
-                        if (simklClientId && (!metadata.simkl_rating || !metadata.simkl_votes)) {
-                            try {
-                                const simklLookupRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
-                                    params: { imdb: imdbId, client_id: simklClientId }
-                                });
-                                const simklLookupData = Array.isArray(simklLookupRes.data)
-                                    ? simklLookupRes.data[0]
-                                    : simklLookupRes.data;
-                                const simklId = extractSimklId(simklLookupData);
-                                if (simklId && (!metadata.simkl_rating || !metadata.simkl_votes)) {
-                                    const simklRatingsRes = await axios_1.default.get(`https://api.simkl.com/ratings`, {
-                                        params: {
-                                            simkl: simklId,
-                                            fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
-                                            client_id: simklClientId,
-                                        }
-                                    });
-                                    const parsedSimklRatings = extractSimklRatings(simklRatingsRes.data);
-                                    if (parsedSimklRatings.simklRating) {
-                                        metadata.simkl_rating = parsedSimklRatings.simklRating;
-                                        upsertMeta('simkl_rating', parsedSimklRatings.simklRating);
-                                    }
-                                    if (parsedSimklRatings.simklVotes) {
-                                        metadata.simkl_votes = parsedSimklRatings.simklVotes;
-                                        upsertMeta('simkl_votes', parsedSimklRatings.simklVotes);
-                                    }
-                                }
-                            }
-                            catch (simklErr) {
-                                console.error('[Media Details] Simkl/Trakt enrichment failed:', simklErr);
-                            }
-                        }
-                        if (traktApiKey && imdbId && (!metadata.trakt_rating || !metadata.trakt_votes)) {
-                            try {
-                                const mediaType = movie.type?.toString().toLowerCase() === 'show' || movie.type?.toString().toLowerCase() === 'tv'
-                                    ? 'show'
-                                    : 'movie';
-                                const parsedTraktRatings = await fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType);
-                                if (parsedTraktRatings.traktRating) {
-                                    metadata.trakt_rating = parsedTraktRatings.traktRating;
-                                    upsertMeta('trakt_rating', parsedTraktRatings.traktRating);
-                                }
-                                if (parsedTraktRatings.traktVotes) {
-                                    metadata.trakt_votes = parsedTraktRatings.traktVotes;
-                                    upsertMeta('trakt_votes', parsedTraktRatings.traktVotes);
-                                }
-                            }
-                            catch (traktErr) {
-                                console.error('[Media Details] Trakt API enrichment failed:', traktErr);
-                            }
-                        }
-                    }
                     if (!metadata.awards || metadata.awards === awardsPlaceholder) {
                         const tmdbAwards = await tmdb_1.tmdbService.fetchAwardsSummary(tmdbData.id?.toString?.() || movie.tmdb_id?.toString?.() || '');
                         if (tmdbAwards) {
                             metadata.awards = tmdbAwards;
                             upsertMeta('awards', tmdbAwards);
+                        }
+                    }
+                }
+                // Fetch ratings via OMDb / Simkl / Trakt using the IMDB ID already stored in the DB.
+                // This runs regardless of whether the TMDB lookup above succeeded.
+                const imdbId = movie.imdb_id || null;
+                if (imdbId) {
+                    const omdbKey = tmdb_1.tmdbService.getSetting('OMDB_API_KEY');
+                    if (omdbKey && (!metadata.awards || metadata.awards === awardsPlaceholder || !metadata.imdb_rating)) {
+                        try {
+                            const omdbRes = await axios_1.default.get(`http://www.omdbapi.com/`, {
+                                params: { apikey: omdbKey, i: imdbId }
+                            });
+                            if (omdbRes.data) {
+                                if (omdbRes.data.Awards) {
+                                    metadata.awards = omdbRes.data.Awards;
+                                    upsertMeta('awards', omdbRes.data.Awards);
+                                }
+                                if (omdbRes.data.imdbRating && omdbRes.data.imdbRating !== 'N/A') {
+                                    metadata.imdb_rating = omdbRes.data.imdbRating;
+                                    upsertMeta('imdb_rating', omdbRes.data.imdbRating);
+                                }
+                                if (omdbRes.data.imdbVotes && omdbRes.data.imdbVotes !== 'N/A') {
+                                    metadata.imdb_votes = omdbRes.data.imdbVotes;
+                                    upsertMeta('imdb_votes', omdbRes.data.imdbVotes);
+                                }
+                                if (omdbRes.data.Metascore && omdbRes.data.Metascore !== 'N/A') {
+                                    metadata.metascore = omdbRes.data.Metascore;
+                                    upsertMeta('metascore', omdbRes.data.Metascore);
+                                }
+                                if (Array.isArray(omdbRes.data.Ratings)) {
+                                    const rtEntry = omdbRes.data.Ratings.find((r) => r.Source === 'Rotten Tomatoes');
+                                    if (rtEntry) {
+                                        metadata.rt_rating = rtEntry.Value;
+                                        upsertMeta('rt_rating', rtEntry.Value);
+                                    }
+                                }
+                            }
+                        }
+                        catch (omdbErr) {
+                            console.error('[Media Details] OMDb enrichment failed:', omdbErr);
+                        }
+                    }
+                    if (simklClientId && (!metadata.simkl_rating || !metadata.simkl_votes)) {
+                        try {
+                            const simklLookupRes = await axios_1.default.get(`https://api.simkl.com/search/id`, {
+                                params: { imdb: imdbId, client_id: simklClientId }
+                            });
+                            const simklLookupData = Array.isArray(simklLookupRes.data)
+                                ? simklLookupRes.data[0]
+                                : simklLookupRes.data;
+                            const simklId = extractSimklId(simklLookupData);
+                            if (simklId && (!metadata.simkl_rating || !metadata.simkl_votes)) {
+                                const simklRatingsRes = await axios_1.default.get(`https://api.simkl.com/ratings`, {
+                                    params: {
+                                        simkl: simklId,
+                                        fields: 'rank,droprate,simkl,ext,has_trailer,reactions,year',
+                                        client_id: simklClientId,
+                                    }
+                                });
+                                const parsedSimklRatings = extractSimklRatings(simklRatingsRes.data);
+                                if (parsedSimklRatings.simklRating) {
+                                    metadata.simkl_rating = parsedSimklRatings.simklRating;
+                                    upsertMeta('simkl_rating', parsedSimklRatings.simklRating);
+                                }
+                                if (parsedSimklRatings.simklVotes) {
+                                    metadata.simkl_votes = parsedSimklRatings.simklVotes;
+                                    upsertMeta('simkl_votes', parsedSimklRatings.simklVotes);
+                                }
+                            }
+                        }
+                        catch (simklErr) {
+                            console.error('[Media Details] Simkl enrichment failed:', simklErr);
+                        }
+                    }
+                    if (traktApiKey && (!metadata.trakt_rating || !metadata.trakt_votes)) {
+                        try {
+                            const mediaType = movie.type?.toString().toLowerCase() === 'show' || movie.type?.toString().toLowerCase() === 'tv'
+                                ? 'show'
+                                : 'movie';
+                            const parsedTraktRatings = await fetchTraktRatingsByImdb(imdbId, traktApiKey, mediaType);
+                            if (parsedTraktRatings.traktRating) {
+                                metadata.trakt_rating = parsedTraktRatings.traktRating;
+                                upsertMeta('trakt_rating', parsedTraktRatings.traktRating);
+                            }
+                            if (parsedTraktRatings.traktVotes) {
+                                metadata.trakt_votes = parsedTraktRatings.traktVotes;
+                                upsertMeta('trakt_votes', parsedTraktRatings.traktVotes);
+                            }
+                        }
+                        catch (traktErr) {
+                            console.error('[Media Details] Trakt API enrichment failed:', traktErr);
                         }
                     }
                 }
@@ -1236,7 +1168,31 @@ async function mediaRoutes(fastify) {
                     }
                 }
             }
+            // Override with user-specific data
+            const userRatingRow = database_1.default.prepare('SELECT rating FROM user_ratings WHERE user_id = ? AND media_item_id = ?').get(user.id, movie.id);
+            if (userRatingRow) {
+                metadata.my_rating = userRatingRow.rating.toString();
+            }
+            else if (movie.tmdb_id || movie.imdb_id) {
+                const extState = database_1.default.prepare('SELECT my_rating, watch_status FROM external_media_state WHERE user_id = ? AND (tmdb_id = ? OR imdb_id = ?)').get(user.id, movie.tmdb_id, movie.imdb_id);
+                if (extState) {
+                    if (extState.my_rating)
+                        metadata.my_rating = extState.my_rating;
+                    if (extState.watch_status)
+                        metadata.watch_status = extState.watch_status;
+                }
+            }
+            const watchHistoryRow = database_1.default.prepare('SELECT is_watched, last_position_seconds, updated_at FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL').get(user.id, movie.id);
+            if (watchHistoryRow) {
+                metadata.watch_status = watchHistoryRow.is_watched ? 'watched' : 'unwatched';
+                metadata.playback_progress = watchHistoryRow.last_position_seconds.toString();
+                metadata.last_watched_at = watchHistoryRow.updated_at;
+                if (watchHistoryRow.is_watched) {
+                    metadata.watch_completed_at = watchHistoryRow.updated_at;
+                }
+            }
             // Return combined data
+            console.log('[MediaDetails RETURN]', movie.title, '| imdb_rating:', metadata.imdb_rating, '| ratings:', JSON.stringify(metadata.ratings)?.substring(0, 60));
             return {
                 id: movie.id,
                 title: movie.title,
@@ -1360,8 +1316,36 @@ async function mediaRoutes(fastify) {
           `).all(show.id);
                 const metadata = {};
                 metadataRows.forEach(row => {
+                    if (['watch_status', 'watch_completed_at', 'last_watched_at', 'my_rating'].includes(row.metadata_key))
+                        return;
                     metadata[row.metadata_key] = row.metadata_value;
                 });
+                const userRatingRow = database_1.default.prepare('SELECT rating FROM user_ratings WHERE user_id = ? AND media_item_id = ?').get(user.id, show.id);
+                if (userRatingRow) {
+                    metadata.my_rating = userRatingRow.rating.toString();
+                }
+                else if (show.tmdb_id || show.imdb_id) {
+                    const extState = database_1.default.prepare('SELECT my_rating, watch_status FROM external_media_state WHERE user_id = ? AND (tmdb_id = ? OR imdb_id = ?)').get(user.id, show.tmdb_id, show.imdb_id);
+                    if (extState) {
+                        if (extState.my_rating)
+                            metadata.my_rating = extState.my_rating;
+                        if (extState.watch_status)
+                            metadata.watch_status = extState.watch_status;
+                    }
+                }
+                const watchHistoryRow = database_1.default.prepare('SELECT is_watched, last_position_seconds, updated_at FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL').get(user.id, show.id);
+                if (watchHistoryRow) {
+                    metadata.watch_status = watchHistoryRow.is_watched ? 'watched' : 'unwatched';
+                    metadata.playback_progress = watchHistoryRow.last_position_seconds.toString();
+                    metadata.last_watched_at = watchHistoryRow.updated_at;
+                    if (watchHistoryRow.is_watched) {
+                        metadata.watch_completed_at = watchHistoryRow.updated_at;
+                    }
+                    show.last_watched_at = watchHistoryRow.updated_at;
+                }
+                else {
+                    show.last_watched_at = null;
+                }
                 // Get episodes with per-user watch status
                 const episodes = database_1.default.prepare(`
             SELECT e.id, e.season_number, e.episode_number, e.title, e.file_path, e.air_date,
@@ -1908,7 +1892,7 @@ async function mediaRoutes(fastify) {
                 for (const ep of episodes) {
                     if (ep.file_path && fs_1.default.existsSync(ep.file_path)) {
                         try {
-                            const dest = computeTrashPath(ep.file_path);
+                            const dest = (0, trash_1.computeTrashPath)(ep.file_path);
                             fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
                             fs_1.default.renameSync(ep.file_path, dest);
                         }
@@ -1919,7 +1903,7 @@ async function mediaRoutes(fastify) {
                 }
             }
             else if (item.file_path && fs_1.default.existsSync(item.file_path)) {
-                const dest = computeTrashPath(item.file_path);
+                const dest = (0, trash_1.computeTrashPath)(item.file_path);
                 fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
                 fs_1.default.renameSync(item.file_path, dest);
             }
@@ -1929,90 +1913,6 @@ async function mediaRoutes(fastify) {
         catch (err) {
             console.error(err);
             return reply.code(500).send({ error: 'Failed to delete media item', details: err.message });
-        }
-    });
-    // PATCH /api/media/episodes/:id — update episode metadata fields
-    fastify.patch('/api/media/episodes/:id', async (request, reply) => {
-        const { id } = request.params;
-        const body = request.body || {};
-        try {
-            const ep = database_1.default.prepare(`SELECT id FROM episodes WHERE id = ? AND deleted_at IS NULL`).get(id);
-            if (!ep)
-                return reply.code(404).send({ error: 'Episode not found' });
-            const allowed = ['title', 'overview', 'still_path', 'air_date'];
-            const updates = [];
-            const params = [];
-            for (const key of allowed) {
-                if (body[key] !== undefined) {
-                    updates.push(`${key} = ?`);
-                    params.push(body[key]);
-                }
-            }
-            if (updates.length === 0)
-                return reply.send({ ok: true, updated: 0 });
-            params.push(id);
-            database_1.default.prepare(`UPDATE episodes SET ${updates.join(', ')} WHERE id = ?`).run(...params);
-            return reply.send({ ok: true, updated: updates.length });
-        }
-        catch (err) {
-            return reply.code(500).send({ error: 'Failed to update episode', details: err.message });
-        }
-    });
-    // DELETE /api/media/episodes/:id — soft-delete a single episode
-    fastify.delete('/api/media/episodes/:id', async (request, reply) => {
-        const { id } = request.params;
-        try {
-            const ep = database_1.default.prepare(`SELECT id, file_path, show_id FROM episodes WHERE id = ? AND deleted_at IS NULL`).get(id);
-            if (!ep)
-                return reply.code(404).send({ error: 'Episode not found' });
-            if (ep.file_path && fs_1.default.existsSync(ep.file_path)) {
-                const dest = computeTrashPath(ep.file_path);
-                fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
-                fs_1.default.renameSync(ep.file_path, dest);
-            }
-            database_1.default.prepare(`UPDATE episodes SET deleted_at = datetime('now') WHERE id = ?`).run(id);
-            // If show has no remaining episodes soft-delete it too
-            const remaining = database_1.default.prepare(`SELECT COUNT(*) as cnt FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).get(ep.show_id)?.cnt ?? 0;
-            if (remaining === 0) {
-                database_1.default.prepare(`UPDATE media_items SET deleted_at = datetime('now') WHERE id = ?`).run(ep.show_id);
-            }
-            return reply.send({ success: true });
-        }
-        catch (err) {
-            return reply.code(500).send({ error: 'Failed to delete episode', details: err.message });
-        }
-    });
-    // DELETE /api/media/seasons/:showId/:season — soft-delete all episodes in a season
-    fastify.delete('/api/media/seasons/:showId/:season', async (request, reply) => {
-        const { showId, season } = request.params;
-        const seasonNum = parseInt(season, 10);
-        try {
-            const episodes = database_1.default.prepare(`SELECT id, file_path FROM episodes WHERE show_id = ? AND season_number = ? AND deleted_at IS NULL`).all(showId, seasonNum);
-            if (episodes.length === 0)
-                return reply.code(404).send({ error: 'No episodes found for this season' });
-            const moveErrors = [];
-            for (const ep of episodes) {
-                if (ep.file_path && fs_1.default.existsSync(ep.file_path)) {
-                    try {
-                        const dest = computeTrashPath(ep.file_path);
-                        fs_1.default.mkdirSync(path_1.default.dirname(dest), { recursive: true });
-                        fs_1.default.renameSync(ep.file_path, dest);
-                    }
-                    catch (e) {
-                        moveErrors.push(ep.file_path + ': ' + e.message);
-                    }
-                }
-            }
-            database_1.default.prepare(`UPDATE episodes SET deleted_at = datetime('now') WHERE show_id = ? AND season_number = ?`).run(showId, seasonNum);
-            // Soft-delete the show if no active episodes remain
-            const remaining = database_1.default.prepare(`SELECT COUNT(*) as cnt FROM episodes WHERE show_id = ? AND deleted_at IS NULL`).get(showId)?.cnt ?? 0;
-            if (remaining === 0) {
-                database_1.default.prepare(`UPDATE media_items SET deleted_at = datetime('now') WHERE id = ?`).run(showId);
-            }
-            return reply.send({ success: true, deleted: episodes.length, moveErrors: moveErrors.length ? moveErrors : undefined });
-        }
-        catch (err) {
-            return reply.code(500).send({ error: 'Failed to delete season', details: err.message });
         }
     });
     // GET /api/trash — list all soft-deleted items
@@ -2031,7 +1931,7 @@ async function mediaRoutes(fastify) {
                 if (!filePath)
                     return null;
                 try {
-                    const trashPath = computeTrashPath(filePath);
+                    const trashPath = (0, trash_1.computeTrashPath)(filePath);
                     if (fs_1.default.existsSync(trashPath))
                         return fs_1.default.statSync(trashPath).size;
                     if (fs_1.default.existsSync(filePath))
@@ -2089,7 +1989,7 @@ async function mediaRoutes(fastify) {
             const episode = database_1.default.prepare(`SELECT id, file_path, show_id FROM episodes WHERE id = ? AND deleted_at IS NOT NULL`).get(id);
             if (episode) {
                 if (episode.file_path) {
-                    const trashPath = computeTrashPath(episode.file_path);
+                    const trashPath = (0, trash_1.computeTrashPath)(episode.file_path);
                     if (fs_1.default.existsSync(trashPath)) {
                         fs_1.default.mkdirSync(path_1.default.dirname(episode.file_path), { recursive: true });
                         fs_1.default.renameSync(trashPath, episode.file_path);
@@ -2107,7 +2007,7 @@ async function mediaRoutes(fastify) {
                 const episodes = database_1.default.prepare(`SELECT file_path FROM episodes WHERE show_id = ?`).all(id);
                 for (const ep of episodes) {
                     if (ep.file_path) {
-                        const trashPath = computeTrashPath(ep.file_path);
+                        const trashPath = (0, trash_1.computeTrashPath)(ep.file_path);
                         if (fs_1.default.existsSync(trashPath)) {
                             try {
                                 fs_1.default.mkdirSync(path_1.default.dirname(ep.file_path), { recursive: true });
@@ -2121,7 +2021,7 @@ async function mediaRoutes(fastify) {
                 }
             }
             else if (item.file_path) {
-                const trashPath = computeTrashPath(item.file_path);
+                const trashPath = (0, trash_1.computeTrashPath)(item.file_path);
                 if (fs_1.default.existsSync(trashPath)) {
                     fs_1.default.mkdirSync(path_1.default.dirname(item.file_path), { recursive: true });
                     fs_1.default.renameSync(trashPath, item.file_path);
@@ -2145,7 +2045,7 @@ async function mediaRoutes(fastify) {
                 const episodes = database_1.default.prepare(`SELECT file_path FROM episodes WHERE show_id = ?`).all(id);
                 for (const ep of episodes) {
                     if (ep.file_path) {
-                        const trashPath = computeTrashPath(ep.file_path);
+                        const trashPath = (0, trash_1.computeTrashPath)(ep.file_path);
                         if (fs_1.default.existsSync(trashPath)) {
                             try {
                                 fs_1.default.unlinkSync(trashPath);
@@ -2156,7 +2056,7 @@ async function mediaRoutes(fastify) {
                 }
             }
             else if (item.file_path) {
-                const trashPath = computeTrashPath(item.file_path);
+                const trashPath = (0, trash_1.computeTrashPath)(item.file_path);
                 if (fs_1.default.existsSync(trashPath)) {
                     try {
                         fs_1.default.unlinkSync(trashPath);

@@ -6,7 +6,6 @@ import 'dart:convert';
 import 'dart:ui';
 import 'dart:io' show Process;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:universal_html/html.dart' as html;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'episode_details_screen.dart';
 import 'fix_match_dialog.dart';
@@ -18,6 +17,10 @@ import 'soundtrack_screen.dart';
 import '../widgets/hoverable_builder.dart';
 import '../widgets/unified_poster_card.dart';
 import '../utils/media_actions_helper.dart';
+import '../models/episode.dart';
+import '../models/media_item.dart';
+import '../models/media_summary.dart';
+import '../models/season.dart';
 
 part 'media_details/media_seasons_tab.dart';
 part 'media_details/media_playback_tab.dart';
@@ -66,11 +69,44 @@ class MediaDetailsScreen extends StatefulWidget {
   State<MediaDetailsScreen> createState() => _MediaDetailsScreenState();
 }
 
+/// Immutable snapshot of the app settings relevant to [MediaDetailsScreen].
+/// Constructed by [_MediaDetailsScreenState._loadSettings].
+class _AppSettings {
+  final String titleStyle;
+  final bool showReleaseVersion;
+  final String versionPriority;
+  final bool showUpcomingEpisodes;
+  final String defaultSubLang;
+  final String defaultAudioLang;
+
+  const _AppSettings({
+    this.titleStyle = 'Translated',
+    this.showReleaseVersion = true,
+    this.versionPriority = '1080p,720p,4K',
+    this.showUpcomingEpisodes = true,
+    this.defaultSubLang = '',
+    this.defaultAudioLang = '',
+  });
+
+  factory _AppSettings.fromMap(Map<String, dynamic> map) => _AppSettings(
+        titleStyle: map['TITLE_DISPLAY_STYLE']?.toString() ?? 'Translated',
+        showReleaseVersion: map['SHOW_RELEASE_VERSION'] != 'false',
+        versionPriority:
+            map['VERSION_PRIORITY']?.toString() ?? '1080p,720p,4K',
+        showUpcomingEpisodes: map['SHOW_UPCOMING_EPISODES'] != 'false',
+        defaultSubLang: map['DEFAULT_SUBTITLE_LANG']?.toString() ?? '',
+        defaultAudioLang: map['DEFAULT_AUDIO_LANG']?.toString() ?? '',
+      );
+}
+
 class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
   late final MediaActionsHelper _mediaActionsHelper;
   bool _isLoading = true;
   String? _error;
   Map<String, dynamic>? _mediaData;
+  // Typed model — populated alongside _mediaData. Screens not yet migrated
+  // still read _mediaData; new code should read _mediaItem instead.
+  MediaItem? _mediaItem;
   double _myRating = 0.0;
   double? _ratingPreview;
   bool _isRatingHovering = false;
@@ -405,6 +441,40 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
     super.dispose();
   }
 
+  /// Loads app settings with a silent fallback to defaults on error.
+  Future<_AppSettings> _loadSettings() async {
+    try {
+      final raw = await widget.apiService.getSettings();
+      return _AppSettings.fromMap(raw);
+    } catch (e) {
+      debugPrint('Error loading settings in details: $e');
+      return const _AppSettings();
+    }
+  }
+
+  /// Returns the ID of the best version according to [priorityOrder].
+  /// Pure function — no side effects, easily testable.
+  static String? _resolveVersionId(
+    List<Map<String, dynamic>> versions,
+    String priorityOrder,
+  ) {
+    if (versions.isEmpty) return null;
+    final order =
+        priorityOrder.split(',').map((s) => s.trim().toUpperCase()).toList();
+    final sorted = [...versions]..sort((a, b) {
+        final ra =
+            _normalizeResForVersion(a['resolution'] as String?).toUpperCase();
+        final rb =
+            _normalizeResForVersion(b['resolution'] as String?).toUpperCase();
+        int ia = order.indexOf(ra);
+        if (ia < 0) ia = order.length + 1;
+        int ib = order.indexOf(rb);
+        if (ib < 0) ib = order.length + 1;
+        return ia.compareTo(ib);
+      });
+    return sorted.first['id']?.toString();
+  }
+
   Future<void> _fetchDetails() async {
     // Capture before any await — widget props can change while async work runs.
     final pendingAutoPlay = widget.autoPlaySeconds;
@@ -414,107 +484,86 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
         _error = null;
         _similarItemsFuture = widget.apiService.fetchSimilarItems(widget.mediaId);
       });
-      final data = await widget.apiService.fetchMediaDetails(widget.mediaId);
+
+      // Run media fetch and settings load concurrently.
+      final results = await Future.wait([
+        widget.apiService.fetchMediaDetails(widget.mediaId),
+        _loadSettings(),
+      ]);
+      final data = results[0] as Map<String, dynamic>;
+      final settings = results[1] as _AppSettings;
 
       if (data['collection_id'] != null) {
-        _collectionItemsFuture = widget.apiService.fetchCollectionItems(data['collection_id'].toString());
+        _collectionItemsFuture = widget.apiService
+            .fetchCollectionItems(data['collection_id'].toString());
       }
 
-      // Extract ratings / watch status if saved
-      final metadata = data['metadata'] ?? {};
+      final meta = data['metadata'] is Map
+          ? data['metadata'] as Map<String, dynamic>
+          : const <String, dynamic>{};
       final savedRating =
-          double.tryParse(metadata['my_rating']?.toString() ?? '0') ?? 0.0;
-      final savedWatchStatus = metadata['watch_status'] == 'watched';
+          double.tryParse(meta['my_rating']?.toString() ?? '') ?? 0.0;
+      final savedWatchStatus = meta['watch_status'] == 'watched';
       final progress =
-          int.tryParse(metadata['playback_progress']?.toString() ?? '0') ?? 0;
+          int.tryParse(meta['playback_progress']?.toString() ?? '') ?? 0;
 
-      // Load settings to fetch default options
-      String titleStyle = 'Translated';
-      bool showReleaseVersion = true;
-      String versionPriority = '1080p,720p,4K';
-      try {
-        final settings = await widget.apiService.getSettings();
-        if (settings.containsKey('TITLE_DISPLAY_STYLE')) {
-          titleStyle = settings['TITLE_DISPLAY_STYLE'];
-        }
-        if (settings.containsKey('SHOW_RELEASE_VERSION')) {
-          showReleaseVersion = settings['SHOW_RELEASE_VERSION'] != 'false';
-        }
-        if (settings.containsKey('VERSION_PRIORITY')) {
-          versionPriority = settings['VERSION_PRIORITY'];
-        }
-        if (mounted) {
-          setState(() => _showUpcomingEpisodes = settings['SHOW_UPCOMING_EPISODES'] != 'false');
-        }
-        // Apply default language preferences from settings (overrides empty SharedPreferences)
-        final defaultSubLang = settings['DEFAULT_SUBTITLE_LANG'] as String? ?? '';
-        final defaultAudioLang = settings['DEFAULT_AUDIO_LANG'] as String? ?? '';
-        if (_pendingSubtitleLang.isEmpty && defaultSubLang.isNotEmpty) {
-          _pendingSubtitleLang = defaultSubLang;
-        }
-        if (_pendingAudioLang.isEmpty && defaultAudioLang.isNotEmpty) {
-          _pendingAudioLang = defaultAudioLang;
-        }
-      } catch (e) {
-        debugPrint('Error loading settings in details: $e');
-      }
+      final versions =
+          (data['versions'] as List? ?? []).cast<Map<String, dynamic>>();
+      final bestVersionId =
+          _resolveVersionId(versions, settings.versionPriority) ?? widget.mediaId;
 
-      final bool isInWatchlist = data['is_in_watchlist'] as bool? ?? false;
-
-      // Pick best version based on priority
-      final versions = (data['versions'] as List? ?? []).cast<Map<String, dynamic>>();
-      final order = versionPriority.split(',').map((s) => s.trim().toUpperCase()).toList();
-      String? bestVersionId;
-      if (versions.isNotEmpty) {
-        final sorted = [...versions]..sort((a, b) {
-            final ra = _normalizeResForVersion(a['resolution'] as String?).toUpperCase();
-            final rb = _normalizeResForVersion(b['resolution'] as String?).toUpperCase();
-            int ia = order.indexOf(ra); if (ia < 0) ia = order.length + 1;
-            int ib = order.indexOf(rb); if (ib < 0) ib = order.length + 1;
-            return ia.compareTo(ib);
-          });
-        bestVersionId = sorted.first['id']?.toString();
-      }
-
+      if (!mounted) return;
       setState(() {
         _mediaData = data;
-        _myRating = savedRating > 0 ? savedRating : 0.0;
+        _mediaItem = MediaItem.fromJson(data);
+        _myRating = savedRating;
         _isWatched = savedWatchStatus;
         _savedProgressSeconds = progress;
-        _titleDisplayStyle = titleStyle;
-        _showReleaseVersion = showReleaseVersion;
-        _isInWatchlist = isInWatchlist;
+        _titleDisplayStyle = settings.titleStyle;
+        _showReleaseVersion = settings.showReleaseVersion;
+        _isInWatchlist = data['is_in_watchlist'] as bool? ?? false;
         _isFavorite = data['is_favorite'] as bool? ?? false;
         _isLoading = false;
-        _versionPriority = versionPriority;
-        _selectedVersionId = bestVersionId ?? widget.mediaId;
+        _versionPriority = settings.versionPriority;
+        _selectedVersionId = bestVersionId;
+        _showUpcomingEpisodes = settings.showUpcomingEpisodes;
       });
-      // Resolve saved language preferences using the best version's tracks
+
+      // Apply default language preferences from settings.
+      if (settings.defaultSubLang.isNotEmpty && _pendingSubtitleLang.isEmpty) {
+        _pendingSubtitleLang = settings.defaultSubLang;
+      }
+      if (settings.defaultAudioLang.isNotEmpty && _pendingAudioLang.isEmpty) {
+        _pendingAudioLang = settings.defaultAudioLang;
+      }
+
+      // Resolve language defaults from the selected version's track info.
       final bestVer = versions.isNotEmpty
           ? versions.firstWhere(
-              (v) => v['id']?.toString() == (bestVersionId ?? widget.mediaId),
+              (v) => v['id']?.toString() == bestVersionId,
               orElse: () => <String, dynamic>{},
             )
           : <String, dynamic>{};
       final tracksForDefaults = bestVer.isNotEmpty
-          ? Map<String, dynamic>.from(bestVer)
-          : (data['metadata'] is Map ? Map<String, dynamic>.from(data['metadata'] as Map) : <String, dynamic>{});
+          ? bestVer
+          : (data['metadata'] is Map
+              ? Map<String, dynamic>.from(data['metadata'] as Map)
+              : <String, dynamic>{});
       _applyLanguageDefaults(tracksForDefaults);
 
-      // 4K media should default to direct play — transcoding 4K at 5 Mbit wastes quality.
-      // Override the saved pref only if a transcode bitrate was remembered.
-      final bestResolution = _normalizeResForVersion(bestVer['resolution'] as String?);
-      if (bestResolution == '4K' && _selectedQuality != 'direct') {
+      // 4K should default to direct play — transcoding wastes quality at 5 Mbit.
+      if (_normalizeResForVersion(bestVer['resolution'] as String?) == '4K' &&
+          _selectedQuality != 'direct') {
         setState(() => _selectedQuality = 'direct');
       }
 
-      // If parent requested autoplay on open, start playback now.
       if (pendingAutoPlay != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _startPlayback(pendingAutoPlay);
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _isLoading = false;
@@ -803,14 +852,14 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       widget.apiService.currentUserPayload?['role'] == 'Admin';
 
   Future<void> _showSeasonContextMenu(
-      BuildContext ctx, Offset globalPos, int seasonNum, List<Map<String, dynamic>> eps) async {
+      BuildContext ctx, Offset globalPos, int seasonNum, List<Episode> eps) async {
     final overlay = Overlay.of(ctx).context.findRenderObject() as RenderBox;
     final rel = RelativeRect.fromRect(
       Rect.fromPoints(globalPos, globalPos),
       Offset.zero & overlay.size,
     );
     final label = seasonNum == 0 ? 'Specials' : 'Säsong $seasonNum';
-    final allWatched = eps.isNotEmpty && eps.every((e) => e['is_watched'] == 1 || e['is_watched'] == true);
+    final allWatched = eps.isNotEmpty && eps.every((e) => e.isWatched);
     final selected = await showMenu<String>(
       context: ctx,
       color: const Color(0xFF11151D),
@@ -906,12 +955,16 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       try {
         final newWatched = selected == 'mark_watched';
         await widget.apiService.markSeasonSeen(widget.mediaId, seasonNum, newWatched);
-        if (mounted && _mediaData != null) {
+        if (mounted) {
           setState(() {
-            final allEps = _mediaData!['episodes'];
+            // Immutable update via MediaItem
+            _mediaItem = _mediaItem?.withSeasonWatched(seasonNum, newWatched);
+            // Keep raw data in sync for tabs not yet migrated
+            final allEps = _mediaData?['episodes'];
             if (allEps is List) {
               for (final e in allEps) {
-                if (e is Map && int.tryParse(e['season_number']?.toString() ?? '') == seasonNum) {
+                if (e is Map &&
+                    int.tryParse(e['season_number']?.toString() ?? '') == seasonNum) {
                   e['is_watched'] = newWatched ? 1 : 0;
                 }
               }
@@ -970,7 +1023,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
       if (ok == true) {
         try {
           await widget.apiService.deleteSeason(widget.mediaId, seasonNum);
-          if (mounted) setState(() => _mediaData = null);
+          if (mounted) setState(() { _mediaData = null; _mediaItem = null; });
           _fetchDetails();
         } catch (e) {
           if (mounted) {
@@ -1381,7 +1434,7 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
                                 final tmdbId = item['tmdb_id']?.toString();
 
                                 return UnifiedPosterCard(
-                                  item: item,
+                                  item: MediaSummary.fromJson(item),
                                   isHomeCard: false,
                                   index: index,
                                   inLibrary: inLibrary,
@@ -1391,13 +1444,13 @@ class _MediaDetailsScreenState extends State<MediaDetailsScreen> {
 
                                   selectedItems: const {},
                                   selectionMode: false,
-                                  onPlayTap: inLibrary && localId != null ? (i) {
+                                  onPlayTap: inLibrary && localId != null ? (s) {
                                     Navigator.pop(dialogCtx);
                                     widget.onMediaSelected?.call(localId);
                                   } : null,
-                                  onContextMenu: (i, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(i, isHomeCard: isHome, globalPos: pos),
-                                onEdit: inLibrary ? _mediaActionsHelper.openMediaEditor : null,
-                                  onPosterTap: (i, isHome) {
+                                  onContextMenu: (s, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(s.toJson(), isHomeCard: isHome, globalPos: pos),
+                                  onEdit: inLibrary ? (s) => _mediaActionsHelper.openMediaEditor(s.toJson()) : null,
+                                  onPosterTap: (s, isHome) {
                                     Navigator.pop(dialogCtx);
                                     if (inLibrary && localId != null) {
                                       widget.onMediaSelected?.call(localId);

@@ -51,7 +51,7 @@ class MediaActionsHelper {
     return result == true;
   }
 
-  Future<void> openPosterActionsMenu(dynamic item, {required bool isHomeCard, Offset? globalPos, RelativeRect? position}) async {
+  Future<void> openPosterActionsMenu(Map<String, dynamic> item, {required bool isHomeCard, Offset? globalPos, RelativeRect? position}) async {
     final itemId = item['id']?.toString();
     final tmdbId = item['tmdb_id']?.toString();
 
@@ -253,11 +253,11 @@ class MediaActionsHelper {
       }
 }
 
-  Future<void> openMediaEditor(dynamic item) async {
+  Future<void> openMediaEditor(Map<String, dynamic> item) async {
   final itemId = item['id']?.toString();
   if (itemId == null) return;
 
-  Map<String, dynamic> details = item is Map<String, dynamic> ? Map<String, dynamic>.from(item) : <String, dynamic>{};
+  Map<String, dynamic> details = Map<String, dynamic>.from(item);
   Map<String, dynamic> metadataState = {};
 
   try {
@@ -847,7 +847,7 @@ class MediaActionsHelper {
   squareArtController.dispose();
 }
 
-void _showMediaInfoDialog(dynamic item) {
+void _showMediaInfoDialog(Map<String, dynamic> item) {
   final itemId = item['id']?.toString();
   if (itemId == null) return;
   showDialog(
@@ -861,7 +861,7 @@ void _showMediaInfoDialog(dynamic item) {
   );
 }
 
-void _showMediaStatsDialog(dynamic item) {
+void _showMediaStatsDialog(Map<String, dynamic> item) {
   final itemId = item['id']?.toString();
   if (itemId == null) return;
   final mediaTitle = item['title']?.toString() ?? 'Statistik';

@@ -44,6 +44,7 @@ const dotenv = __importStar(require("dotenv"));
 const auth_1 = __importDefault(require("./routes/auth"));
 const library_1 = __importStar(require("./routes/library"));
 const media_1 = __importDefault(require("./routes/media"));
+const episodes_1 = __importDefault(require("./routes/episodes"));
 const markers_1 = __importDefault(require("./routes/markers"));
 const settings_1 = __importDefault(require("./routes/settings"));
 const oauth_1 = __importDefault(require("./routes/oauth"));
@@ -58,6 +59,7 @@ const stats_1 = __importDefault(require("./routes/stats"));
 const rss_1 = __importDefault(require("./routes/rss"));
 const export_1 = __importDefault(require("./routes/export"));
 const disk_1 = __importDefault(require("./routes/disk"));
+const music_1 = __importDefault(require("./routes/music"));
 const multipart_1 = __importDefault(require("@fastify/multipart"));
 const log_store_1 = require("./services/log_store");
 const rating_sync_1 = require("./services/rating_sync");
@@ -69,9 +71,20 @@ if (!isTest) {
     const _origLog = console.log.bind(console);
     const _origWarn = console.warn.bind(console);
     const _origError = console.error.bind(console);
-    console.log = (...a) => { (0, log_store_1.addLog)('info', a.map(String).join(' ')); _origLog(...a); };
-    console.warn = (...a) => { (0, log_store_1.addLog)('warn', a.map(String).join(' ')); _origWarn(...a); };
-    console.error = (...a) => { (0, log_store_1.addLog)('error', a.map(String).join(' ')); _origError(...a); };
+    const safeStr = (v) => { try {
+        return String(v);
+    }
+    catch {
+        try {
+            return JSON.stringify(v) ?? '[object]';
+        }
+        catch {
+            return '[object]';
+        }
+    } };
+    console.log = (...a) => { (0, log_store_1.addLog)('info', a.map(safeStr).join(' ')); _origLog(...a); };
+    console.warn = (...a) => { (0, log_store_1.addLog)('warn', a.map(safeStr).join(' ')); _origWarn(...a); };
+    console.error = (...a) => { (0, log_store_1.addLog)('error', a.map(safeStr).join(' ')); _origError(...a); };
 }
 async function buildApp() {
     const app = (0, fastify_1.default)({
@@ -105,6 +118,7 @@ async function buildApp() {
     app.register(auth_1.default);
     app.register(library_1.default);
     app.register(media_1.default);
+    app.register(episodes_1.default);
     app.register(markers_1.default);
     app.register(settings_1.default);
     app.register(oauth_1.default);
@@ -119,6 +133,7 @@ async function buildApp() {
     app.register(rss_1.default);
     app.register(export_1.default);
     app.register(disk_1.default);
+    app.register(music_1.default);
     // Log every HTTP response to the in-memory log store (skip in test mode)
     if (!isTest) {
         app.addHook('onResponse', async (req, reply) => {

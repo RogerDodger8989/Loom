@@ -82,9 +82,10 @@ class ScannerService {
         const files = this.getAllFiles(libraryPath);
         // Common video extensions
         const videoExts = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'];
+        const musicExts = ['.flac', '.mp3', '.ogg', '.vorbis', '.opus', '.m4a'];
         for (const file of files) {
             const ext = path.extname(file).toLowerCase();
-            if (videoExts.includes(ext)) {
+            if (videoExts.includes(ext) || musicExts.includes(ext)) {
                 // Check size filter
                 if (minSizeBytes > 0) {
                     try {
@@ -101,15 +102,22 @@ class ScannerService {
                     continue;
                 }
                 (0, scan_events_1.emitScanEvent)('file_found', `Hittade: ${path.basename(file)}`, type);
-                if (type === 'Movie') {
+                if (type === 'Movie' && videoExts.includes(ext)) {
                     const result = await this.processMovieFile(file, preferLocalNfo);
                     if (result === 'added')
                         itemsAdded++;
                     else if (result === 'updated')
                         itemsUpdated++;
                 }
-                else if (type === 'Show') {
+                else if (type === 'Show' && videoExts.includes(ext)) {
                     const result = await this.processEpisodeFile(file, libraryPath, preferLocalNfo);
+                    if (result === 'added')
+                        itemsAdded++;
+                    else if (result === 'updated')
+                        itemsUpdated++;
+                }
+                else if (type === 'Music' && musicExts.includes(ext)) {
+                    const result = await this.processMusicFile(file, preferLocalNfo);
                     if (result === 'added')
                         itemsAdded++;
                     else if (result === 'updated')
@@ -633,6 +641,117 @@ class ScannerService {
         }
     }
     /**
+     * Process a single music file
+     */
+    async processMusicFile(filePath, _preferLocalNfo = true) {
+        const dir = path.dirname(filePath);
+        const fileNameWithoutExt = path.parse(filePath).name;
+        const probeResult = await this.probeMediaFile(filePath);
+        let metadata = {
+            title: fileNameWithoutExt,
+            artist: null,
+            album: null,
+            year: null,
+            genre: null,
+            track: null,
+            poster_path: null,
+            musicbrainz_id: null,
+            acoustid_id: null,
+            soundtrack_movie_id: null,
+        };
+        // 1. Läs interna taggar (ID3/Vorbis/FLAC)
+        if (probeResult.formatTags) {
+            const t = probeResult.formatTags;
+            if (t.title)
+                metadata.title = t.title;
+            if (t.artist || t.album_artist)
+                metadata.artist = t.artist || t.album_artist;
+            if (t.album)
+                metadata.album = t.album;
+            if (t.date)
+                metadata.year = parseInt(t.date.substring(0, 4), 10);
+            if (t.genre)
+                metadata.genre = t.genre;
+            if (t.track)
+                metadata.track = t.track;
+            if (t.tracknumber)
+                metadata.track = t.tracknumber;
+            if (t.musicbrainz_trackid)
+                metadata.musicbrainz_id = t.musicbrainz_trackid;
+        }
+        // 1b. Fallback: parsa artist och album från mappstruktur när taggar saknas
+        // Förväntad struktur: .../ArtistBokstav/Artistnamn/År - Album/spår.flac
+        //                 eller .../Artistnamn/Album/spår.flac
+        const dirParts = dir.split(path.sep);
+        const albumFolder = dirParts[dirParts.length - 1]; // "2005 - Batman Begins"
+        const artistFolder = dirParts[dirParts.length - 2]; // "Hans Zimmer"  eller "H" (enbokstavs)
+        const grandFolder = dirParts[dirParts.length - 3]; // "H" om struktur är .../H/Hans Zimmer/...
+        if (!metadata.album && albumFolder) {
+            // Strippa ledande år: "2005 - Batman Begins" → "Batman Begins"
+            metadata.album = albumFolder.replace(/^\d{4}\s*[-–]\s*/, '').trim();
+        }
+        if (!metadata.artist) {
+            // Hoppa över enbokstavsmappar (indexeringsmappar som "H", "A")
+            if (artistFolder && artistFolder.length > 2) {
+                metadata.artist = artistFolder;
+            }
+            else if (grandFolder && grandFolder.length > 2) {
+                metadata.artist = grandFolder;
+            }
+        }
+        // 2. Extrahera inbäddade covers eller hitta cover.jpg/folder.jpg i mappen
+        const possibleCovers = ['cover.jpg', 'cover.png', 'folder.jpg', 'album.jpg'];
+        for (const p of possibleCovers) {
+            const pPath = path.join(dir, p);
+            if (fs.existsSync(pPath)) {
+                metadata.poster_path = pPath;
+                break;
+            }
+        }
+        // 3. Länka soundtrack till film — testa IMDb-id i mappnamn, sen exakt titelmatch, sen partiell match
+        {
+            const folderName = path.basename(dir);
+            const imdbMatch = folderName.match(/tt\d{7,8}/);
+            if (imdbMatch) {
+                const movie = database_1.default.prepare('SELECT id FROM media_items WHERE imdb_id = ? AND deleted_at IS NULL').get(imdbMatch[0]);
+                if (movie)
+                    metadata.soundtrack_movie_id = movie.id;
+            }
+            else if (metadata.album) {
+                const movie = (database_1.default.prepare("SELECT id FROM media_items WHERE title = ? AND type='Movie' AND deleted_at IS NULL").get(metadata.album)
+                    ?? database_1.default.prepare("SELECT id FROM media_items WHERE title LIKE ? AND type='Movie' AND deleted_at IS NULL").get(`%${metadata.album}%`));
+                if (movie)
+                    metadata.soundtrack_movie_id = movie.id;
+            }
+        }
+        const trackNumber = metadata.track ? parseInt(metadata.track, 10) || null : null;
+        try {
+            const existing = database_1.default.prepare('SELECT id FROM music_tracks WHERE file_path = ?').get(filePath);
+            if (existing) {
+                database_1.default.prepare(`
+          UPDATE music_tracks
+          SET title = ?, artist = ?, album = ?, track_number = ?, musicbrainz_id = ?, soundtrack_movie_id = ?
+          WHERE file_path = ?
+        `).run(metadata.title, metadata.artist, metadata.album, trackNumber, metadata.musicbrainz_id, metadata.soundtrack_movie_id, filePath);
+                (0, scan_events_1.emitScanEvent)('item_updated', `Uppdaterad musik: ${metadata.title}`, 'Music');
+                return 'updated';
+            }
+            else {
+                database_1.default.prepare(`
+          INSERT INTO music_tracks (id, title, artist, album, file_path, track_number, musicbrainz_id, soundtrack_movie_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run((0, uuid_1.v4)(), metadata.title, metadata.artist, metadata.album, filePath, trackNumber, metadata.musicbrainz_id, metadata.soundtrack_movie_id);
+                (0, scan_events_1.emitScanEvent)('item_added', `Tillagd musik: ${metadata.title}`, 'Music');
+                return 'added';
+            }
+        }
+        catch (e) {
+            console.error(`[Scanner] Error saving to DB for ${filePath}:`, e);
+            require('fs').appendFileSync('C:/Users/denni/Desktop/Egna appar/Loom/backend/scanner_error.log', e.toString() + '\n');
+            return 'skipped';
+        }
+    }
+    /**
      * Parse season+episode numbers from a filename.
      * Supports: S01E01, s1e1, 1x01, Season 1 Episode 1, etc.
      */
@@ -706,15 +825,24 @@ class ScannerService {
             const showDirName = path.basename(showDir);
             const showTitle = this.parseTitleFromFilename(showDirName);
             const showYear = this.parseYearFromFilename(showDirName) ?? undefined;
-            console.log(`[Scanner Debug] filePath: ${filePath}`);
-            console.log(`[Scanner Debug] showDirName: "${showDirName}", showTitle: "${showTitle}", showYear: ${showYear}`);
             // ── 1. Find or create show in media_items ──────────────────
             let showRow = database_1.default.prepare(`
         SELECT id, title, tmdb_id FROM media_items WHERE type='Show' AND (
           lower(title) = lower(?) OR lower(title) = lower(?)
         ) AND deleted_at IS NULL LIMIT 1
       `).get(showTitle, showDirName);
-            console.log(`[Scanner Debug] showRow found:`, showRow);
+            // Fallback: restore a soft-deleted show with the same title rather than creating a duplicate
+            if (!showRow) {
+                const deletedRow = database_1.default.prepare(`
+          SELECT id, title, tmdb_id FROM media_items WHERE type='Show' AND (
+            lower(title) = lower(?) OR lower(title) = lower(?)
+          ) AND deleted_at IS NOT NULL LIMIT 1
+        `).get(showTitle, showDirName);
+                if (deletedRow) {
+                    database_1.default.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ?`).run(deletedRow.id);
+                    showRow = deletedRow;
+                }
+            }
             let showId = undefined;
             let tmdbShowId = null;
             if (!showRow) {
@@ -727,11 +855,14 @@ class ScannerService {
                 const year = tmdbShow?.first_air_date ? parseInt(tmdbShow.first_air_date.substring(0, 4), 10) : showYear ?? null;
                 const displayTitle = tmdbShow?.name || showTitle;
                 tmdbShowId = tmdbShow?.id?.toString() || null;
-                // Before inserting, check if a show with this tmdb_id already exists!
+                // Before inserting, check if a show with this tmdb_id already exists (including soft-deleted)
                 if (tmdbShowId) {
-                    const existingTmdbShow = database_1.default.prepare('SELECT id FROM media_items WHERE type="Show" AND tmdb_id=? AND deleted_at IS NULL').get(tmdbShowId);
+                    const existingTmdbShow = database_1.default.prepare('SELECT id, deleted_at FROM media_items WHERE type=\'Show\' AND tmdb_id=? ORDER BY deleted_at IS NOT NULL ASC LIMIT 1').get(tmdbShowId);
                     if (existingTmdbShow) {
                         showId = existingTmdbShow.id;
+                        if (existingTmdbShow.deleted_at) {
+                            database_1.default.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ?`).run(showId);
+                        }
                     }
                 }
                 if (!showId) {
@@ -794,10 +925,10 @@ class ScannerService {
             let episodeId;
             if (existing) {
                 episodeId = existing.id;
-                // Update file path if it changed
-                if (existing.file_path !== filePath) {
-                    database_1.default.prepare(`UPDATE episodes SET file_path = ? WHERE id = ?`).run(filePath, episodeId);
-                }
+                // Restore episode (clear deleted_at) and update file path
+                database_1.default.prepare(`UPDATE episodes SET file_path = ?, deleted_at = NULL WHERE id = ?`).run(filePath, episodeId);
+                // Also restore the show itself if it was soft-deleted
+                database_1.default.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`).run(showId);
                 // Always update track metadata in case the file was replaced or probed differently
                 if (probeResult.audioTracks.length > 0 || probeResult.subtitleTracks.length > 0) {
                     const upsertEpMeta = (key, val) => {
@@ -855,8 +986,8 @@ class ScannerService {
             // ── 5. Insert new episode ─────────────────────────────────────
             episodeId = (0, uuid_1.v4)();
             database_1.default.prepare(`
-        INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path, added_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate, episodeOverview, episodeStillPath);
             console.log(`[Scanner] Added S${String(season).padStart(2, '0')}E${String(episodeNum).padStart(2, '0')} of ${showDirName}`);
             // Store track metadata on the show's media_item
@@ -890,6 +1021,7 @@ class ScannerService {
         }
         catch (e) {
             console.error(`[Scanner] Error processing episode ${filePath}:`, e);
+            fs.appendFileSync('C:/Users/denni/Desktop/Egna appar/Loom/backend/episode_scan_error.log', `FILE: ${filePath}\nERROR: ${e?.message || e}\nSTACK: ${e?.stack || ''}\n---\n`);
             (0, scan_events_1.emitScanEvent)('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Show');
             return 'skipped';
         }
@@ -1216,10 +1348,10 @@ class ScannerService {
     probeMediaFile(filePath) {
         return new Promise((resolve) => {
             const ffprobePath = ffprobe.path;
-            const cmd = `"${ffprobePath}" -v quiet -print_format json -show_streams "${filePath.replace(/"/g, '\\"')}"`;
+            const cmd = `"${ffprobePath}" -v quiet -print_format json -show_format -show_streams "${filePath.replace(/"/g, '\\"')}"`;
             childProcess.exec(cmd, { timeout: 15000 }, (err, stdout) => {
                 if (err) {
-                    resolve({ audioTracks: [], subtitleTracks: [], resolution: null });
+                    resolve({ audioTracks: [], subtitleTracks: [], resolution: null, formatTags: {} });
                     return;
                 }
                 try {
@@ -1291,10 +1423,10 @@ class ScannerService {
                             entry.height = s.height;
                         return entry;
                     });
-                    resolve({ audioTracks, subtitleTracks, resolution });
+                    resolve({ audioTracks, subtitleTracks, resolution, formatTags: probe.format?.tags || {} });
                 }
                 catch {
-                    resolve({ audioTracks: [], subtitleTracks: [], resolution: null });
+                    resolve({ audioTracks: [], subtitleTracks: [], resolution: null, formatTags: {} });
                 }
             });
         });
@@ -1332,6 +1464,8 @@ class ScannerService {
         try {
             const files = fs.readdirSync(dirPath);
             files.forEach((file) => {
+                if (file === '.trash')
+                    return;
                 const fullPath = path.join(dirPath, file);
                 if (fs.statSync(fullPath).isDirectory()) {
                     arrayOfFiles = this.getAllFiles(fullPath, arrayOfFiles);

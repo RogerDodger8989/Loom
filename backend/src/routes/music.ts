@@ -36,7 +36,7 @@ function albumCoverUrl(album: AlbumRow): string | null {
   if (album.cover_path) return album.cover_path;
   if (album.linked_media_id) {
     const media = db.prepare('SELECT poster_path FROM media_items WHERE id = ?').get(album.linked_media_id) as { poster_path: string } | undefined;
-    if (media?.poster_path) return `https://image.tmdb.org/t/p/w500${media.poster_path}`;
+    if (media?.poster_path) return `https://image.tmdb.org/t/p/original${media.poster_path}`;
   }
   return null;
 }

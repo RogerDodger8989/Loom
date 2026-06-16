@@ -5,7 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = oauthRoutes;
 const database_1 = __importDefault(require("../config/database"));
-const rating_sync_1 = require("../services/rating_sync");
 async function oauthRoutes(fastify) {
     // Helper to fetch setting from DB
     const getSetting = (key) => {
@@ -13,6 +12,13 @@ async function oauthRoutes(fastify) {
         return row ? row.value : '';
     };
     // Helper to save setting to DB
+    const getUserSetting = (userId, key) => {
+        const row = database_1.default.prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?').get(userId, key);
+        return row ? row.value : '';
+    };
+    const saveUserSetting = (userId, key, value) => {
+        database_1.default.prepare('INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value').run(userId, key, value);
+    };
     const saveSetting = (key, value) => {
         database_1.default.prepare(`
       INSERT INTO system_settings (key, value) 
@@ -90,6 +96,7 @@ async function oauthRoutes(fastify) {
     // ----------------------------------------------------
     // GET /api/oauth/trakt/authorize
     fastify.get('/api/oauth/trakt/authorize', async (request, reply) => {
+        const uid = request.query.uid || 'admin';
         const clientId = getSetting('TRAKT_API_KEY');
         if (!clientId) {
             reply.type('text/html');
@@ -98,12 +105,12 @@ async function oauthRoutes(fastify) {
         const host = request.headers.host || 'localhost:8080';
         const protocol = request.headers['x-forwarded-proto'] || 'http';
         const callbackUrl = `${protocol}://${host}/api/oauth/trakt/callback`;
-        const authorizeUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}`;
+        const authorizeUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${uid}`;
         return reply.redirect(authorizeUrl);
     });
     // GET /api/oauth/trakt/callback
     fastify.get('/api/oauth/trakt/callback', async (request, reply) => {
-        const { code } = request.query;
+        const { code, state: uid = 'admin' } = request.query;
         if (!code) {
             reply.type('text/html');
             return reply.code(400).send(renderResponsePage('Auktorisering misslyckades', 'Ingen auktoriseringskod mottogs från Trakt.', true));
@@ -145,12 +152,10 @@ async function oauthRoutes(fastify) {
                 return reply.code(500).send(renderResponsePage('Token-utbyte misslyckades', `Trakt returnerade ett fel: ${response.status} ${response.statusText}. Vänligen kontrollera att ditt Client ID och Client Secret är korrekta och sparade i inställningarna.`, true));
             }
             const data = await response.json();
-            saveSetting('TRAKT_ACCESS_TOKEN', data.access_token);
+            saveUserSetting(uid, 'TRAKT_ACCESS_TOKEN', data.access_token);
             if (data.refresh_token)
-                saveSetting('TRAKT_REFRESH_TOKEN', data.refresh_token);
+                saveUserSetting(uid, 'TRAKT_REFRESH_TOKEN', data.refresh_token);
             // Trigger automatic background rating and watch history import immediately
-            (0, rating_sync_1.importRatingsFromTrakt)();
-            (0, rating_sync_1.importWatchHistoryFromTrakt)();
             reply.type('text/html');
             return reply.send(renderResponsePage('Trakt ansluten!', 'Loom har nu kopplats till ditt Trakt.tv-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
         }
@@ -165,6 +170,7 @@ async function oauthRoutes(fastify) {
     // ----------------------------------------------------
     // GET /api/oauth/simkl/authorize
     fastify.get('/api/oauth/simkl/authorize', async (request, reply) => {
+        const uid = request.query.uid || 'admin';
         const clientId = getSetting('SIMKL_CLIENT_ID');
         if (!clientId) {
             reply.type('text/html');
@@ -173,12 +179,12 @@ async function oauthRoutes(fastify) {
         const host = request.headers.host || 'localhost:8080';
         const protocol = request.headers['x-forwarded-proto'] || 'http';
         const callbackUrl = `${protocol}://${host}/api/oauth/simkl/callback`;
-        const authorizeUrl = `https://simkl.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}`;
+        const authorizeUrl = `https://simkl.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${uid}`;
         return reply.redirect(authorizeUrl);
     });
     // GET /api/oauth/simkl/callback
     fastify.get('/api/oauth/simkl/callback', async (request, reply) => {
-        const { code } = request.query;
+        const { code, state: uid = 'admin' } = request.query;
         if (!code) {
             reply.type('text/html');
             return reply.code(400).send(renderResponsePage('Auktorisering misslyckades', 'Ingen auktoriseringskod mottogs från Simkl.', true));
@@ -220,10 +226,8 @@ async function oauthRoutes(fastify) {
                 return reply.code(500).send(renderResponsePage('Token-utbyte misslyckades', `Simkl returnerade ett fel: ${response.status} ${response.statusText}. Vänligen kontrollera att ditt Client ID och Client Secret är korrekta och sparade i inställningarna.`, true));
             }
             const data = await response.json();
-            saveSetting('SIMKL_ACCESS_TOKEN', data.access_token);
+            saveUserSetting(uid, 'SIMKL_ACCESS_TOKEN', data.access_token);
             // Trigger automatic background rating and watch history import immediately
-            (0, rating_sync_1.importRatingsFromSimkl)();
-            (0, rating_sync_1.importWatchHistoryFromSimkl)();
             reply.type('text/html');
             return reply.send(renderResponsePage('Simkl ansluten!', 'Loom har nu kopplats till ditt Simkl-konto och påbörjat import av dina sparade betyg i bakgrunden.', false));
         }

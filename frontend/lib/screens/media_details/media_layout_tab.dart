@@ -1,6 +1,20 @@
 part of '../media_details_screen.dart';
 
 extension MediaLayoutTabExtension on _MediaDetailsScreenState {
+  List<Episode> _resolveEpisodes(Map<String, dynamic> media) {
+    if (_mediaItem != null && _mediaItem!.episodes.isNotEmpty) {
+      return _mediaItem!.episodes;
+    }
+    final raw = media['episodes'];
+    if (raw is List) {
+      return raw
+          .whereType<Map<String, dynamic>>()
+          .map(Episode.fromJson)
+          .toList();
+    }
+    return const [];
+  }
+
 Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
     final title = media['title'] ?? 'Unknown Title';
     final year = media['year']?.toString() ?? '';
@@ -890,6 +904,7 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
                                     ),
                                   ],
                                 ] else ...[
+                                  if (!isShow || (media['episodes'] as List? ?? []).isNotEmpty) ...[
                                   ElevatedButton.icon(
                                     onPressed: _playMedia,
                                     icon:
@@ -914,6 +929,7 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
                                     ),
                                   ),
                                   const SizedBox(width: 16),
+                                  ],
 
                                   Padding(
                                     padding: const EdgeInsets.only(right: 16),
@@ -1420,8 +1436,8 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
             ),
 
             // Seasons & Episodes for TV shows — shown ABOVE cast
-            if (media['type'] == 'Show' && media['episodes'] is List && (media['episodes'] as List).isNotEmpty)
-              _buildSeasonsSection(media['episodes'] as List<dynamic>),
+            if (media['type'] == 'Show')
+              _buildSeasonsSection(_resolveEpisodes(media)),
 
             // Cast Carousel
             if (cast.isNotEmpty) ...[
@@ -1724,7 +1740,7 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
                           child: SizedBox(
                             width: 140,
                             child: UnifiedPosterCard(
-                              item: item,
+                              item: MediaSummary.fromJson(item),
                               isHomeCard: false,
                               index: index,
                               inLibrary: inLibrary,
@@ -1734,10 +1750,10 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
 
                               selectedItems: const {},
                               selectionMode: false,
-                              onPlayTap: inLibrary ? (i) => widget.onMediaSelected?.call(localId) : null,
-                              onContextMenu: (i, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(i, isHomeCard: isHome, globalPos: pos),
-                                onEdit: inLibrary ? _mediaActionsHelper.openMediaEditor : null,
-                              onPosterTap: (i, isHome) {
+                              onPlayTap: inLibrary ? (s) => widget.onMediaSelected?.call(localId) : null,
+                              onContextMenu: (s, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(s.toJson(), isHomeCard: isHome, globalPos: pos),
+                              onEdit: inLibrary ? (s) => _mediaActionsHelper.openMediaEditor(s.toJson()) : null,
+                              onPosterTap: (s, isHome) {
                                 if (inLibrary) {
                                   widget.onMediaSelected?.call(localId);
                                 } else if (tmdbId != null) {

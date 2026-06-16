@@ -361,39 +361,53 @@ export async function importRatingsFromTrakt(userId: string): Promise<number> {
       Authorization: `Bearer ${traktAccessToken}`,
     };
 
-    // Fetch rated movies from Trakt (auto-refreshes token on 401)
+    // Fetch rated movies from Trakt
     const ratedMovies = await traktGet(userId, 'https://api.trakt.tv/sync/ratings/movies', headers) as Array<{ rating: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
 
-    if (!Array.isArray(ratedMovies)) return 0;
+    if (Array.isArray(ratedMovies)) {
+      for (const entry of ratedMovies) {
+        const ratingValue = entry.rating;
+        const imdbId = entry.movie?.ids?.imdb;
+        const tmdbId = entry.movie?.ids?.tmdb?.toString();
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId, imdbId, myRating: ratingValue.toString(), source: 'trakt' });
+        const movie = db.prepare(`
+          SELECT id FROM media_items
+          WHERE (imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (movie) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'my_rating', ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id, ratingValue.toString());
+          importCount++;
+        }
+      }
+    }
 
-    for (const entry of ratedMovies) {
-      const ratingValue = entry.rating;
-      const imdbId = entry.movie?.ids?.imdb;
-      const tmdbId = entry.movie?.ids?.tmdb?.toString();
+    // Fetch rated shows from Trakt
+    const ratedShows = await traktGet(userId, 'https://api.trakt.tv/sync/ratings/shows', headers) as Array<{ rating: number; show: { ids: { imdb?: string; tmdb?: number } } }>;
 
-      if (!imdbId && !tmdbId) continue;
-
-      upsertExternalState(userId, {
-        tmdbId,
-        imdbId,
-        myRating: ratingValue.toString(),
-        source: 'trakt',
-      });
-
-      // Find matched film in Loom SQLite
-      const movie = db.prepare(`
-        SELECT id FROM media_items 
-        WHERE (imdb_id = ? AND imdb_id IS NOT NULL) 
-           OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
-      `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
-
-      if (movie) {
-        db.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
-          VALUES (?, ?, 'my_rating', ?)
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `).run(uuidv4(), movie.id, ratingValue.toString());
-        importCount++;
+    if (Array.isArray(ratedShows)) {
+      for (const entry of ratedShows) {
+        const ratingValue = entry.rating;
+        const imdbId = entry.show?.ids?.imdb;
+        const tmdbId = entry.show?.ids?.tmdb?.toString();
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId, imdbId, myRating: ratingValue.toString(), source: 'trakt' });
+        const show = db.prepare(`
+          SELECT id FROM media_items
+          WHERE type = 'Show' AND ((imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL))
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (show) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'my_rating', ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), show.id, ratingValue.toString());
+          importCount++;
+        }
       }
     }
 
@@ -434,38 +448,51 @@ export async function importRatingsFromSimkl(userId: string): Promise<number> {
     const data = response.data as { movies?: Array<{ user_rating?: number; rating?: number; movie: { ids: { imdb?: string; tmdb?: string } } }> };
 
     const ratedMovies = data.movies;
-    if (!Array.isArray(ratedMovies)) return 0;
+    if (Array.isArray(ratedMovies)) {
+      for (const entry of ratedMovies) {
+        const ratingValue = entry.user_rating ?? entry.rating;
+        if (ratingValue === undefined || ratingValue === null) continue;
+        const imdbId = entry.movie?.ids?.imdb;
+        const tmdbId = entry.movie?.ids?.tmdb;
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId: tmdbId?.toString() ?? null, imdbId, myRating: ratingValue.toString(), source: 'simkl' });
+        const movie = db.prepare(`
+          SELECT id FROM media_items
+          WHERE (imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (movie) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'my_rating', ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id, ratingValue.toString());
+          importCount++;
+        }
+      }
+    }
 
-    for (const entry of ratedMovies) {
-      const ratingValue = entry.user_rating ?? entry.rating;
-      if (ratingValue === undefined || ratingValue === null) continue;
-
-      const imdbId = entry.movie?.ids?.imdb;
-      const tmdbId = entry.movie?.ids?.tmdb;
-
-      if (!imdbId && !tmdbId) continue;
-
-      upsertExternalState(userId, {
-        tmdbId: tmdbId?.toString() ?? null,
-        imdbId,
-        myRating: ratingValue.toString(),
-        source: 'simkl',
-      });
-
-      // Find matched film in Loom SQLite
-      const movie = db.prepare(`
-        SELECT id FROM media_items 
-        WHERE (imdb_id = ? AND imdb_id IS NOT NULL) 
-           OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
-      `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
-
-      if (movie) {
-        db.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value) 
-          VALUES (?, ?, 'my_rating', ?)
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `).run(uuidv4(), movie.id, ratingValue.toString());
-        importCount++;
+    // Also process rated shows from Simkl
+    const ratedShows = (data as any).shows as Array<{ user_rating?: number; rating?: number; show: { ids: { imdb?: string; tmdb?: string } } }> | undefined;
+    if (Array.isArray(ratedShows)) {
+      for (const entry of ratedShows) {
+        const ratingValue = entry.user_rating ?? entry.rating;
+        if (ratingValue === undefined || ratingValue === null) continue;
+        const imdbId = entry.show?.ids?.imdb;
+        const tmdbId = entry.show?.ids?.tmdb;
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId: tmdbId?.toString() ?? null, imdbId, myRating: ratingValue.toString(), source: 'simkl' });
+        const show = db.prepare(`
+          SELECT id FROM media_items
+          WHERE type = 'Show' AND ((imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL))
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (show) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'my_rating', ?)
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), show.id, ratingValue.toString());
+          importCount++;
+        }
       }
     }
 
@@ -504,55 +531,72 @@ export async function importWatchHistoryFromTrakt(userId: string): Promise<numbe
 
     const watchedMovies = await traktGet(userId, 'https://api.trakt.tv/sync/watched/movies', headers) as Array<{ plays: number; movie: { ids: { imdb?: string; tmdb?: number } } }>;
 
-    if (!Array.isArray(watchedMovies)) return 0;
-
-    for (const entry of watchedMovies) {
-      const imdbId = entry.movie?.ids?.imdb;
-      const tmdbId = entry.movie?.ids?.tmdb?.toString();
-      const plays  = typeof entry.plays === 'number' && entry.plays > 0 ? entry.plays : 1;
-
-      if (!imdbId && !tmdbId) continue;
-
-      upsertExternalState(userId, {
-        tmdbId,
-        imdbId,
-        watchStatus: 'watched',
-        source: 'trakt',
-      });
-
-      const movie = db.prepare(`
-        SELECT id FROM media_items
-        WHERE (imdb_id = ? AND imdb_id IS NOT NULL)
-           OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
-      `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
-
-      if (movie) {
-        // 1. Set watch_status = 'watched' in media_metadata
-        db.prepare(`
-          INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
-          VALUES (?, ?, 'watch_status', 'watched')
-          ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
-        `).run(uuidv4(), movie.id);
-
-        // 2. Set watch_history + play_count from Trakt
-        const existingHistory = db.prepare(`
-          SELECT id FROM watch_history
-          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
-        `).get(userId, movie.id) as { id: string } | undefined;
-
-        if (existingHistory) {
+    if (Array.isArray(watchedMovies)) {
+      for (const entry of watchedMovies) {
+        const imdbId = entry.movie?.ids?.imdb;
+        const tmdbId = entry.movie?.ids?.tmdb?.toString();
+        const plays  = typeof entry.plays === 'number' && entry.plays > 0 ? entry.plays : 1;
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId, imdbId, watchStatus: 'watched', source: 'trakt' });
+        const movie = db.prepare(`
+          SELECT id FROM media_items
+          WHERE (imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (movie) {
           db.prepare(`
-            UPDATE watch_history
-            SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(plays, existingHistory.id);
-        } else {
-          db.prepare(`
-            INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(uuidv4(), userId, movie.id, 7200, 7200, 1, plays);
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'watch_status', 'watched')
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), movie.id);
+          const existingHistory = db.prepare(`
+            SELECT id FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+          `).get(userId, movie.id) as { id: string } | undefined;
+          if (existingHistory) {
+            db.prepare(`UPDATE watch_history SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(plays, existingHistory.id);
+          } else {
+            db.prepare(`
+              INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(uuidv4(), userId, movie.id, 7200, 7200, 1, plays);
+          }
+          importCount++;
         }
-        importCount++;
+      }
+    }
+
+    // Also import watched shows from Trakt
+    const watchedShows = await traktGet(userId, 'https://api.trakt.tv/sync/watched/shows', headers) as Array<{ plays: number; show: { ids: { imdb?: string; tmdb?: number } } }>;
+
+    if (Array.isArray(watchedShows)) {
+      for (const entry of watchedShows) {
+        const imdbId = entry.show?.ids?.imdb;
+        const tmdbId = entry.show?.ids?.tmdb?.toString();
+        const plays  = typeof entry.plays === 'number' && entry.plays > 0 ? entry.plays : 1;
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId, imdbId, watchStatus: 'watched', source: 'trakt' });
+        const show = db.prepare(`
+          SELECT id FROM media_items
+          WHERE type = 'Show' AND ((imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL))
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (show) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'watch_status', 'watched')
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), show.id);
+          const existingHistory = db.prepare(`
+            SELECT id FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+          `).get(userId, show.id) as { id: string } | undefined;
+          if (existingHistory) {
+            db.prepare(`UPDATE watch_history SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(plays, existingHistory.id);
+          } else {
+            db.prepare(`
+              INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(uuidv4(), userId, show.id, 7200, 7200, 1, plays);
+          }
+          importCount++;
+        }
       }
     }
 
@@ -588,57 +632,36 @@ export async function importWatchHistoryFromSimkl(userId: string): Promise<numbe
       Authorization: `Bearer ${simklAccessToken}`,
     };
 
-    const response = await axios.get('https://api.simkl.com/sync/all-items/movies/completed', { headers });
-    const data = response.data;
+    const moviesResponse = await axios.get('https://api.simkl.com/sync/all-items/movies/completed', { headers });
+    const moviesData = moviesResponse.data;
     let watchedMovies: any[] = [];
-    if (Array.isArray(data)) {
-      watchedMovies = data;
-    } else if (data && Array.isArray((data as any).movies)) {
-      watchedMovies = (data as any).movies;
+    if (Array.isArray(moviesData)) {
+      watchedMovies = moviesData;
+    } else if (moviesData && Array.isArray((moviesData as any).movies)) {
+      watchedMovies = (moviesData as any).movies;
     }
 
-    if (!Array.isArray(watchedMovies) || watchedMovies.length === 0) return 0;
-
     for (const entry of watchedMovies) {
-      const imdbId      = entry.movie?.ids?.imdb;
-      const tmdbId      = entry.movie?.ids?.tmdb;
+      const imdbId       = entry.movie?.ids?.imdb;
+      const tmdbId       = entry.movie?.ids?.tmdb;
       const timesWatched = typeof entry.times_watched === 'number' && entry.times_watched > 0 ? entry.times_watched : 1;
-
       if (!imdbId && !tmdbId) continue;
-
-      upsertExternalState(userId, {
-        tmdbId: tmdbId?.toString() ?? null,
-        imdbId,
-        watchStatus: 'watched',
-        source: 'simkl',
-      });
-
+      upsertExternalState(userId, { tmdbId: tmdbId?.toString() ?? null, imdbId, watchStatus: 'watched', source: 'simkl' });
       const movie = db.prepare(`
         SELECT id FROM media_items
-        WHERE (imdb_id = ? AND imdb_id IS NOT NULL)
-           OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
+        WHERE (imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL)
       `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
-
       if (movie) {
-        // 1. Set watch_status = 'watched' in media_metadata
         db.prepare(`
           INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
           VALUES (?, ?, 'watch_status', 'watched')
           ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
         `).run(uuidv4(), movie.id);
-
-        // 2. Set watch_history + play_count from SIMKL
         const existingHistory = db.prepare(`
-          SELECT id FROM watch_history
-          WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+          SELECT id FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
         `).get(userId, movie.id) as { id: string } | undefined;
-
         if (existingHistory) {
-          db.prepare(`
-            UPDATE watch_history
-            SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(timesWatched, existingHistory.id);
+          db.prepare(`UPDATE watch_history SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(timesWatched, existingHistory.id);
         } else {
           db.prepare(`
             INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
@@ -647,6 +670,50 @@ export async function importWatchHistoryFromSimkl(userId: string): Promise<numbe
         }
         importCount++;
       }
+    }
+
+    // Also import watched shows from Simkl
+    try {
+      const showsResponse = await axios.get('https://api.simkl.com/sync/all-items/shows/completed', { headers });
+      const showsData = showsResponse.data;
+      let watchedShows: any[] = [];
+      if (Array.isArray(showsData)) {
+        watchedShows = showsData;
+      } else if (showsData && Array.isArray((showsData as any).shows)) {
+        watchedShows = (showsData as any).shows;
+      }
+      for (const entry of watchedShows) {
+        const imdbId       = entry.show?.ids?.imdb;
+        const tmdbId       = entry.show?.ids?.tmdb;
+        const timesWatched = typeof entry.times_watched === 'number' && entry.times_watched > 0 ? entry.times_watched : 1;
+        if (!imdbId && !tmdbId) continue;
+        upsertExternalState(userId, { tmdbId: tmdbId?.toString() ?? null, imdbId, watchStatus: 'watched', source: 'simkl' });
+        const show = db.prepare(`
+          SELECT id FROM media_items
+          WHERE type = 'Show' AND ((imdb_id = ? AND imdb_id IS NOT NULL) OR (tmdb_id = ? AND tmdb_id IS NOT NULL))
+        `).get(imdbId ?? null, tmdbId ?? null) as { id: string } | undefined;
+        if (show) {
+          db.prepare(`
+            INSERT INTO media_metadata (id, media_item_id, metadata_key, metadata_value)
+            VALUES (?, ?, 'watch_status', 'watched')
+            ON CONFLICT(media_item_id, metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value
+          `).run(uuidv4(), show.id);
+          const existingHistory = db.prepare(`
+            SELECT id FROM watch_history WHERE user_id = ? AND media_item_id = ? AND episode_id IS NULL
+          `).get(userId, show.id) as { id: string } | undefined;
+          if (existingHistory) {
+            db.prepare(`UPDATE watch_history SET is_watched = 1, play_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(timesWatched, existingHistory.id);
+          } else {
+            db.prepare(`
+              INSERT INTO watch_history (id, user_id, media_item_id, last_position_seconds, total_duration_seconds, is_watched, play_count, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(uuidv4(), userId, show.id, 7200, 7200, 1, timesWatched);
+          }
+          importCount++;
+        }
+      }
+    } catch (showErr) {
+      console.error('[Playback Sync] Simkl shows watch history failed:', showErr);
     }
 
     console.log(`[Playback Sync] Simkl watch history import complete. Synced ${importCount} items as watched!`);

@@ -246,7 +246,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
                     { params: { api_key: tmdbKey } }
                   );
                   if (r.data.poster_path) {
-                    posterMap[tid] = `https://image.tmdb.org/t/p/w200${r.data.poster_path}`;
+                    posterMap[tid] = `https://image.tmdb.org/t/p/original${r.data.poster_path}`;
                   }
                 } catch {}
               })
@@ -373,7 +373,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
           const { data, allEpisodes, tmdbId, simklTitle, poster } = result.value;
 
           const posterPath = data.poster_path
-            ? `https://image.tmdb.org/t/p/w200${data.poster_path}`
+            ? `https://image.tmdb.org/t/p/original${data.poster_path}`
             : poster;
           const showName = data.name ?? simklTitle;
 
@@ -627,7 +627,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
               const tmdbId  = movie.id?.toString();
               const localM  = tmdbId ? localMovieByTmdb.get(tmdbId) : undefined;
               const posterPath = localM?.poster_path
-                ?? (movie.poster_path ? `https://image.tmdb.org/t/p/w200${movie.poster_path}` : null);
+                ?? (movie.poster_path ? `https://image.tmdb.org/t/p/original${movie.poster_path}` : null);
 
               events.push({
                 date:       releaseDate,
@@ -665,7 +665,7 @@ export default async function calendarRoutes(app: FastifyInstance) {
 
               const localS = localShowByTmdb.get(tmdbId);
               const posterPath = localS?.poster_path
-                ?? (tvData.poster_path ? `https://image.tmdb.org/t/p/w200${tvData.poster_path}` : null);
+                ?? (tvData.poster_path ? `https://image.tmdb.org/t/p/original${tvData.poster_path}` : null);
 
               for (const sn of seasonNums) {
                 try {

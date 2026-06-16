@@ -45,11 +45,45 @@ function dbg(msg, data) {
     const line = `[${new Date().toISOString()}] ${msg}${data !== undefined ? '\n' + JSON.stringify(data, null, 2) : ''}\n`;
     fs.appendFileSync(DEBUG_LOG, line);
 }
+const personalKeys = [
+    'SIMKL_CLIENT_ID',
+    'SIMKL_CLIENT_SECRET',
+    'SIMKL_ACCESS_TOKEN',
+    'TRAKT_API_KEY',
+    'TRAKT_CLIENT_SECRET',
+    'TRAKT_ACCESS_TOKEN',
+    'TRAKT_REFRESH_TOKEN',
+    'IMDB_USER_ID',
+    'DEFAULT_SUBTITLE_LANG',
+    'METADATA_LANGUAGE',
+    'METADATA_FALLBACK_LANGUAGE',
+    'DEFAULT_AUDIO_LANG',
+    'WATCH_PROVIDER_REGION',
+    'TITLE_DISPLAY_STYLE',
+    'SHOW_RELEASE_VERSION',
+    'PREFER_LOCAL_NFO',
+    'HOME_LAYOUT',
+    'sync_trakt_ratings',
+    'sync_trakt_watched',
+    'sync_simkl_ratings',
+    'sync_simkl_watched',
+    'POSTER_SIZE_STEP'
+];
 async function settingsRoutes(fastify) {
     // GET /api/settings & /api/settings/tmdb
-    // Retrieves current Loom global system settings
+    // Retrieves current Loom settings (merges global and user-specific if authenticated)
     const getSettingsHandler = async (request, reply) => {
         try {
+            let caller;
+            if (request.headers.authorization) {
+                try {
+                    await request.jwtVerify();
+                    caller = request.user;
+                }
+                catch (e) {
+                    // ignore, they get global defaults
+                }
+            }
             const keys = [
                 'TMDB_API_KEY',
                 'OMDB_API_KEY',
@@ -103,8 +137,6 @@ async function settingsRoutes(fastify) {
                 'DISK_RULE_SERIES_MODE',
                 'DISK_RULE_PROTECT_FAVORITES',
             ];
-            const placeholders = keys.map(() => '?').join(',');
-            const rows = database_1.default.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...keys);
             const settings = {
                 TMDB_API_KEY: '',
                 OMDB_API_KEY: '',
@@ -158,11 +190,23 @@ async function settingsRoutes(fastify) {
                 DISK_RULE_SERIES_MODE: 'episode',
                 DISK_RULE_PROTECT_FAVORITES: 'true',
             };
+            const systemKeys = keys.filter(k => !personalKeys.includes(k));
+            const placeholders = systemKeys.map(() => '?').join(',');
+            const rows = database_1.default.prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`).all(...systemKeys);
             rows.forEach(r => {
                 if (r.key in settings) {
                     settings[r.key] = r.value;
                 }
             });
+            // If authenticated, overwrite with user-specific settings
+            if (caller) {
+                const userRows = database_1.default.prepare(`SELECT key, value FROM user_settings WHERE user_id = ?`).all(caller.id);
+                userRows.forEach(r => {
+                    if (r.key in settings && personalKeys.includes(r.key)) {
+                        settings[r.key] = r.value;
+                    }
+                });
+            }
             dbg('GET /api/settings — returnerar till klient', settings);
             return reply.send(settings);
         }
@@ -174,73 +218,64 @@ async function settingsRoutes(fastify) {
     fastify.get('/api/settings', getSettingsHandler);
     fastify.get('/api/settings/tmdb', getSettingsHandler);
     // PUT /api/settings
-    // Updates Loom global system settings
-    fastify.put('/api/settings', async (request, reply) => {
+    // Updates Loom global and user system settings
+    fastify.put('/api/settings', {
+        preValidation: [async (request, reply) => {
+                try {
+                    await request.jwtVerify();
+                }
+                catch {
+                    reply.code(401).send({ error: 'Unauthorized' });
+                }
+            }]
+    }, async (request, reply) => {
         try {
             const body = request.body;
+            const caller = request.user;
+            const isAdmin = caller.role === 'Admin';
             dbg('PUT /api/settings — mottagen payload från klient', body);
             const savedKeys = {};
             const updateSetting = (key, value) => {
                 if (value !== undefined) {
-                    database_1.default.prepare(`
-              INSERT INTO system_settings (key, value)
-              VALUES (?, ?)
-              ON CONFLICT(key) DO UPDATE SET value=excluded.value
-            `).run(key, value);
-                    savedKeys[key] = value;
+                    if (personalKeys.includes(key)) {
+                        // Save to user_settings
+                        database_1.default.prepare(`
+                INSERT INTO user_settings (user_id, key, value)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value
+              `).run(caller.id, key, value);
+                        savedKeys[key] = value;
+                    }
+                    else if (isAdmin) {
+                        // Save to system_settings only if Admin
+                        database_1.default.prepare(`
+                INSERT INTO system_settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+              `).run(key, value);
+                        savedKeys[key] = value;
+                    }
                 }
             };
-            updateSetting('TMDB_API_KEY', body.TMDB_API_KEY);
-            updateSetting('OMDB_API_KEY', body.OMDB_API_KEY);
-            updateSetting('SIMKL_CLIENT_ID', body.SIMKL_CLIENT_ID);
-            updateSetting('SIMKL_CLIENT_SECRET', body.SIMKL_CLIENT_SECRET);
-            updateSetting('TRAKT_API_KEY', body.TRAKT_API_KEY);
-            updateSetting('TRAKT_CLIENT_SECRET', body.TRAKT_CLIENT_SECRET);
-            updateSetting('TRAKT_ACCESS_TOKEN', body.TRAKT_ACCESS_TOKEN);
-            updateSetting('TRAKT_REFRESH_TOKEN', body.TRAKT_REFRESH_TOKEN);
-            updateSetting('SIMKL_ACCESS_TOKEN', body.SIMKL_ACCESS_TOKEN);
-            updateSetting('IMDB_USER_ID', body.IMDB_USER_ID);
-            updateSetting('TMDB_USER_AUTH', body.TMDB_USER_AUTH);
-            updateSetting('DEFAULT_SUBTITLE_LANG', body.DEFAULT_SUBTITLE_LANG);
-            updateSetting('METADATA_LANGUAGE', body.METADATA_LANGUAGE);
-            updateSetting('METADATA_FALLBACK_LANGUAGE', body.METADATA_FALLBACK_LANGUAGE);
-            updateSetting('DEFAULT_AUDIO_LANG', body.DEFAULT_AUDIO_LANG);
-            updateSetting('WATCH_PROVIDER_REGION', body.WATCH_PROVIDER_REGION);
-            updateSetting('TITLE_DISPLAY_STYLE', body.TITLE_DISPLAY_STYLE);
-            updateSetting('SHOW_RELEASE_VERSION', body.SHOW_RELEASE_VERSION);
-            updateSetting('PREFER_LOCAL_NFO', body.PREFER_LOCAL_NFO);
-            updateSetting('HOME_LAYOUT', body.HOME_LAYOUT);
-            updateSetting('sync_trakt_ratings', body.sync_trakt_ratings);
-            updateSetting('sync_trakt_watched', body.sync_trakt_watched);
-            updateSetting('sync_simkl_ratings', body.sync_simkl_ratings);
-            updateSetting('sync_simkl_watched', body.sync_simkl_watched);
-            updateSetting('POSTER_SIZE_STEP', body.POSTER_SIZE_STEP);
-            updateSetting('DISCORD_WEBHOOK_URL', body.DISCORD_WEBHOOK_URL);
-            updateSetting('SMTP_HOST', body.SMTP_HOST);
-            updateSetting('SMTP_PORT', body.SMTP_PORT);
-            updateSetting('SMTP_USER', body.SMTP_USER);
-            updateSetting('SMTP_PASS', body.SMTP_PASS);
-            updateSetting('SMTP_FROM', body.SMTP_FROM);
-            updateSetting('SMTP_TO', body.SMTP_TO);
-            updateSetting('SERVER_NAME', body.SERVER_NAME);
-            updateSetting('SCAN_SKIP_WORDS', body.SCAN_SKIP_WORDS);
-            updateSetting('SCAN_MIN_SIZE_MB', body.SCAN_MIN_SIZE_MB);
-            updateSetting('SHOW_CLOCK', body.SHOW_CLOCK);
-            updateSetting('VERSION_PRIORITY', body.VERSION_PRIORITY);
-            updateSetting('ALWAYS_ON_TOP', body.ALWAYS_ON_TOP);
-            updateSetting('DISK_RULE_WATCHED_ENABLED', body.DISK_RULE_WATCHED_ENABLED);
-            updateSetting('DISK_RULE_WATCHED_DAYS', body.DISK_RULE_WATCHED_DAYS);
-            updateSetting('DISK_RULE_UNSEEN_ENABLED', body.DISK_RULE_UNSEEN_ENABLED);
-            updateSetting('DISK_RULE_UNSEEN_DAYS', body.DISK_RULE_UNSEEN_DAYS);
-            updateSetting('DISK_RULE_INACTIVE_ENABLED', body.DISK_RULE_INACTIVE_ENABLED);
-            updateSetting('DISK_RULE_INACTIVE_DAYS', body.DISK_RULE_INACTIVE_DAYS);
-            updateSetting('DISK_RULE_SIZE_ENABLED', body.DISK_RULE_SIZE_ENABLED);
-            updateSetting('DISK_RULE_SIZE_GB', body.DISK_RULE_SIZE_GB);
-            updateSetting('DISK_RULE_SIZE_REQUIRE_WATCHED', body.DISK_RULE_SIZE_REQUIRE_WATCHED);
-            updateSetting('DISK_RULE_RATING_ENABLED', body.DISK_RULE_RATING_ENABLED);
-            updateSetting('DISK_RULE_RATING_MAX', body.DISK_RULE_RATING_MAX);
-            updateSetting('DISK_RULE_SERIES_MODE', body.DISK_RULE_SERIES_MODE);
-            updateSetting('DISK_RULE_PROTECT_FAVORITES', body.DISK_RULE_PROTECT_FAVORITES);
+            const allKeys = [
+                'TMDB_API_KEY', 'OMDB_API_KEY', 'SIMKL_CLIENT_ID', 'SIMKL_CLIENT_SECRET',
+                'SIMKL_ACCESS_TOKEN', 'TRAKT_API_KEY', 'TRAKT_CLIENT_SECRET', 'TRAKT_ACCESS_TOKEN',
+                'TRAKT_REFRESH_TOKEN', 'IMDB_USER_ID', 'TMDB_USER_AUTH', 'DEFAULT_SUBTITLE_LANG',
+                'METADATA_LANGUAGE', 'METADATA_FALLBACK_LANGUAGE', 'DEFAULT_AUDIO_LANG',
+                'WATCH_PROVIDER_REGION', 'TITLE_DISPLAY_STYLE', 'SHOW_RELEASE_VERSION',
+                'PREFER_LOCAL_NFO', 'HOME_LAYOUT', 'sync_trakt_ratings', 'sync_trakt_watched',
+                'sync_simkl_ratings', 'sync_simkl_watched', 'POSTER_SIZE_STEP', 'DISCORD_WEBHOOK_URL',
+                'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'SMTP_TO', 'SERVER_NAME',
+                'SCAN_SKIP_WORDS', 'SCAN_MIN_SIZE_MB', 'SHOW_CLOCK', 'VERSION_PRIORITY', 'ALWAYS_ON_TOP',
+                'DISK_RULE_WATCHED_ENABLED', 'DISK_RULE_WATCHED_DAYS', 'DISK_RULE_UNSEEN_ENABLED',
+                'DISK_RULE_UNSEEN_DAYS', 'DISK_RULE_INACTIVE_ENABLED', 'DISK_RULE_INACTIVE_DAYS',
+                'DISK_RULE_SIZE_ENABLED', 'DISK_RULE_SIZE_GB', 'DISK_RULE_SIZE_REQUIRE_WATCHED',
+                'DISK_RULE_RATING_ENABLED', 'DISK_RULE_RATING_MAX', 'DISK_RULE_SERIES_MODE',
+                'DISK_RULE_PROTECT_FAVORITES'
+            ];
+            for (const k of allKeys) {
+                updateSetting(k, body[k]);
+            }
             dbg('PUT /api/settings — faktiskt sparade till DB', savedKeys);
             return reply.send({ success: true });
         }

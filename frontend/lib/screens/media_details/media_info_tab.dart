@@ -80,7 +80,7 @@ Widget _buildSimilarCarousel() {
                       child: SizedBox(
                         width: 140,
                         child: UnifiedPosterCard(
-                          item: item,
+                          item: MediaSummary.fromJson(item is Map<String, dynamic> ? item : Map<String, dynamic>.from(item as Map)),
                           isHomeCard: false,
                           index: index,
                           inLibrary: inLibrary,
@@ -90,10 +90,10 @@ Widget _buildSimilarCarousel() {
 
                           selectedItems: const {},
                           selectionMode: false,
-                          onPlayTap: inLibrary && itemId != null ? (i) => widget.onMediaSelected?.call(itemId) : null,
-                          onContextMenu: (i, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(i, isHomeCard: isHome, globalPos: pos),
-                                onEdit: inLibrary ? _mediaActionsHelper.openMediaEditor : null,
-                          onPosterTap: (i, isHome) {
+                          onPlayTap: inLibrary && itemId != null ? (s) => widget.onMediaSelected?.call(itemId) : null,
+                          onContextMenu: (s, isHome, pos) => _mediaActionsHelper.openPosterActionsMenu(s.toJson(), isHomeCard: isHome, globalPos: pos),
+                          onEdit: inLibrary ? (s) => _mediaActionsHelper.openMediaEditor(s.toJson()) : null,
+                          onPosterTap: (s, isHome) {
                             if (widget.onMediaSelected != null) {
                               widget.onMediaSelected!(targetId);
                             } else {

@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv';
 import authRoutes from './routes/auth';
 import libraryRoutes, { setupFileWatchers } from './routes/library';
 import mediaRoutes from './routes/media';
+import episodesRoutes from './routes/episodes';
 import markersRoutes from './routes/markers';
 import settingsRoutes from './routes/settings';
 import oauthRoutes from './routes/oauth';
@@ -35,9 +36,10 @@ if (!isTest) {
   const _origLog   = console.log.bind(console);
   const _origWarn  = console.warn.bind(console);
   const _origError = console.error.bind(console);
-  console.log   = (...a) => { addLog('info',  a.map(String).join(' ')); _origLog(...a);   };
-  console.warn  = (...a) => { addLog('warn',  a.map(String).join(' ')); _origWarn(...a);  };
-  console.error = (...a) => { addLog('error', a.map(String).join(' ')); _origError(...a); };
+  const safeStr = (v: unknown): string => { try { return String(v); } catch { try { return JSON.stringify(v) ?? '[object]'; } catch { return '[object]'; } } };
+  console.log   = (...a) => { addLog('info',  a.map(safeStr).join(' ')); _origLog(...a);   };
+  console.warn  = (...a) => { addLog('warn',  a.map(safeStr).join(' ')); _origWarn(...a);  };
+  console.error = (...a) => { addLog('error', a.map(safeStr).join(' ')); _origError(...a); };
 }
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -77,6 +79,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(authRoutes);
   app.register(libraryRoutes);
   app.register(mediaRoutes);
+  app.register(episodesRoutes);
   app.register(markersRoutes);
   app.register(settingsRoutes);
   app.register(oauthRoutes);

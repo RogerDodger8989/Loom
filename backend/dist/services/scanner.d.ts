@@ -12,6 +12,10 @@ export declare class ScannerService {
      */
     processMovieFile(filePath: string, preferLocalNfo?: boolean): Promise<'added' | 'updated' | 'skipped'>;
     /**
+     * Process a single music file
+     */
+    processMusicFile(filePath: string, _preferLocalNfo?: boolean): Promise<'added' | 'updated' | 'skipped'>;
+    /**
      * Parse season+episode numbers from a filename.
      * Supports: S01E01, s1e1, 1x01, Season 1 Episode 1, etc.
      */

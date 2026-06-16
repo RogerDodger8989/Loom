@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'refactor/**', 'feat/**', 'fix/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Flutter (frontend) ──────────────────────────────────────────────────
+  flutter:
+    name: Flutter analyze & test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: flutter pub get
+
+      - name: Check formatting
+        working-directory: frontend
+        run: dart format --set-exit-if-changed .
+
+      - name: Analyze
+        working-directory: frontend
+        run: flutter analyze --fatal-infos
+
+      - name: Test
+        working-directory: frontend
+        run: flutter test --coverage
+
+  # ── Backend (TypeScript) ────────────────────────────────────────────────
+  backend:
+    name: Backend type-check & test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Type-check
+        working-directory: backend
+        run: npx tsc --noEmit
+
+      - name: Test
+        working-directory: backend
+        run: npm test
+        continue-on-error: true  # remove when backend tests are added

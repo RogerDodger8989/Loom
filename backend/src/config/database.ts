@@ -506,4 +506,8 @@ try {
   console.error('[Database] Failed to migrate external_media_state:', e);
 }
 
+try {
+  db.exec('ALTER TABLE episodes ADD COLUMN added_at DATETIME DEFAULT CURRENT_TIMESTAMP;');
+} catch (e) { /* already exists */ }
+
 export default db;

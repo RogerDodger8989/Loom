@@ -238,7 +238,7 @@ export class ScannerService {
 
         // Only use TMDB images if we didn't find local ones
         if (!metadata.poster_path && tmdbData.poster_path) {
-          metadata.poster_path = tmdbService.getImageUrl(tmdbData.poster_path, 'w500');
+          metadata.poster_path = tmdbService.getImageUrl(tmdbData.poster_path, 'original');
         }
         if (!metadata.fanart_path && tmdbData.backdrop_path) {
           metadata.fanart_path = tmdbService.getImageUrl(tmdbData.backdrop_path, 'original');
@@ -755,9 +755,6 @@ export class ScannerService {
       const showTitle = this.parseTitleFromFilename(showDirName);
       const showYear = this.parseYearFromFilename(showDirName) ?? undefined;
 
-      console.log(`[Scanner Debug] filePath: ${filePath}`);
-      console.log(`[Scanner Debug] showDirName: "${showDirName}", showTitle: "${showTitle}", showYear: ${showYear}`);
-
       // ── 1. Find or create show in media_items ──────────────────
       let showRow = db.prepare(`
         SELECT id, title, tmdb_id FROM media_items WHERE type='Show' AND (
@@ -765,7 +762,18 @@ export class ScannerService {
         ) AND deleted_at IS NULL LIMIT 1
       `).get(showTitle, showDirName) as any;
 
-      console.log(`[Scanner Debug] showRow found:`, showRow);
+      // Fallback: restore a soft-deleted show with the same title rather than creating a duplicate
+      if (!showRow) {
+        const deletedRow = db.prepare(`
+          SELECT id, title, tmdb_id FROM media_items WHERE type='Show' AND (
+            lower(title) = lower(?) OR lower(title) = lower(?)
+          ) AND deleted_at IS NOT NULL LIMIT 1
+        `).get(showTitle, showDirName) as any;
+        if (deletedRow) {
+          db.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ?`).run(deletedRow.id);
+          showRow = deletedRow;
+        }
+      }
 
       let showId: string | undefined = undefined;
       let tmdbShowId: string | null = null;
@@ -773,7 +781,7 @@ export class ScannerService {
       if (!showRow) {
         // Look up TMDB
         const tmdbShow = await this.searchTVShow(showTitle, showYear);
-        const posterUrl = tmdbShow?.poster_path ? tmdbService.getImageUrl(tmdbShow.poster_path, 'w500') : null;
+        const posterUrl = tmdbShow?.poster_path ? tmdbService.getImageUrl(tmdbShow.poster_path, 'original') : null;
         const fanartUrl = tmdbShow?.backdrop_path ? tmdbService.getImageUrl(tmdbShow.backdrop_path, 'original') : null;
         const genre = tmdbShow?.genres?.map((g: any) => g.name).join(', ') || null;
         const plot = tmdbShow?.overview || null;
@@ -781,11 +789,14 @@ export class ScannerService {
         const displayTitle = tmdbShow?.name || showTitle;
         tmdbShowId = tmdbShow?.id?.toString() || null;
 
-        // Before inserting, check if a show with this tmdb_id already exists!
+        // Before inserting, check if a show with this tmdb_id already exists (including soft-deleted)
         if (tmdbShowId) {
-          const existingTmdbShow = db.prepare('SELECT id FROM media_items WHERE type=\'Show\' AND tmdb_id=? AND deleted_at IS NULL').get(tmdbShowId) as any;
+          const existingTmdbShow = db.prepare('SELECT id, deleted_at FROM media_items WHERE type=\'Show\' AND tmdb_id=? ORDER BY deleted_at IS NOT NULL ASC LIMIT 1').get(tmdbShowId) as any;
           if (existingTmdbShow) {
             showId = existingTmdbShow.id;
+            if (existingTmdbShow.deleted_at) {
+              db.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ?`).run(showId);
+            }
           }
         }
 
@@ -824,7 +835,7 @@ export class ScannerService {
                   name: s.name,
                   episode_count: s.episode_count,
                   air_date: s.air_date || null,
-                  poster_path: s.poster_path ? tmdbService.getImageUrl(s.poster_path, 'w342') : null,
+                  poster_path: s.poster_path ? tmdbService.getImageUrl(s.poster_path, 'original') : null,
                   overview: s.overview || null,
                 }));
                 upsertShowMeta('seasons_json', JSON.stringify(seasonsData));
@@ -849,11 +860,12 @@ export class ScannerService {
 
       if (existing) {
         episodeId = existing.id;
-        
-        // Update file path if it changed
-        if (existing.file_path !== filePath) {
-          db.prepare(`UPDATE episodes SET file_path = ? WHERE id = ?`).run(filePath, episodeId);
-        }
+
+        // Restore episode (clear deleted_at) and update file path
+        db.prepare(`UPDATE episodes SET file_path = ?, deleted_at = NULL WHERE id = ?`).run(filePath, episodeId);
+
+        // Also restore the show itself if it was soft-deleted
+        db.prepare(`UPDATE media_items SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`).run(showId);
 
         // Always update track metadata in case the file was replaced or probed differently
         if (probeResult.audioTracks.length > 0 || probeResult.subtitleTracks.length > 0) {
@@ -917,8 +929,8 @@ export class ScannerService {
       // ── 5. Insert new episode ─────────────────────────────────────
       episodeId = uuidv4();
       db.prepare(`
-        INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO episodes (id, show_id, season_number, episode_number, title, file_path, air_date, overview, still_path, added_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       `).run(episodeId, showId, season, episodeNum, episodeTitle, filePath, episodeAirDate, episodeOverview, episodeStillPath);
       console.log(`[Scanner] Added S${String(season).padStart(2,'0')}E${String(episodeNum).padStart(2,'0')} of ${showDirName}`);
 
@@ -948,8 +960,9 @@ export class ScannerService {
 
         triggerChapterScan(filePath, null, episodeId);
         return 'added';
-    } catch (e) {
+    } catch (e: any) {
       console.error(`[Scanner] Error processing episode ${filePath}:`, e);
+      fs.appendFileSync('C:/Users/denni/Desktop/Egna appar/Loom/backend/episode_scan_error.log', `FILE: ${filePath}\nERROR: ${e?.message || e}\nSTACK: ${e?.stack || ''}\n---\n`);
       emitScanEvent('scan_error', `Fel vid import: ${path.basename(filePath)}`, 'Show');
       return 'skipped';
     }
@@ -968,7 +981,7 @@ export class ScannerService {
     const fullShow = await tmdbService.fetchShowById(tmdbShowId);
     if (!fullShow) return;
 
-    const posterUrl  = fullShow.poster_path   ? tmdbService.getImageUrl(fullShow.poster_path,   'w500')    : null;
+    const posterUrl  = fullShow.poster_path   ? tmdbService.getImageUrl(fullShow.poster_path,   'original') : null;
     const fanartUrl  = fullShow.backdrop_path  ? tmdbService.getImageUrl(fullShow.backdrop_path,  'original') : null;
     const genre      = fullShow.genres?.map((g: any) => g.name).join(', ') || null;
     const plot       = fullShow.overview || null;
@@ -996,7 +1009,7 @@ export class ScannerService {
         episode_count: s.episode_count,
         air_date:      s.air_date || null,
         overview:      s.overview || null,
-        poster_path:   s.poster_path ? tmdbService.getImageUrl(s.poster_path, 'w342') : null,
+        poster_path:   s.poster_path ? tmdbService.getImageUrl(s.poster_path, 'original') : null,
       }));
       upsert('seasons_json', JSON.stringify(seasonsData));
     }

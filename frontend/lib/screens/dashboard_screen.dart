@@ -22,9 +22,9 @@ import 'video_player_screen.dart';
 import 'settings_screen.dart';
 import 'user_picker_overlay.dart';
 import 'calendar_screen.dart';
-
-import '../widgets/unified_poster_card.dart';
+import '../models/media_summary.dart';
 import '../utils/media_actions_helper.dart';
+import '../widgets/unified_poster_card.dart';
 
 class DashboardScreen extends StatefulWidget {
   final ApiService apiService;
@@ -2252,12 +2252,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   Widget _buildContinueWatchingCard(dynamic item, {String? episodeLabel}) {
     final cardWidth = 115 * _posterScale;
+    final summary = MediaSummary.fromJson(item is Map<String, dynamic> ? item : Map<String, dynamic>.from(item as Map));
     return SizedBox(
       width: cardWidth,
       child: Padding(
         padding: const EdgeInsets.only(right: 14),
         child: UnifiedPosterCard(
-          item: item,
+          item: summary,
           isHomeCard: true,
           index: 0,
           posterPrefix: 'home',
@@ -2267,17 +2268,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
           selectedItems: _selectedMediaIds,
           selectionMode: _selectedMediaIds.isNotEmpty,
-          onPlayTap: _handlePlayTap,
-          onToggleSelection: _toggleMediaSelection,
-          onContextMenu: (item, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: pos),
-          onEdit: _mediaActionsHelper.openMediaEditor,
+          onPlayTap: (s) => _handlePlayTap(s.toJson()),
+          onToggleSelection: (s, i) => _toggleMediaSelection(s.toJson(), i),
+          onContextMenu: (s, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(s.toJson(), isHomeCard: isHomeCard, globalPos: pos),
+          onEdit: (s) => _mediaActionsHelper.openMediaEditor(s.toJson()),
           onHoverChanged: (key, isHovered) {
              setState(() {
                 if (isHovered) _hoveredPosterKey = key;
                 else if (_hoveredPosterKey == key) _hoveredPosterKey = null;
              });
           },
-          onPosterTap: (item, isHomeCard) => _handlePosterTap(item, isHomeCard: isHomeCard),
+          onPosterTap: (s, isHomeCard) => _handlePosterTap(s.toJson(), isHomeCard: isHomeCard),
         ),
       ),
     );
@@ -3193,14 +3194,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
           }))
         .take(12)
         .toList();
-    final recentShows = (List<dynamic>.from(_shows)
-          ..sort((a, b) {
-            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-            return bTime.compareTo(aTime);
-          }))
-        .take(12)
-        .toList();
     final watchedMovies = _getRecentlyWatchedMovies(_movies).take(12).toList();
     final watchedShows = _getRecentlyWatchedShows(_shows).take(12).toList();
 
@@ -3258,6 +3251,14 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                   }
 
                   if (sectionId == 'recent_shows') {
+                    final recentShows = (List<dynamic>.from(_shows)
+                          ..sort((a, b) {
+                            final aTime = DateTime.tryParse(a['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+                            final bTime = DateTime.tryParse(b['added_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+                            return bTime.compareTo(aTime);
+                          }))
+                        .take(12)
+                        .toList();
                     if (recentShows.isEmpty) return const SizedBox.shrink();
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 32),
@@ -3331,12 +3332,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   Widget _buildHomeCard(dynamic movie) {
     final cardWidth = 115 * _posterScale;
+    final summary = MediaSummary.fromJson(movie is Map<String, dynamic> ? movie : Map<String, dynamic>.from(movie as Map));
     return SizedBox(
       width: cardWidth,
       child: Padding(
         padding: const EdgeInsets.only(right: 14),
         child: UnifiedPosterCard(
-          item: movie,
+          item: summary,
           isHomeCard: true,
           index: 0,
           posterPrefix: 'home',
@@ -3346,17 +3348,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
           selectedItems: _selectedMediaIds,
           selectionMode: _selectedMediaIds.isNotEmpty,
-          onPlayTap: _handlePlayTap,
-          onToggleSelection: _toggleMediaSelection,
-          onContextMenu: (item, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: pos),
-          onEdit: _mediaActionsHelper.openMediaEditor,
+          onPlayTap: (s) => _handlePlayTap(s.toJson()),
+          onToggleSelection: (s, i) => _toggleMediaSelection(s.toJson(), i),
+          onContextMenu: (s, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(s.toJson(), isHomeCard: isHomeCard, globalPos: pos),
+          onEdit: (s) => _mediaActionsHelper.openMediaEditor(s.toJson()),
           onHoverChanged: (key, isHovered) {
              setState(() {
                 if (isHovered) _hoveredPosterKey = key;
                 else if (_hoveredPosterKey == key) _hoveredPosterKey = null;
              });
           },
-          onPosterTap: (item, isHomeCard) => _handlePosterTap(item, isHomeCard: isHomeCard),
+          onPosterTap: (s, isHomeCard) => _handlePosterTap(s.toJson(), isHomeCard: isHomeCard),
         ),
       ),
     );
@@ -3583,8 +3585,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
 
   Widget _buildMediaCard(dynamic item, {required int index}) {
+    final summary = MediaSummary.fromJson(item is Map<String, dynamic> ? item : Map<String, dynamic>.from(item as Map));
     return UnifiedPosterCard(
-          item: item,
+          item: summary,
           isHomeCard: false,
           index: index,
           posterPrefix: 'media',
@@ -3594,17 +3597,17 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
           selectedItems: _selectedMediaIds,
           selectionMode: _selectedMediaIds.isNotEmpty,
-          onPlayTap: _handlePlayTap,
-          onToggleSelection: _toggleMediaSelection,
-          onContextMenu: (item, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(item, isHomeCard: isHomeCard, globalPos: pos),
-          onEdit: _mediaActionsHelper.openMediaEditor,
+          onPlayTap: (s) => _handlePlayTap(s.toJson()),
+          onToggleSelection: (s, i) => _toggleMediaSelection(s.toJson(), i),
+          onContextMenu: (s, isHomeCard, pos) => _mediaActionsHelper.openPosterActionsMenu(s.toJson(), isHomeCard: isHomeCard, globalPos: pos),
+          onEdit: (s) => _mediaActionsHelper.openMediaEditor(s.toJson()),
           onHoverChanged: (key, isHovered) {
              setState(() {
                 if (isHovered) _hoveredPosterKey = key;
                 else if (_hoveredPosterKey == key) _hoveredPosterKey = null;
              });
           },
-          onPosterTap: (item, isHomeCard) => _handlePosterTap(item, isHomeCard: isHomeCard),
+          onPosterTap: (s, isHomeCard) => _handlePosterTap(s.toJson(), isHomeCard: isHomeCard),
         );
   }
 

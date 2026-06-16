@@ -1,8 +1,9 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:async';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'api_contract.dart';
 
 class ApiService {
   // Configured to point to the Fastify local server.
@@ -188,7 +189,7 @@ class ApiService {
   Future<Map<String, dynamic>> getSettings() async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/settings'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     
     if (response.statusCode == 200) {
@@ -203,7 +204,7 @@ class ApiService {
       Uri.parse('$baseUrl/api/settings'),
       headers: {
         'Content-Type': 'application/json',
-        if (_token != null) 'Authorization': 'Bearer $_token',
+        ..._authHeaders(),
       },
       body: jsonEncode(newSettings),
     );
@@ -230,11 +231,12 @@ class ApiService {
   Future<Map<String, dynamic>> fetchMediaDetails(String id) async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/media/items/$id'),
-      headers: const {'Content-Type': 'application/json'},
+      headers: _authHeaders(),
     );
 
     if (response.statusCode == 200) {
-      return jsonDecode(response.body);
+      final raw = jsonDecode(response.body);
+      return ApiContract.validateMediaDetails(raw);
     } else {
       throw Exception('Failed to load media details: ${response.statusCode}');
     }
@@ -250,7 +252,7 @@ class ApiService {
   Future<void> saveMediaMetadata(String id, String key, dynamic value) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/metadata'),
-      headers: const {'Content-Type': 'application/json'},
+      headers: _authHeaders(),
       body: jsonEncode({'key': key, 'value': value}),
     );
     if (response.statusCode != 200) {
@@ -414,6 +416,16 @@ class ApiService {
     } else {
       throw Exception('Failed to fetch shows: ${response.body}');
     }
+  }
+
+  /// Fetch recently-added episodes grouped by (show, season) for the home screen
+  Future<List<dynamic>> fetchRecentEpisodeGroups() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/library/recent-episode-groups'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to fetch recent episode groups: ${response.body}');
   }
 
   /// Get library scanner status
@@ -583,9 +595,7 @@ class ApiService {
     );
     final response = await http.get(
       uri,
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -605,9 +615,7 @@ class ApiService {
     );
     final response = await http.get(
       uri,
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -621,10 +629,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/match'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({
         'tmdbId': tmdbId,
       }),
@@ -642,10 +647,7 @@ class ApiService {
     // Create the playlist
     final createResp = await http.post(
       Uri.parse('$baseUrl/api/playlists'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({'name': playlistName}),
     );
     if (createResp.statusCode != 200 && createResp.statusCode != 201) {
@@ -657,10 +659,7 @@ class ApiService {
     // Add the item
     final addResp = await http.post(
       Uri.parse('$baseUrl/api/playlists/$playlistId/items'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      },
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({'mediaItemId': mediaItemId}),
     );
     if (addResp.statusCode != 200 && addResp.statusCode != 201) {
@@ -673,7 +672,7 @@ class ApiService {
   Future<void> deleteMediaItem(String id) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/api/media/items/$id'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to delete media item: ${response.body}');
@@ -683,7 +682,7 @@ class ApiService {
   Future<void> mergeMediaItems(String sourceId, String targetId) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$sourceId/merge'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'} : {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({'targetId': targetId}),
     );
     if (response.statusCode != 200) {
@@ -694,7 +693,7 @@ class ApiService {
   Future<List<dynamic>> fetchImdbCalendar(String start, {int days = 90}) async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/calendar/imdb?start=$start&days=$days'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) return jsonDecode(response.body) as List;
     if (response.statusCode == 404 || response.statusCode == 401) return [];
@@ -710,6 +709,16 @@ class ApiService {
     );
     if (response.statusCode == 200) return jsonDecode(response.body);
     throw Exception('Failed to report episode progress: ${response.body}');
+  }
+
+  /// Fetch full details for a single episode (used for direct navigation from home strip)
+  Future<Map<String, dynamic>> fetchEpisodeDetails(String episodeId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/media/episodes/$episodeId'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    throw Exception('Failed to fetch episode: ${response.body}');
   }
 
   /// Fetch watched/progress status for a single episode
@@ -748,7 +757,7 @@ class ApiService {
   Future<void> deleteEpisode(String id) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/api/media/episodes/$id'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to delete episode: ${response.body}');
@@ -759,7 +768,7 @@ class ApiService {
   Future<void> deleteSeason(String showId, int seasonNumber) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/api/media/seasons/$showId/$seasonNumber'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to delete season: ${response.body}');
@@ -771,9 +780,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/refresh'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to refresh media metadata: ${response.body}');
@@ -785,9 +792,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/unmatch'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to unmatch media item: ${response.body}');
@@ -799,9 +804,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/media/items/$id/analyze'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to analyze media item: ${response.body}');
@@ -813,10 +816,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/sync/trigger'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: '{}',
     );
     if (response.statusCode == 202) {
@@ -831,9 +831,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.get(
       Uri.parse('$baseUrl/api/sync/status'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -849,7 +847,7 @@ class ApiService {
         : Uri.parse('$baseUrl/api/logs');
     final response = await http.get(
       uri,
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) return jsonDecode(response.body);
     throw Exception('fetchLogs failed: ${response.statusCode}');
@@ -862,7 +860,7 @@ class ApiService {
   Future<Map<String, dynamic>> testDiscordWebhook() async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/notifications/test/discord'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     return jsonDecode(response.body);
   }
@@ -871,7 +869,7 @@ class ApiService {
   Future<Map<String, dynamic>> testEmail() async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/notifications/test/email'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     return jsonDecode(response.body);
   }
@@ -880,7 +878,7 @@ class ApiService {
   Future<Map<String, dynamic>> fetchServerInfo() async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/server/info'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) return jsonDecode(response.body);
     throw Exception('fetchServerInfo failed: ${response.statusCode}');
@@ -890,7 +888,7 @@ class ApiService {
   Future<Map<String, dynamic>> optimizeDatabase() async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/server/db/optimize'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     return jsonDecode(response.body);
   }
@@ -917,7 +915,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/server/restart'),
-      headers: {'Authorization': 'Bearer $_token'},
+      headers: _authHeaders(),
     );
     return jsonDecode(response.body);
   }
@@ -927,7 +925,7 @@ class ApiService {
       'POST',
       Uri.parse('$baseUrl/api/server/db/restore'),
     );
-    if (_token != null) request.headers['Authorization'] = 'Bearer $_token';
+    _authHeaders().forEach((k, v) => request.headers[k] = v);
     request.files.add(http.MultipartFile.fromBytes('file', fileBytes, filename: filename));
     final streamed = await request.send();
     final body = await streamed.stream.bytesToString();
@@ -939,9 +937,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.get(
       Uri.parse('$baseUrl/api/watchlist'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -961,10 +957,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.post(
       Uri.parse('$baseUrl/api/watchlist'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      },
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({
         'tmdbId': tmdbId,
         'title': title,
@@ -985,9 +978,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.delete(
       Uri.parse('$baseUrl/api/watchlist/$tmdbId'),
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to remove from watchlist: ${response.body}');
@@ -1000,9 +991,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/api/playback/markers/$mediaId'),
-        headers: {
-          'Authorization': 'Bearer $_token',
-        },
+        headers: _authHeaders(),
       );
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
@@ -1019,9 +1008,7 @@ class ApiService {
     final url = Uri.parse('$baseUrl/api/playback/stream/$mediaId?transcode=$transcode&bitrate=$bitrate&subtitleIndex=$subtitleIndex');
     final response = await http.get(
       url,
-      headers: {
-        'Authorization': 'Bearer $_token',
-      },
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -1035,7 +1022,7 @@ class ApiService {
   Future<List<dynamic>> fetchMarkers(String id) async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/markers/$id'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) {
       return (jsonDecode(response.body)['markers'] as List<dynamic>? ?? []);
@@ -1046,26 +1033,26 @@ class ApiService {
   /// Trigger chapter extraction for a movie/episode (background)
   Future<void> scanChapters(String id) async {
     await http.post(Uri.parse('$baseUrl/api/markers/scan-chapters/$id'),
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
   }
 
   /// Trigger audio fingerprint computation for a single episode
   Future<void> scanFingerprint(String episodeId) async {
     await http.post(Uri.parse('$baseUrl/api/markers/scan-fingerprint/$episodeId'),
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
   }
 
   /// Trigger fingerprinting for all episodes in a show + detect intro
   Future<void> scanShowIntro(String showId) async {
     await http.post(Uri.parse('$baseUrl/api/markers/scan-show/$showId'),
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
   }
 
   /// Re-run intro detection using existing fingerprints
   Future<Map<String, dynamic>> detectIntro(String showId) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/markers/detect-intro/$showId'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) return jsonDecode(response.body);
     throw Exception('Failed to detect intro: ${response.body}');
@@ -1075,7 +1062,7 @@ class ApiService {
   Future<void> deleteMarker(String markerId) async {
     await http.delete(
       Uri.parse('$baseUrl/api/markers/$markerId'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
   }
 
@@ -1100,7 +1087,7 @@ class ApiService {
   Future<List<dynamic>> fetchTrash() async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/trash'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) return jsonDecode(response.body);
     throw Exception('Failed to fetch trash: ${response.body}');
@@ -1110,7 +1097,7 @@ class ApiService {
   Future<void> restoreTrashItem(String id) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/trash/$id/restore'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to restore item: ${response.body}');
@@ -1121,7 +1108,7 @@ class ApiService {
   Future<void> permanentlyDeleteTrashItem(String id) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/api/trash/$id/permanent'),
-      headers: _token != null ? {'Authorization': 'Bearer $_token'} : {},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to permanently delete item: ${response.body}');
@@ -1137,7 +1124,7 @@ class ApiService {
       queryParameters: {'start': start, 'end': end, 'type': type},
     );
     final response = await http.get(uri,
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
     if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
     throw Exception('Failed to fetch calendar: ${response.body}');
   }
@@ -1149,7 +1136,7 @@ class ApiService {
       queryParameters: {'start': start, 'days': days.toString()},
     );
     final response = await http.get(uri,
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
     if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
     final body = jsonDecode(response.body);
     throw Exception(body['error'] ?? 'Failed to fetch Trakt calendar');
@@ -1162,7 +1149,7 @@ class ApiService {
       queryParameters: {'start': start, 'days': days.toString()},
     );
     final response = await http.get(uri,
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
     if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
     final body = jsonDecode(response.body);
     throw Exception(body['error'] ?? 'Failed to fetch Simkl calendar');
@@ -1178,7 +1165,7 @@ class ApiService {
   Future<List<dynamic>> fetchUsers() async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/users'),
-      headers: {'Authorization': 'Bearer $_token'},
+      headers: _authHeaders(),
     );
     if (response.statusCode == 200) return jsonDecode(response.body) as List<dynamic>;
     throw Exception('Kunde inte hämta användare: ${response.body}');
@@ -1187,7 +1174,7 @@ class ApiService {
   Future<Map<String, dynamic>> createUser(String username, String password, String role) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/users'),
-      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({'username': username, 'password': password, 'role': role}),
     );
     if (response.statusCode == 201) return jsonDecode(response.body) as Map<String, dynamic>;
@@ -1204,7 +1191,7 @@ class ApiService {
     if (pin != null) body['pin'] = pin; // empty string = remove PIN
     final response = await http.put(
       Uri.parse('$baseUrl/api/users/$id'),
-      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode(body),
     );
     if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
@@ -1215,7 +1202,7 @@ class ApiService {
   Future<void> deleteUser(String id) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/api/users/$id'),
-      headers: {'Authorization': 'Bearer $_token'},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) {
       final body = jsonDecode(response.body);
@@ -1307,7 +1294,7 @@ class ApiService {
   Future<void> updateOwnPassword(String currentPassword, String newPassword) async {
     final response = await http.put(
       Uri.parse('$baseUrl/api/auth/me'),
-      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode({'currentPassword': currentPassword, 'newPassword': newPassword}),
     );
     if (response.statusCode != 200) {
@@ -1322,7 +1309,7 @@ class ApiService {
       'POST',
       Uri.parse('$baseUrl/api/auth/me/avatar'),
     );
-    request.headers['Authorization'] = 'Bearer $_token';
+    _authHeaders().forEach((k, v) => request.headers[k] = v);
     request.files.add(http.MultipartFile.fromBytes('avatar', imageBytes, filename: 'avatar.jpg'));
     final streamed = await request.send();
     final body = await streamed.stream.bytesToString();
@@ -1336,7 +1323,7 @@ class ApiService {
     if (_token == null) throw Exception('Unauthorized');
     final response = await http.get(
       Uri.parse('$baseUrl/api/auth/me'),
-      headers: {'Authorization': 'Bearer $_token'},
+      headers: _authHeaders(),
     );
     if (response.statusCode != 200) throw Exception('Kunde inte hämta profil');
     return jsonDecode(response.body) as Map<String, dynamic>;
@@ -1349,7 +1336,7 @@ class ApiService {
     if (pin != null) payload['pin'] = pin;
     final response = await http.put(
       Uri.parse('$baseUrl/api/auth/me'),
-      headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._authHeaders()},
       body: jsonEncode(payload),
     );
     if (response.statusCode != 200) {
@@ -1397,14 +1384,14 @@ class ApiService {
     };
     final uri = Uri.parse('$baseUrl/api/export').replace(queryParameters: params);
     final response = await http.get(uri,
-        headers: _token != null ? {'Authorization': 'Bearer $_token'} : {});
+        headers: _authHeaders());
     if (response.statusCode == 200) return response.bodyBytes;
     throw Exception('Export misslyckades: ${response.statusCode}');
   }
 
   Future<Map<String, dynamic>> importBackup(List<int> fileBytes, String filename) async {
     final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/import'));
-    if (_token != null) request.headers['Authorization'] = 'Bearer $_token';
+    _authHeaders().forEach((k, v) => request.headers[k] = v);
     request.files.add(http.MultipartFile.fromBytes('file', fileBytes, filename: filename));
     final streamed = await request.send();
     final body = await streamed.stream.bytesToString();
@@ -1452,8 +1439,9 @@ class ApiService {
     throw Exception('exportWatched failed: ${response.statusCode}');
   }
 
-  Map<String, String> _authHeaders() =>
-      _token != null ? {'Authorization': 'Bearer $_token'} : {};
+  Map<String, String> _authHeaders() => _token != null
+      ? {'Content-Type': 'application/json', 'Authorization': 'Bearer $_token'}
+      : {'Content-Type': 'application/json'};
 
   // ── Disk Manager API ─────────────────────────────────────────────────────
 
