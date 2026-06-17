@@ -510,4 +510,82 @@ try {
   db.exec('ALTER TABLE episodes ADD COLUMN added_at DATETIME DEFAULT CURRENT_TIMESTAMP;');
 } catch (e) { /* already exists */ }
 
+// ── MusicBrainz enrichment columns ────────────────────────────────────────────
+const musicAlbumsColumns = [
+  'release_group_mbid TEXT',
+  'release_date TEXT',
+  'release_country TEXT',
+  'release_status TEXT',
+  'barcode TEXT',
+  'packaging TEXT',
+  'label TEXT',
+  'catalog_number TEXT',
+  'release_type TEXT',
+  'secondary_types TEXT',
+  'genres TEXT',
+  'rating REAL',
+  'rating_votes INTEGER',
+  'external_urls TEXT',
+  'annotation TEXT',
+  'script TEXT',
+  'language TEXT',
+  'mb_enriched_at DATETIME',
+];
+for (const col of musicAlbumsColumns) {
+  try { db.exec(`ALTER TABLE music_albums ADD COLUMN ${col};`); } catch (e) { /* already exists */ }
+}
+
+const musicArtistsColumns = [
+  'sort_name TEXT',
+  'type TEXT',
+  'gender TEXT',
+  'area TEXT',
+  'begin_date TEXT',
+  'end_date TEXT',
+  'disambiguation TEXT',
+  'aliases TEXT',
+  'genres TEXT',
+  'external_urls TEXT',
+  'mb_enriched_at DATETIME',
+];
+for (const col of musicArtistsColumns) {
+  try { db.exec(`ALTER TABLE music_artists ADD COLUMN ${col};`); } catch (e) { /* already exists */ }
+}
+
+const musicTracksColumnsNew = [
+  'recording_mbid TEXT',
+  'isrc TEXT',
+  'asin TEXT',
+  'first_release_date TEXT',
+  'composers TEXT',
+  'lyricists TEXT',
+  'arrangers TEXT',
+  'work_mbid TEXT',
+  'iswc TEXT',
+  'work_type TEXT',
+  'genres TEXT',
+  'external_urls TEXT',
+  'mb_enriched_at DATETIME',
+];
+for (const col of musicTracksColumnsNew) {
+  try { db.exec(`ALTER TABLE music_tracks ADD COLUMN ${col};`); } catch (e) { /* already exists */ }
+}
+
+// music_album_images: all cover art types from Cover Art Archive
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS music_album_images (
+      id TEXT PRIMARY KEY,
+      album_id TEXT REFERENCES music_albums(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      url TEXT,
+      local_path TEXT,
+      mb_image_id TEXT,
+      approved INTEGER DEFAULT 0,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_music_album_images_album ON music_album_images(album_id);
+  `);
+} catch (e) { /* already exists */ }
+
 export default db;

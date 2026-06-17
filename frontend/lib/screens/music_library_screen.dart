@@ -1,9 +1,8 @@
-import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:audio_session/audio_session.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api.dart';
+import 'music_player_screen.dart';
 
 // ─── Data models ─────────────────────────────────────────────────────────────
 
@@ -25,6 +24,19 @@ class MusicAlbum {
   final int? maxBitDepth;
   final int? maxSampleRate;
 
+  // MusicBrainz enrichment fields
+  final String? musicbrainzAlbumId;
+  final String? label;
+  final String? catalogNumber;
+  final String? releaseDate;
+  final String? releaseCountry;
+  final String? releaseStatus;
+  final String? packaging;
+  final String? releaseType;
+  final List<dynamic> genres;
+  final Map<String, dynamic> externalUrls;
+  final bool isEnriched;
+
   const MusicAlbum({
     required this.id,
     required this.title,
@@ -42,6 +54,17 @@ class MusicAlbum {
     this.totalDuration = '0:00',
     this.maxBitDepth,
     this.maxSampleRate,
+    this.musicbrainzAlbumId,
+    this.label,
+    this.catalogNumber,
+    this.releaseDate,
+    this.releaseCountry,
+    this.releaseStatus,
+    this.packaging,
+    this.releaseType,
+    this.genres = const [],
+    this.externalUrls = const {},
+    this.isEnriched = false,
   });
 
   factory MusicAlbum.fromJson(Map<String, dynamic> j) {
@@ -63,6 +86,17 @@ class MusicAlbum {
       totalDuration: j['total_duration_formatted']?.toString() ?? '0:00',
       maxBitDepth: j['max_bit_depth'] is num ? (j['max_bit_depth'] as num).toInt() : null,
       maxSampleRate: j['max_sample_rate'] is num ? (j['max_sample_rate'] as num).toInt() : null,
+      musicbrainzAlbumId: j['musicbrainz_album_id']?.toString(),
+      label: j['label']?.toString(),
+      catalogNumber: j['catalog_number']?.toString(),
+      releaseDate: j['release_date']?.toString(),
+      releaseCountry: j['release_country']?.toString(),
+      releaseStatus: j['release_status']?.toString(),
+      packaging: j['packaging']?.toString(),
+      releaseType: j['release_type']?.toString(),
+      genres: (j['genres'] as List?) ?? [],
+      externalUrls: (j['external_urls'] as Map<String, dynamic>?) ?? {},
+      isEnriched: j['mb_enriched_at'] != null,
     );
   }
 
@@ -128,16 +162,14 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
   // List view column config
   List<String> _columns = List.from(_kDefaultColumns);
 
-  // Audio player state
-  AudioPlayer? _player;
-  String? _playingTrackId;
-  bool _isPlaying = false;
   late AnimationController _vinylController;
 
   // Selected album for detail overlay
   MusicAlbum? _selectedAlbum;
+  Map<String, dynamic>? _selectedAlbumData;
   List<Map<String, dynamic>> _albumTracks = [];
   bool _isLoadingAlbum = false;
+  bool _showTagViewer = false;
 
   @override
   void initState() {
@@ -146,31 +178,12 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
     _vinylController.stop();
     _loadColumnConfig();
     _loadData();
-    _initAudio();
   }
 
   @override
   void dispose() {
-    _player?.dispose();
     _vinylController.dispose();
     super.dispose();
-  }
-
-  Future<void> _initAudio() async {
-    final session = await AudioSession.instance;
-    await session.configure(const AudioSessionConfiguration.music());
-    _player = AudioPlayer();
-    _player!.playerStateStream.listen((state) {
-      if (!mounted) return;
-      setState(() {
-        _isPlaying = state.playing;
-        if (state.playing) {
-          _vinylController.repeat();
-        } else {
-          _vinylController.stop();
-        }
-      });
-    });
   }
 
   Future<void> _loadColumnConfig() async {
@@ -216,11 +229,26 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
   }
 
   Future<void> _openAlbum(MusicAlbum album) async {
-    setState(() { _selectedAlbum = album; _isLoadingAlbum = true; _albumTracks = []; });
+    setState(() {
+      _selectedAlbum = album;
+      _selectedAlbumData = null;
+      _isLoadingAlbum = true;
+      _albumTracks = [];
+      _showTagViewer = false;
+    });
     try {
       final data = await widget.apiService.fetchMusicAlbum(album.id);
       setState(() {
+        _selectedAlbumData = data;
         _albumTracks = ((data['tracks'] as List?) ?? []).cast<Map<String, dynamic>>();
+        // Reload album with enriched data from full response
+        _selectedAlbum = MusicAlbum.fromJson({
+          ...data,
+          'total_duration_formatted': album.totalDuration,
+          'max_bit_depth': album.maxBitDepth,
+          'max_sample_rate': album.maxSampleRate,
+          'is_hires': album.isHiRes,
+        });
         _isLoadingAlbum = false;
       });
     } catch (e) {
@@ -228,20 +256,179 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
     }
   }
 
-  Future<void> _playTrack(String trackId, String streamUrl) async {
-    if (_player == null) return;
+  Future<void> _enrichAlbum(String albumId) async {
     try {
-      if (_playingTrackId == trackId && _isPlaying) {
-        await _player!.pause();
-        return;
-      }
-      setState(() => _playingTrackId = trackId);
-      final url = '${widget.apiService.baseUrl}$streamUrl';
-      await _player!.setUrl(url);
-      await _player!.play();
+      await widget.apiService.enrichMusicAlbum(albumId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Berikaning startad – uppdateras inom en minut'), backgroundColor: Color(0xFF8A5BFF)),
+      );
+      await Future.delayed(const Duration(seconds: 5));
+      if (!mounted) return;
+      if (_selectedAlbum?.id == albumId) await _openAlbum(_selectedAlbum!);
     } catch (e) {
-      debugPrint('[Music] Play error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Fel: $e'), backgroundColor: Colors.redAccent),
+      );
     }
+  }
+
+  void _showMbMatchDialog(MusicAlbum album) {
+    final searchController = TextEditingController(text: '${album.albumArtist} ${album.title}');
+    List<Map<String, dynamic>> results = [];
+    bool searching = false;
+    String? searchError;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setS) {
+        Future<void> search() async {
+          setS(() { searching = true; searchError = null; results = []; });
+          try {
+            final parts = searchController.text.split(' ');
+            final q = parts.length > 2 ? parts.skip(1).join(' ') : searchController.text;
+            final artist = parts.length > 2 ? parts[0] : null;
+            final res = await widget.apiService.searchMusicBrainz(q, artist: artist);
+            setS(() { results = res.cast<Map<String, dynamic>>(); searching = false; });
+          } catch (e) {
+            setS(() { searchError = e.toString(); searching = false; });
+          }
+        }
+
+        return Dialog(
+          backgroundColor: const Color(0xFF15102A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: SizedBox(
+            width: 560,
+            height: 600,
+            child: Column(children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+                child: Row(children: [
+                  const Icon(Icons.library_music, color: Color(0xFF8A5BFF), size: 20),
+                  const SizedBox(width: 10),
+                  const Text('Matcha mot MusicBrainz', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 18), onPressed: () => Navigator.pop(ctx)),
+                ]),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: searchController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Artist albumnamn…',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.06),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      ),
+                      onSubmitted: (_) => search(),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  ElevatedButton(
+                    onPressed: searching ? null : search,
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8A5BFF), foregroundColor: Colors.white),
+                    child: searching ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Sök'),
+                  ),
+                ]),
+              ),
+              if (searchError != null) Padding(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4), child: Text(searchError!, style: const TextStyle(color: Colors.redAccent, fontSize: 12))),
+              Expanded(
+                child: results.isEmpty && !searching
+                    ? const Center(child: Text('Sök för att hitta releases', style: TextStyle(color: Colors.white38)))
+                    : ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        itemCount: results.length,
+                        itemBuilder: (ctx2, i) {
+                          final r = results[i];
+                          final title = r['title']?.toString() ?? '';
+                          final artist = r['artist']?.toString() ?? '';
+                          final date = r['date']?.toString() ?? '';
+                          final country = r['country']?.toString() ?? '';
+                          final status = r['status']?.toString() ?? '';
+                          final label = r['label']?.toString() ?? '';
+                          final catNum = r['catalogNumber']?.toString() ?? '';
+                          final trackCount = r['trackCount'];
+                          final mbid = r['id']?.toString() ?? '';
+                          final thumbUrl = r['coverUrl']?.toString();
+
+                          return Card(
+                            color: const Color(0xFF1C1530),
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            child: ListTile(
+                              leading: thumbUrl != null
+                                  ? ClipRRect(borderRadius: BorderRadius.circular(4), child: Image.network(thumbUrl, width: 48, height: 48, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.album, color: Color(0xFF8A5BFF), size: 36)))
+                                  : const Icon(Icons.album, color: Color(0xFF8A5BFF), size: 36),
+                              title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500, fontSize: 13)),
+                              subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(artist, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                                const SizedBox(height: 2),
+                                Wrap(spacing: 6, children: [
+                                  if (date.isNotEmpty) Text(date, style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                                  if (country.isNotEmpty) Text(country, style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                                  if (status.isNotEmpty) Text(status, style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                                  if (label.isNotEmpty) Text(label, style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                                  if (catNum.isNotEmpty) Text(catNum, style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                                  if (trackCount != null) Text('$trackCount spår', style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                                ]),
+                              ]),
+                              trailing: TextButton(
+                                onPressed: () async {
+                                  Navigator.pop(ctx);
+                                  try {
+                                    await widget.apiService.matchMusicAlbum(album.id, mbid);
+                                    if (!mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Matchar "$title" – berikaning startar...'), backgroundColor: const Color(0xFF8A5BFF)),
+                                    );
+                                    await Future.delayed(const Duration(seconds: 8));
+                                    if (!mounted) return;
+                                    if (_selectedAlbum?.id == album.id) await _openAlbum(_selectedAlbum!);
+                                  } catch (e) {
+                                    if (!mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Fel: $e'), backgroundColor: Colors.redAccent),
+                                    );
+                                  }
+                                },
+                                style: TextButton.styleFrom(foregroundColor: const Color(0xFF8A5BFF)),
+                                child: const Text('Välj'),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ]),
+          ),
+        );
+      }),
+    );
+  }
+
+  void _openPlayer(int initialIndex) {
+    if (_selectedAlbum == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MusicPlayerScreen(
+          apiService: widget.apiService,
+          albumId: _selectedAlbum!.id,
+          coverUrl: _selectedAlbum!.coverUrl ?? '',
+          albumTitle: _selectedAlbum!.title,
+          albumArtist: _selectedAlbum!.albumArtist,
+          tracks: _albumTracks,
+          initialIndex: initialIndex,
+        ),
+      ),
+    );
   }
 
   Future<void> _triggerScan() async {
@@ -286,7 +473,6 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
       padding: const EdgeInsets.fromLTRB(28, 24, 20, 12),
       child: Row(
         children: [
-          const Text('Musik', style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
           const Spacer(),
           // Layout switcher
           _layoutButton(Icons.grid_view_rounded, MusicLayoutMode.grid, 'Rutnät'),
@@ -810,7 +996,9 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
           children: [
             // Hero section
             _buildAlbumHero(album),
-            const SizedBox(height: 24),
+            // MusicBrainz metadata + action buttons
+            _buildMbSection(album),
+            const SizedBox(height: 8),
             // Track list
             if (_isLoadingAlbum)
               const Padding(
@@ -912,6 +1100,265 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
     );
   }
 
+  Widget _buildMbSection(MusicAlbum album) {
+    final hasMbid = album.musicbrainzAlbumId != null && album.musicbrainzAlbumId!.isNotEmpty;
+    final hasMetadata = album.isEnriched && (album.label != null || album.releaseCountry != null || album.packaging != null || album.genres.isNotEmpty);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 0, 28, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── MB metadata chips ──────────────────────────────────────────
+          if (hasMetadata) ...[
+            Wrap(spacing: 8, runSpacing: 6, children: [
+              if (album.label != null && album.label!.isNotEmpty)
+                _mbChip(Icons.label_outline, album.label!),
+              if (album.catalogNumber != null && album.catalogNumber!.isNotEmpty)
+                _mbChip(Icons.confirmation_number_outlined, album.catalogNumber!),
+              if (album.releaseDate != null && album.releaseDate!.isNotEmpty)
+                _mbChip(Icons.calendar_today_outlined, album.releaseDate!),
+              if (album.releaseCountry != null && album.releaseCountry!.isNotEmpty)
+                _mbChip(Icons.flag_outlined, album.releaseCountry!),
+              if (album.releaseStatus != null && album.releaseStatus!.isNotEmpty)
+                _mbChip(Icons.verified_outlined, album.releaseStatus!),
+              if (album.packaging != null && album.packaging!.isNotEmpty)
+                _mbChip(Icons.inventory_2_outlined, album.packaging!),
+              if (album.releaseType != null && album.releaseType!.isNotEmpty)
+                _mbChip(Icons.category_outlined, album.releaseType!),
+              for (final g in album.genres.take(4))
+                _mbChip(Icons.music_note_outlined, g is Map ? (g['name']?.toString() ?? '') : g.toString(), accent: true),
+            ]),
+            const SizedBox(height: 12),
+          ],
+          // ── External link buttons ──────────────────────────────────────
+          if (album.isEnriched && album.externalUrls.isNotEmpty) ...[
+            Wrap(spacing: 8, runSpacing: 6, children: [
+              for (final entry in album.externalUrls.entries.take(6))
+                _extLinkButton(entry.key, entry.value?.toString() ?? ''),
+            ]),
+            const SizedBox(height: 14),
+          ],
+          // ── Action buttons ─────────────────────────────────────────────
+          Row(children: [
+            if (hasMbid)
+              OutlinedButton.icon(
+                onPressed: () => _enrichAlbum(album.id),
+                icon: const Icon(Icons.auto_awesome, size: 15),
+                label: Text(album.isEnriched ? 'Uppdatera MusicBrainz' : 'Berika från MusicBrainz'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF8A5BFF),
+                  side: const BorderSide(color: Color(0xFF8A5BFF)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+              ),
+            if (hasMbid) const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: () => _showMbMatchDialog(album),
+              icon: const Icon(Icons.search, size: 15),
+              label: const Text('Matcha mot MusicBrainz'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white54,
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: () => setState(() => _showTagViewer = !_showTagViewer),
+              icon: Icon(_showTagViewer ? Icons.expand_less : Icons.expand_more, size: 15),
+              label: Text(_showTagViewer ? 'Dölj taggar' : 'Visa taggar'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white38,
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+            ),
+          ]),
+          // ── Tag viewer ─────────────────────────────────────────────────
+          if (_showTagViewer && _selectedAlbumData != null) ...[
+            const SizedBox(height: 16),
+            _buildTagViewer(_selectedAlbumData!),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _mbChip(IconData icon, String label, {bool accent = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: accent
+            ? const Color(0xFF8A5BFF).withValues(alpha: 0.12)
+            : Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: accent
+              ? const Color(0xFF8A5BFF).withValues(alpha: 0.35)
+              : Colors.white.withValues(alpha: 0.08),
+        ),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 12, color: accent ? const Color(0xFF8A5BFF) : Colors.white38),
+        const SizedBox(width: 5),
+        Text(label, style: TextStyle(color: accent ? const Color(0xFF8A5BFF) : Colors.white60, fontSize: 11)),
+      ]),
+    );
+  }
+
+  Widget _extLinkButton(String platform, String url) {
+    final icons = <String, IconData>{
+      'spotify': Icons.music_note,
+      'discogs': Icons.album,
+      'wikipedia': Icons.public,
+      'apple_music': Icons.apple,
+      'bandcamp': Icons.headphones,
+      'youtube': Icons.play_circle_outline,
+      'lastfm': Icons.bar_chart,
+      'allmusic': Icons.star_outline,
+    };
+    final labels = <String, String>{
+      'spotify': 'Spotify', 'discogs': 'Discogs', 'wikipedia': 'Wikipedia',
+      'apple_music': 'Apple Music', 'bandcamp': 'Bandcamp', 'youtube': 'YouTube',
+      'lastfm': 'Last.fm', 'allmusic': 'AllMusic',
+    };
+    final icon = icons[platform] ?? Icons.link;
+    final label = labels[platform] ?? platform;
+    return GestureDetector(
+      onTap: () {}, // URL launching requires url_launcher package
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 12, color: Colors.white38),
+          const SizedBox(width: 5),
+          Text(label, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          const SizedBox(width: 4),
+          const Icon(Icons.open_in_new, size: 10, color: Colors.white24),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildTagViewer(Map<String, dynamic> albumData) {
+    final artist = albumData['artist'] as Map<String, dynamic>?;
+    final tracks = (albumData['tracks'] as List? ?? []).cast<Map<String, dynamic>>();
+
+    Widget tagRow(String key, dynamic value) {
+      if (value == null || value.toString().isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+            width: 160,
+            child: Text(key, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          ),
+          Expanded(
+            child: Text(value.toString(), style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          ),
+        ]),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: Column(children: [
+          // Album tags
+          ExpansionTile(
+            tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            initiallyExpanded: true,
+            title: const Text('Album', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+            iconColor: const Color(0xFF8A5BFF),
+            collapsedIconColor: Colors.white38,
+            children: [
+              tagRow('MusicBrainz ID', albumData['musicbrainz_album_id']),
+              tagRow('Release Group MBID', albumData['release_group_mbid']),
+              tagRow('Titel', albumData['title']),
+              tagRow('Album Artist', albumData['album_artist']),
+              tagRow('År', albumData['year']),
+              tagRow('Utgivningsdatum', albumData['release_date']),
+              tagRow('Land', albumData['release_country']),
+              tagRow('Status', albumData['release_status']),
+              tagRow('Label', albumData['label']),
+              tagRow('Katalognummer', albumData['catalog_number']),
+              tagRow('Förpackning', albumData['packaging']),
+              tagRow('Typ', albumData['release_type']),
+              tagRow('Streckkod', albumData['barcode']),
+              tagRow('Skript', albumData['script']),
+              tagRow('Språk', albumData['language']),
+              tagRow('Betyg', albumData['rating'] != null ? '${albumData['rating']} (${albumData['rating_votes']} röster)' : null),
+            ],
+          ),
+          if (artist != null)
+            ExpansionTile(
+              tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              title: const Text('Artist', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+              iconColor: const Color(0xFF8A5BFF),
+              collapsedIconColor: Colors.white38,
+              children: [
+                tagRow('MusicBrainz ID', artist['musicbrainz_id']),
+                tagRow('Namn', artist['name']),
+                tagRow('Sorteringsnamn', artist['sort_name']),
+                tagRow('Typ', artist['type']),
+                tagRow('Kön', artist['gender']),
+                tagRow('Område', artist['area']),
+                tagRow('Född/Startade', artist['begin_date']),
+                tagRow('Avled/Upphörde', artist['end_date']),
+                tagRow('Disambiguation', artist['disambiguation']),
+              ],
+            ),
+          // Track tags (first 3, expandable)
+          if (tracks.isNotEmpty)
+            ExpansionTile(
+              tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              title: const Text('Spår', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+              iconColor: const Color(0xFF8A5BFF),
+              collapsedIconColor: Colors.white38,
+              children: tracks.map((t) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(
+                    '${t['track_number'] ?? ''} – ${t['title'] ?? ''}',
+                    style: const TextStyle(color: Color(0xFF8A5BFF), fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  tagRow('Recording MBID', t['recording_mbid']),
+                  tagRow('ISRC', t['isrc']),
+                  tagRow('First Release', t['first_release_date']),
+                  if ((t['composers'] as List?)?.isNotEmpty == true)
+                    tagRow('Kompositör', (t['composers'] as List).map((c) => c is Map ? c['name'] : c.toString()).join(', ')),
+                  if ((t['lyricists'] as List?)?.isNotEmpty == true)
+                    tagRow('Textförfattare', (t['lyricists'] as List).map((c) => c is Map ? c['name'] : c.toString()).join(', ')),
+                  if ((t['arrangers'] as List?)?.isNotEmpty == true)
+                    tagRow('Arrangör', (t['arrangers'] as List).map((c) => c is Map ? c['name'] : c.toString()).join(', ')),
+                  tagRow('Work MBID', t['work_mbid']),
+                  tagRow('ISWC', t['iswc']),
+                  tagRow('Work-typ', t['work_type']),
+                ]),
+              )).toList(),
+            ),
+        ]),
+      ),
+    );
+  }
+
   Widget _buildTrackList(MusicAlbum album) {
     if (_albumTracks.isEmpty) {
       return const Padding(
@@ -926,8 +1373,6 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
     for (int i = 0; i < _albumTracks.length; i++) {
       final track = _albumTracks[i];
       final disc = (track['disc_number'] as num?)?.toInt() ?? 1;
-      final trackId = track['id']?.toString() ?? '';
-      final isPlayingThis = _playingTrackId == trackId && _isPlaying;
 
       if (album.discCount > 1 && disc != currentDisc) {
         currentDisc = disc;
@@ -938,7 +1383,7 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
         ));
       }
 
-      widgets.add(_buildTrackRow(track, i, isPlayingThis));
+      widgets.add(_buildTrackRow(track, i));
     }
 
     return Column(
@@ -954,8 +1399,7 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
     );
   }
 
-  Widget _buildTrackRow(Map<String, dynamic> track, int index, bool isPlayingThis) {
-    final trackId = track['id']?.toString() ?? '';
+  Widget _buildTrackRow(Map<String, dynamic> track, int index) {
     final title = track['title']?.toString() ?? 'Unknown';
     final artist = track['artist']?.toString() ?? '';
     final duration = track['duration_formatted']?.toString() ?? '';
@@ -963,35 +1407,29 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
     final bitDepth = track['bit_depth'] as num?;
     final sampleRate = track['sample_rate'] as num?;
     final trackNum = track['track_number'] as num?;
-    final streamUrl = track['stream_url']?.toString() ?? '';
     final isHiRes = track['is_hires'] == true;
 
     return GestureDetector(
-      onTap: () => _playTrack(trackId, streamUrl),
+      onTap: () => _openPlayer(index),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: Container(
           margin: const EdgeInsets.fromLTRB(20, 0, 20, 2),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: isPlayingThis
-                ? const Color(0xFF8A5BFF).withValues(alpha: 0.12)
-                : index.isOdd ? Colors.white.withValues(alpha: 0.015) : Colors.transparent,
+            color: index.isOdd ? Colors.white.withValues(alpha: 0.015) : Colors.transparent,
             borderRadius: BorderRadius.circular(6),
-            border: isPlayingThis ? Border.all(color: const Color(0xFF8A5BFF).withValues(alpha: 0.3)) : null,
           ),
           child: Row(
             children: [
-              // Track number or play icon
+              // Track number
               SizedBox(
                 width: 32,
-                child: isPlayingThis
-                    ? const Icon(Icons.equalizer, color: Color(0xFF8A5BFF), size: 16)
-                    : Text(
-                        trackNum?.toString() ?? (index + 1).toString(),
-                        style: const TextStyle(color: Colors.white38, fontSize: 12),
-                        textAlign: TextAlign.center,
-                      ),
+                child: Text(
+                  trackNum?.toString() ?? (index + 1).toString(),
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
               ),
               const SizedBox(width: 10),
               // Title + artist
@@ -1000,8 +1438,8 @@ class _MusicLibraryScreenState extends State<MusicLibraryScreen> with SingleTick
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(title,
                     maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: isPlayingThis ? const Color(0xFF8A5BFF) : Colors.white,
+                    style: const TextStyle(
+                      color: Colors.white,
                       fontWeight: FontWeight.w500, fontSize: 13,
                     )),
                   if (artist.isNotEmpty)

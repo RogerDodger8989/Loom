@@ -1510,4 +1510,55 @@ class ApiService {
   }
 
   String musicStreamUrl(String trackId) => '$baseUrl/api/music/stream/$trackId';
+
+  Future<Map<String, dynamic>> fetchMusicAlbumTags(String albumId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/music/albums/$albumId/tags'), headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchMusicAlbumTags failed: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> fetchMusicTrackTags(String trackId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/music/tracks/$trackId/tags'), headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchMusicTrackTags failed: ${response.statusCode}');
+  }
+
+  Future<List<dynamic>> fetchMusicAlbumCovers(String albumId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/music/albums/$albumId/covers'), headers: _authHeaders());
+    if (response.statusCode == 200) return (jsonDecode(response.body) as Map<String, dynamic>)['covers'] as List<dynamic>;
+    throw Exception('fetchMusicAlbumCovers failed: ${response.statusCode}');
+  }
+
+  Future<void> enrichMusicAlbum(String albumId) async {
+    final response = await http.post(Uri.parse('$baseUrl/api/music/albums/$albumId/enrich'), headers: _authHeaders());
+    if (response.statusCode != 200) throw Exception('enrichMusicAlbum failed: ${response.statusCode}');
+  }
+
+  Future<void> matchMusicAlbum(String albumId, String releaseMbid) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/music/albums/$albumId/match'),
+      headers: {..._authHeaders(), 'Content-Type': 'application/json'},
+      body: jsonEncode({'releaseMbid': releaseMbid}),
+    );
+    if (response.statusCode != 200) throw Exception('matchMusicAlbum failed: ${response.statusCode}');
+  }
+
+  Future<List<dynamic>> searchMusicBrainz(String query, {String? artist}) async {
+    final params = <String, String>{'q': query};
+    if (artist != null) params['artist'] = artist;
+    final uri = Uri.parse('$baseUrl/api/music/search/musicbrainz').replace(queryParameters: params);
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) return (jsonDecode(response.body) as Map<String, dynamic>)['results'] as List<dynamic>;
+    throw Exception('searchMusicBrainz failed: ${response.statusCode}');
+  }
+
+  Future<void> enrichAllMusicAlbums() async {
+    await http.post(Uri.parse('$baseUrl/api/music/enrich/all'), headers: _authHeaders());
+  }
+
+  Future<Map<String, dynamic>> fetchMusicArtist(String artistId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/music/artists/$artistId'), headers: _authHeaders());
+    if (response.statusCode == 200) return jsonDecode(response.body) as Map<String, dynamic>;
+    throw Exception('fetchMusicArtist failed: ${response.statusCode}');
+  }
 }

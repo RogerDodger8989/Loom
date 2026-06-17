@@ -2,7 +2,10 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'fs';
 import path from 'path';
 import db from '../config/database';
-import { scanMusicLibrary } from '../services/soundtrack_scanner';
+import { scanMusicLibrary, MUSIC_COVERS_DIR } from '../services/soundtrack_scanner';
+import {
+  enrichAlbum, enrichAllPending, matchAndEnrichAlbum, searchReleases,
+} from '../services/musicbrainz';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +20,9 @@ interface AlbumRow {
   id: string; album_artist: string; title: string; year: number; genre: string;
   cover_path: string; discart_path: string; disc_count: number; local_path: string;
   linked_media_id: string; artist_id: string; musicbrainz_album_id: string;
+  label: string; catalog_number: string; release_date: string; release_country: string;
+  release_status: string; packaging: string; release_type: string; secondary_types: string;
+  genres: string; rating: number; external_urls: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -32,8 +38,18 @@ function isHiRes(bitDepth: number | null, sampleRate: number | null): boolean {
   return (bitDepth != null && bitDepth > 16) || (sampleRate != null && sampleRate > 44100);
 }
 
-function albumCoverUrl(album: AlbumRow): string | null {
-  if (album.cover_path) return album.cover_path;
+/** Return cover URL: local file → /api/music/covers/:id, TMDB fallback, null */
+function albumCoverUrl(album: AlbumRow, req?: FastifyRequest): string | null {
+  if (album.cover_path) {
+    if (album.cover_path.startsWith('http')) return album.cover_path;
+    // Local filesystem path → serve via API
+    if (req) {
+      const host = req.headers.host || 'localhost:8080';
+      const proto = (req.headers['x-forwarded-proto'] as string) || 'http';
+      return `${proto}://${host}/api/music/covers/${album.id}`;
+    }
+    return `/api/music/covers/${album.id}`;
+  }
   if (album.linked_media_id) {
     const media = db.prepare('SELECT poster_path FROM media_items WHERE id = ?').get(album.linked_media_id) as { poster_path: string } | undefined;
     if (media?.poster_path) return `https://image.tmdb.org/t/p/original${media.poster_path}`;
@@ -41,19 +57,38 @@ function albumCoverUrl(album: AlbumRow): string | null {
   return null;
 }
 
+function parseJson<T>(val: string | null | undefined, fallback: T): T {
+  if (!val) return fallback;
+  try { return JSON.parse(val) as T; } catch { return fallback; }
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 export default async function musicRoutes(fastify: FastifyInstance) {
+
+  // ── GET /api/music/covers/:albumId – serve local cover images ─────────────
+  fastify.get('/api/music/covers/:albumId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { albumId } = request.params as { albumId: string };
+    const album = db.prepare('SELECT cover_path FROM music_albums WHERE id = ?').get(albumId) as { cover_path: string } | undefined;
+    if (!album?.cover_path || album.cover_path.startsWith('http')) {
+      return reply.code(404).send({ error: 'No local cover' });
+    }
+    if (!fs.existsSync(album.cover_path)) return reply.code(404).send({ error: 'Cover file not found' });
+
+    const ext = path.extname(album.cover_path).toLowerCase();
+    const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+    reply.header('Content-Type', mime);
+    reply.header('Cache-Control', 'public, max-age=86400');
+    return reply.send(fs.createReadStream(album.cover_path));
+  });
+
 
   // ── GET /api/music/albums ──────────────────────────────────────────────────
   fastify.get('/api/music/albums', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { nav = 'albums', genre, year, artist_id } = request.query as Record<string, string>;
 
-      let albums: AlbumRow[] = [];
-
       if (nav === 'years') {
-        // return distinct years with album counts
         const rows = db.prepare(`
           SELECT year, COUNT(*) as album_count FROM music_albums WHERE year IS NOT NULL GROUP BY year ORDER BY year DESC
         `).all() as { year: number; album_count: number }[];
@@ -67,7 +102,6 @@ export default async function musicRoutes(fastify: FastifyInstance) {
         return reply.send({ nav, genres: rows });
       }
 
-      // Build WHERE clause
       const where: string[] = [];
       const params: (string | number)[] = [];
 
@@ -96,9 +130,8 @@ export default async function musicRoutes(fastify: FastifyInstance) {
         return reply.send({ nav, albumArtists: rows });
       }
 
-      // Default: albums (with optional filters)
       const whereStr = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-      albums = db.prepare(`
+      const albums = db.prepare(`
         SELECT a.*,
           COUNT(t.id) as track_count,
           SUM(t.duration_seconds) as total_duration,
@@ -113,9 +146,12 @@ export default async function musicRoutes(fastify: FastifyInstance) {
 
       const result = albums.map((album: any) => ({
         ...album,
-        cover_url: albumCoverUrl(album as AlbumRow),
+        cover_url: albumCoverUrl(album as AlbumRow, request),
         is_hires: isHiRes(album.max_bit_depth, album.max_sample_rate),
         total_duration_formatted: formatDuration(album.total_duration || 0),
+        genres: parseJson(album.genres, []),
+        external_urls: parseJson(album.external_urls, {}),
+        secondary_types: parseJson(album.secondary_types, []),
         linked_media: album.linked_media_id ? (() => {
           const m = db.prepare('SELECT id, title, poster_path FROM media_items WHERE id = ?').get(album.linked_media_id) as any;
           return m ? { id: m.id, title: m.title, poster_url: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null } : null;
@@ -139,14 +175,22 @@ export default async function musicRoutes(fastify: FastifyInstance) {
 
       const tracks = db.prepare(`
         SELECT id, title, artist, track_number, disc_number, duration_seconds,
-               codec, bit_depth, sample_rate, replay_gain, file_path
+               codec, bit_depth, sample_rate, replay_gain, file_path,
+               musicbrainz_id, recording_mbid, isrc, composers, lyricists, arrangers,
+               work_mbid, iswc, work_type, genres
         FROM music_tracks WHERE album_id = ?
         ORDER BY disc_number ASC, track_number ASC, title ASC
-      `).all(id) as TrackRow[];
+      `).all(id) as any[];
 
       const artist = album.artist_id
-        ? db.prepare('SELECT id, name, image_path FROM music_artists WHERE id = ?').get(album.artist_id) as any
+        ? db.prepare('SELECT * FROM music_artists WHERE id = ?').get(album.artist_id) as any
         : null;
+
+      if (artist) {
+        artist.external_urls = parseJson(artist.external_urls, {});
+        artist.aliases = parseJson(artist.aliases, []);
+        artist.genres = parseJson(artist.genres, []);
+      }
 
       let linkedMedia = null;
       if (album.linked_media_id) {
@@ -155,21 +199,34 @@ export default async function musicRoutes(fastify: FastifyInstance) {
         if (linkedMedia?.fanart_path) linkedMedia.fanart_url = linkedMedia.fanart_path;
       }
 
+      // Cover images from music_album_images
+      const coverImages = db.prepare(`
+        SELECT id, type, url, local_path, mb_image_id FROM music_album_images WHERE album_id = ? ORDER BY added_at ASC
+      `).all(id) as any[];
+
       const tracksWithMeta = tracks.map(t => ({
         ...t,
         duration_formatted: formatDuration(t.duration_seconds || 0),
         is_hires: isHiRes(t.bit_depth, t.sample_rate),
         stream_url: `/api/music/stream/${t.id}`,
+        composers: parseJson(t.composers, []),
+        lyricists: parseJson(t.lyricists, []),
+        arrangers: parseJson(t.arrangers, []),
+        genres: parseJson(t.genres, []),
       }));
 
       const isHiResAlbum = tracks.some(t => isHiRes(t.bit_depth, t.sample_rate));
 
       return reply.send({
         ...album,
-        cover_url: albumCoverUrl(album),
+        cover_url: albumCoverUrl(album, request),
         is_hires: isHiResAlbum,
+        genres: parseJson(album.genres, []),
+        external_urls: parseJson(album.external_urls, {}),
+        secondary_types: parseJson(album.secondary_types, []),
         artist,
         linked_media: linkedMedia,
+        cover_images: coverImages,
         tracks: tracksWithMeta,
         track_count: tracks.length,
         total_duration: formatDuration(tracks.reduce((s, t) => s + (t.duration_seconds || 0), 0)),
@@ -178,6 +235,124 @@ export default async function musicRoutes(fastify: FastifyInstance) {
       console.error('[Music] album/:id error:', err);
       return reply.code(500).send({ error: 'Failed to fetch album' });
     }
+  });
+
+
+  // ── GET /api/music/albums/:id/covers – all cover art types ────────────────
+  fastify.get('/api/music/albums/:id/covers', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const album = db.prepare('SELECT id FROM music_albums WHERE id = ?').get(id);
+    if (!album) return reply.code(404).send({ error: 'Album not found' });
+
+    const covers = db.prepare(`
+      SELECT * FROM music_album_images WHERE album_id = ? ORDER BY
+        CASE type WHEN 'front' THEN 0 WHEN 'back' THEN 1 WHEN 'booklet' THEN 2 ELSE 3 END, added_at ASC
+    `).all(id);
+    return reply.send({ covers });
+  });
+
+
+  // ── GET /api/music/albums/:id/tags – raw tags + MB data ───────────────────
+  fastify.get('/api/music/albums/:id/tags', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const album = db.prepare('SELECT * FROM music_albums WHERE id = ?').get(id) as any;
+    if (!album) return reply.code(404).send({ error: 'Album not found' });
+
+    const tracks = db.prepare('SELECT * FROM music_tracks WHERE album_id = ? ORDER BY disc_number, track_number').all(id) as any[];
+    const artist = album.artist_id ? db.prepare('SELECT * FROM music_artists WHERE id = ?').get(album.artist_id) as any : null;
+
+    return reply.send({
+      album: {
+        ...album,
+        genres: parseJson(album.genres, []),
+        external_urls: parseJson(album.external_urls, {}),
+        secondary_types: parseJson(album.secondary_types, []),
+      },
+      artist: artist ? {
+        ...artist,
+        external_urls: parseJson(artist.external_urls, {}),
+        aliases: parseJson(artist.aliases, []),
+        genres: parseJson(artist.genres, []),
+      } : null,
+      tracks: tracks.map(t => ({
+        ...t,
+        composers: parseJson(t.composers, []),
+        lyricists: parseJson(t.lyricists, []),
+        arrangers: parseJson(t.arrangers, []),
+        genres: parseJson(t.genres, []),
+      })),
+    });
+  });
+
+
+  // ── GET /api/music/tracks/:id/tags ────────────────────────────────────────
+  fastify.get('/api/music/tracks/:id/tags', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const track = db.prepare('SELECT * FROM music_tracks WHERE id = ?').get(id) as any;
+    if (!track) return reply.code(404).send({ error: 'Track not found' });
+
+    return reply.send({
+      ...track,
+      composers: parseJson(track.composers, []),
+      lyricists: parseJson(track.lyricists, []),
+      arrangers: parseJson(track.arrangers, []),
+      genres: parseJson(track.genres, []),
+    });
+  });
+
+
+  // ── POST /api/music/albums/:id/enrich ────────────────────────────────────
+  fastify.post('/api/music/albums/:id/enrich', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const album = db.prepare('SELECT id, title, musicbrainz_album_id FROM music_albums WHERE id = ?').get(id) as any;
+    if (!album) return reply.code(404).send({ error: 'Album not found' });
+    if (!album.musicbrainz_album_id) return reply.code(400).send({ error: 'Album has no MusicBrainz ID. Use /match first.' });
+
+    reply.send({ status: 'enriching', message: `Enriching "${album.title}" from MusicBrainz...` });
+    // Reset enriched_at so it actually runs
+    db.prepare('UPDATE music_albums SET mb_enriched_at = NULL WHERE id = ?').run(id);
+    enrichAlbum(id).catch(e => console.error('[Music] Enrich error:', e));
+  });
+
+
+  // ── POST /api/music/albums/:id/match ─────────────────────────────────────
+  fastify.post('/api/music/albums/:id/match', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const { releaseMbid } = request.body as { releaseMbid: string };
+    if (!releaseMbid) return reply.code(400).send({ error: 'releaseMbid is required' });
+
+    const album = db.prepare('SELECT id, title FROM music_albums WHERE id = ?').get(id) as any;
+    if (!album) return reply.code(404).send({ error: 'Album not found' });
+
+    reply.send({ status: 'matching', message: `Matching "${album.title}" to ${releaseMbid}...` });
+    matchAndEnrichAlbum(id, releaseMbid).catch(e => console.error('[Music] Match error:', e));
+  });
+
+
+  // ── GET /api/music/search/musicbrainz ────────────────────────────────────
+  fastify.get('/api/music/search/musicbrainz', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { q, artist } = request.query as { q?: string; artist?: string };
+    if (!q) return reply.code(400).send({ error: 'q parameter required' });
+
+    try {
+      const results = await searchReleases(q, artist);
+      return reply.send({ results });
+    } catch (e) {
+      return reply.code(500).send({ error: 'MusicBrainz search failed' });
+    }
+  });
+
+
+  // ── POST /api/music/enrich/all ────────────────────────────────────────────
+  fastify.post('/api/music/enrich/all', async (_request: FastifyRequest, reply: FastifyReply) => {
+    const count = (db.prepare(`
+      SELECT COUNT(*) as c FROM music_albums
+      WHERE musicbrainz_album_id IS NOT NULL AND musicbrainz_album_id != ''
+        AND (mb_enriched_at IS NULL OR mb_enriched_at = '')
+    `).get() as any).c;
+
+    reply.send({ status: 'enriching', message: `Enriching ${count} albums in background...` });
+    enrichAllPending().catch(e => console.error('[Music] Enrich all error:', e));
   });
 
 
@@ -218,6 +393,34 @@ export default async function musicRoutes(fastify: FastifyInstance) {
       console.error('[Music] tracks error:', err);
       return reply.code(500).send({ error: 'Failed to fetch tracks' });
     }
+  });
+
+
+  // ── GET /api/music/artists/:id ───────────────────────────────────────────
+  fastify.get('/api/music/artists/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const artist = db.prepare('SELECT * FROM music_artists WHERE id = ?').get(id) as any;
+    if (!artist) return reply.code(404).send({ error: 'Artist not found' });
+
+    const albums = db.prepare(`
+      SELECT a.id, a.title, a.year, a.genre, a.cover_path, a.musicbrainz_album_id,
+             COUNT(t.id) as track_count
+      FROM music_albums a
+      LEFT JOIN music_tracks t ON t.album_id = a.id
+      WHERE a.artist_id = ?
+      GROUP BY a.id ORDER BY a.year DESC NULLS LAST, a.title ASC
+    `).all(id) as any[];
+
+    return reply.send({
+      ...artist,
+      external_urls: parseJson(artist.external_urls, {}),
+      aliases: parseJson(artist.aliases, []),
+      genres: parseJson(artist.genres, []),
+      albums: albums.map(a => ({
+        ...a,
+        cover_url: albumCoverUrl(a as AlbumRow, request),
+      })),
+    });
   });
 
 

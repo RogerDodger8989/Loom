@@ -1991,7 +1991,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
         : _tabController.index == 4
             ? 'Din TV- och film-guide'
             : _tabController.index == 3
-                ? 'Din musiksamling'
+                ? ''
                 : 'Hantera och strömma din mediesamling';
 
     return Row(
@@ -2013,11 +2013,13 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                       letterSpacing: 0.5,
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    subtitle,
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
-                  ),
+                  if (subtitle.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      subtitle,
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
+                    ),
+                  ],
                 ],
               ),
             ],

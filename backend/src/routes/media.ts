@@ -992,12 +992,31 @@ export default async function mediaRoutes(fastify: FastifyInstance) {
 
         if (linkedTracks.length > 0) {
           const firstTrack = linkedTracks[0];
+
+          // Look up album cover from music_albums
+          const linkedAlbum = db.prepare(
+            'SELECT id, cover_path FROM music_albums WHERE linked_media_id = ? LIMIT 1'
+          ).get(movie.id) as { id: string; cover_path: string | null } | undefined;
+
+          let coverUrl: string | null = null;
+          if (linkedAlbum?.cover_path) {
+            if (linkedAlbum.cover_path.startsWith('http')) {
+              coverUrl = linkedAlbum.cover_path;
+            } else {
+              const host = request.headers.host || 'localhost:8080';
+              const proto = (request.headers['x-forwarded-proto'] as string) || 'http';
+              coverUrl = `${proto}://${host}/api/music/covers/${linkedAlbum.id}`;
+            }
+          }
+
           metadata.soundtrack = {
+            album_id: linkedAlbum?.id || null,
             album: firstTrack.album || movie.title,
             artist: firstTrack.artist || 'Various Artists',
-            cover_path: null,
+            cover_url: coverUrl,
+            cover_path: coverUrl,
             local_path: null,
-            tracks: linkedTracks.map(t => ({
+            tracks: linkedTracks.map((t: any) => ({
               id: t.id,
               track_number: t.track_number,
               title: t.title,

@@ -1548,7 +1548,7 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
 
                 final albumTitle = soundtrack['album']?.toString() ?? 'Okänt Album';
                 final artist = soundtrack['artist']?.toString() ?? 'Okänd Artist';
-                final coverPath = soundtrack['cover_path']?.toString();
+                final coverPath = (soundtrack['cover_url'] ?? soundtrack['cover_path'])?.toString();
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1594,6 +1594,7 @@ Widget _buildContent(BuildContext context, Map<String, dynamic> media) {
                               context,
                               MaterialPageRoute(
                                 builder: (context) => SoundtrackScreen(
+                                  apiService: widget.apiService,
                                   soundtrackData: soundtrack,
                                   movieTitle: title,
                                   movieId: widget.mediaId,
